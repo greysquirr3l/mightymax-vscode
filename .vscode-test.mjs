@@ -4,9 +4,9 @@ import { defineConfig } from '@vscode/test-cli';
  * @vscode/test-cli profiles:
  *  - `unit`: vanilla Mocha on compiled domain tests, no host required.
  *  - `integration`: full VS Code host with the extension loaded from
- *    `dist/extension.cjs` (esbuild output). The `version: 'insiders'` flag
- *    matches the editor used for development; CI also runs against stable
- *    via a separate workflow matrix entry.
+ *    `dist/extension.cjs` (esbuild output). Uses stable VS Code for
+ *    reliability in CI (insiders download fails intermittently on Windows).
+ *  - `agent-harness`: multi-round agent conversation tests in VS Code host.
  */
 export default defineConfig([
   {
@@ -29,7 +29,7 @@ export default defineConfig([
   {
     label: 'integration',
     files: 'out/test/**/*.test.js',
-    version: 'insiders',
+    version: 'stable',
     launchArgs: ['--disable-extensions', '--disable-updates'],
     mocha: {
       ui: 'tdd',
@@ -42,7 +42,7 @@ export default defineConfig([
     // calls, malformed call recovery, cancellation. Runs with the VS Code
     // host to test the full ChatProvider against scripted agent scenarios.
     files: 'out/test/agent-harness.test.js',
-    version: 'insiders',
+    version: 'stable',
     launchArgs: ['--disable-extensions', '--disable-updates'],
     mocha: {
       ui: 'bdd',

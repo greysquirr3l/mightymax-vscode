@@ -1,7 +1,10 @@
 .git/
 .github/
 .vscode/
+.claude/
 .coraline/
+.npm-cache/
+.npm-tmp/
 src/
 test/
 node_modules/
@@ -10,6 +13,7 @@ out/
 **/*.ts
 **/*.test.ts
 .vscode-test.mjs
+.tmp-test/
 features.json
 mighty-max-plan.toml
 tsconfig.json
@@ -20,6 +24,7 @@ esbuild.config.mjs
 .markdownlintignore
 .gitignore
 .markdownlint.json
+error_from_console.txt
 *.md
 !README.md
 !CHANGELOG.md

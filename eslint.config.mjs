@@ -9,6 +9,7 @@ export default tseslint.config(
       'node_modules/**',
       '**/*.cjs',
       '.vscode-test.mjs',
+      '.vscode-test/**',
       'esbuild.config.mjs',
     ],
   },

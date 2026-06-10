@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/img/mighty_max_logo_readme.png" alt="Mighty Max Logo" width="256" />
+</div>
+
 # Mighty Max
 
 MiniMax M-series language models for VS Code Chat (BYOK).

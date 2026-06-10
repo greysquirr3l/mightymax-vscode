@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/img/mighty_max_logo.png" alt="Mighty Max Logo" width="350" />
+  <img src="https://raw.githubusercontent.com/greysquirr3l/mightymax-vscode/refs/heads/main/assets/img/mighty_max_logo.png" alt="Mighty Max Logo" width="350" />
 </div>
 
 # Mighty Max

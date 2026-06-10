@@ -489,6 +489,67 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     ok(threw, 'expected provideLanguageModelChatResponse to throw when no key is stored');
     strictEqual(client.calls.length, 0, 'transport should not be called without a key');
   });
+
+  it('surfaces transport errors as user-visible chat errors without crashing the host', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    // Create a client that throws a MiniMaxClientError (simulating a transport failure)
+    const errorClient: MiniMaxClient = {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        const error = new MiniMaxClientError('rate-limit', 'Rate limit exceeded', { status: 429, retriable: true });
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              async next() {
+                throw error;
+              },
+            };
+          },
+        };
+      },
+    };
+
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      errorClient,
+      catalog,
+    );
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    let threw = false;
+    let caughtError: unknown;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      threw = true;
+      caughtError = err;
+    }
+
+    ok(threw, 'expected transport error to be caught and re-thrown');
+    ok(caughtError instanceof Error, 'expected a plain Error (not MiniMaxClientError)');
+    ok(!(caughtError instanceof MiniMaxClientError), 'transport error should be wrapped');
+    if (caughtError instanceof Error) {
+      ok(
+        caughtError.message.includes('rate-limit'),
+        'error message should include the kind',
+      );
+    }
+
+    // Verify the error was logged
+    const errorLogs = logger.calls.filter((c) => c.level === 'error');
+    ok(errorLogs.length > 0, 'transport error should be logged');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

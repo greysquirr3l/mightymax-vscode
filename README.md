@@ -62,6 +62,44 @@ Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3).
 Utility requests are short, tool-less completions optimized for
 quick, focused responses.
 
+## What Mighty Max provides
+
+Mighty Max covers every BYOK-supported surface in VS Code Chat:
+
+| Feature                  | Status      | Notes                                                                 |
+| ------------------------ | ----------- | --------------------------------------------------------------------- |
+| Chat: Ask                | ✅ Supported | Standard chat mode in the Chat panel                                  |
+| Chat: Edit               | ✅ Supported | Edit mode with diff previews                                          |
+| Chat: Inline             | ✅ Supported | Inline chat in the editor (Ctrl+I)                                    |
+| Agent mode               | ✅ Supported | Full agentic tool calling with built-in, extension, and MCP tools    |
+| Custom/local agents      | ✅ Supported | User-authored agent definitions work with MiniMax models             |
+| Utility tasks            | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting      |
+| Tool calling             | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers  |
+| Image input              | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                       |
+| Thinking blocks          | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning  |
+| Multi-round agent loops  | ✅ Supported | Tool results fed back across many rounds without dropping calls      |
+| Token usage tracking     | ✅ Supported | Accurate context-window widget via prompt + completion token counts  |
+
+## What Mighty Max does NOT provide
+
+The following features are outside the BYOK boundary and require a GitHub
+account with Copilot:
+
+- **Inline code completions** (ghost text): This is not exposed to BYOK
+  providers and requires the official GitHub Copilot extension.
+
+- **Semantic search** and `#codebase` queries: Embeddings-backed features use
+  GitHub's infrastructure and are not surfaced through the Language Model Chat
+  Provider API.
+
+- **Other embeddings features**: Similarity search, context retrieval, and
+  other vector-backed operations remain GitHub Copilot-specific.
+
+- **Agents Window vendor-specific hosts** (future): The new VS Code Agents
+  Window may include vendor-specific agent implementations that remain coupled
+  to official SDK providers. Standard agent mode (Chat panel, inline chat) and
+  custom/local agents continue to work with BYOK.
+
 ## Workspace trust posture
 
 | Capability           | Status                                         |

@@ -31,9 +31,62 @@ billed by MiniMax and does not count against Copilot quotas.
 
 ## Installation
 
-Install from the Visual Studio Marketplace or Open VSX. The
-extension ships as a single CommonJS bundle; no native dependencies,
-no `node_modules`.
+### From Marketplace
+
+1. Open VS Code or VS Code Insiders (version 1.104 or later)
+2. Go to Extensions (Ctrl+Shift+X / Cmd+Shift+X)
+3. Search for "Mighty Max"
+4. Click Install
+
+Alternatively, install from [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=greysquirr3l.mighty-max) or [Open VSX](https://open-vsx.org/extension/greysquirr3l/mighty-max).
+
+The extension ships as a single CommonJS bundle with no native dependencies or `node_modules`.
+
+### From VSIX
+
+Download the `.vsix` file from the [GitHub Releases](https://github.com/greysquirr3l/mighty-max/releases) page, then:
+
+```bash
+code --install-extension mighty-max.vsix
+```
+
+## Getting Started
+
+### 1. Get a MiniMax API Key
+
+1. Sign up at [platform.minimax.io](https://platform.minimax.io)
+2. Navigate to your API keys section
+3. Create a new API key (starts with `sk-`)
+4. Copy the key — you'll need it in the next step
+
+**Billing**: Usage is billed directly by MiniMax based on your subscription plan. It does **not** count against GitHub Copilot quotas.
+
+### 2. Configure the Extension
+
+1. Open the Command Palette (Ctrl+Shift+P / Cmd+Shift+P)
+2. Run **"Mighty Max: Manage"**
+3. Select **"Set API key"**
+4. Paste your MiniMax API key
+5. The key is stored securely in VS Code's SecretStorage (never in settings)
+
+### 3. Select a Model
+
+1. Open the Chat panel (View → Chat or Ctrl+Alt+I / Cmd+Alt+I)
+2. Click the model picker dropdown
+3. Select a MiniMax model:
+   - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
+   - `minimax:MiniMax-M2.7` — High performance (1M context)
+   - `minimax:MiniMax-M2.5` — Balanced (1M context)
+   - `minimax:MiniMax-M2` — Fast (196K context)
+   - `minimax:MiniMax-M1` — Lightweight (32K context)
+
+### 4. Start Chatting
+
+Use any Chat feature:
+- **Ask** — Type questions in the Chat panel
+- **Edit** — Select code, right-click → "Edit with Chat"
+- **Inline Chat** — Press Ctrl+I / Cmd+I in the editor
+- **Agent mode** — Enable tools, the model can edit files and run commands
 
 ## Configuration
 

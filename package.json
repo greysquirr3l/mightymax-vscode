@@ -2,9 +2,10 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
+  "icon": "assets/img/mighty_max_head.png",
   "engines": {
     "vscode": "^1.104.0",
     "node": ">=20.0.0"
@@ -15,14 +16,22 @@
   },
   "categories": [
     "AI",
-    "Chat"
+    "Chat",
+    "Machine Learning"
   ],
   "keywords": [
     "chat",
     "ai",
     "minimax",
+    "m3",
     "language-models",
-    "byok"
+    "byok",
+    "bring-your-own-key",
+    "copilot",
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "llm"
   ],
   "extensionKind": [
     "workspace"

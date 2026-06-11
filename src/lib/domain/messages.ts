@@ -171,6 +171,15 @@ const EMPTY_OPTIONS: Record<string, unknown> = Object.freeze({});
  *  - Tool-call parts in user-supplied request content emit an
  *    `unsupported-content` warning and are skipped — the model
  *    has the wire history of the prior assistant turn.
+ *  - A final reconciliation pass drops any `tool` wire message
+ *    whose `toolCallId` does not match a `tool_call` id from the
+ *    immediately preceding assistant turn. Anthropic rejects the
+ *    request outright (error 2013, "tool result's tool id not
+ *    found") if a `tool_result` references a `tool_use_id` that
+ *    the assistant never emitted, and the chat-provider's
+ *    history scrubber can occasionally emit a `tool-result` part
+ *    whose `tool-call` half was already dropped on a previous
+ *    turn. The reconciler closes the gap and surfaces a warning.
  *  - An empty `content` array emits an `empty-message` warning
  *    and the message is dropped from the output.
  */
@@ -185,6 +194,11 @@ export function mapRequestToMiniMax(
   void model;
   const wireMessages: MiniMaxWireMessage[] = [];
   const warnings: MessageMappingError[] = [];
+  // Ids of `tool_use` blocks the mapper has emitted on assistant
+  // turns (in call order, deduplicated). The reconciler at the end
+  // of the function consults this set to decide whether each
+  // `tool` wire message has a valid `toolCallId` reference.
+  const assistantToolCallIds = new Set<string>();
 
   for (const msg of messages) {
     if (msg.role !== 'user' && msg.role !== 'assistant') {
@@ -214,13 +228,30 @@ export function mapRequestToMiniMax(
         continue;
       }
       if (part.type === 'tool-call') {
+        if (msg.role !== 'assistant') {
+          // Tool-call parts must come from assistant history; a
+          // tool-call in user content is almost always the result
+          // of a chat-provider bug that is about to be followed by
+          // an orphan tool-result. Surface a warning, drop the
+          // part, and let the reconciler remove the matching
+          // tool-result below.
+          warnings.push({
+            kind: 'unsupported-content',
+            reason: 'tool-call in request content (must come from assistant history, not user)',
+          });
+          continue;
+        }
         // Tool calls from assistant history need to be preserved so that
         // corresponding tool_results can reference them by ID.
+        const callId = part.toolCall.callId;
         toolCalls.push({
-          id: part.toolCall.callId,
+          id: callId,
           name: part.toolCall.name,
           arguments: JSON.stringify(part.toolCall.input ?? {}),
         });
+        if (callId.length > 0) {
+          assistantToolCallIds.add(callId);
+        }
         continue;
       }
       if (part.type === 'tool-result') {
@@ -233,8 +264,14 @@ export function mapRequestToMiniMax(
         if ('role' in mapped && mapped.role === 'tool') {
           // mapped.content is `string | ReadonlyArray<...>`; the T03
           // mapper always returns a string for tool results, so the
-          // string branch is the one that fires here.
-          const content = typeof mapped.content === 'string' ? mapped.content : '';
+          // string branch is the one that fires here. The defensive
+          // stringify guarantees a primitive string lands on the
+          // wire even if T03 ever returns a structured value
+          // (the T03 mapper currently always returns a string, but
+          // this is the right place to enforce the contract for
+          // the Anthropic dialect, which demands a primitive).
+          const raw = mapped.content;
+          const content = typeof raw === 'string' ? raw : JSON.stringify(raw);
           toolResults.push({
             callId: mapped.toolCallId ?? '',
             content,
@@ -306,7 +343,29 @@ export function mapRequestToMiniMax(
     }
   }
 
-  return { messages: wireMessages, warnings };
+  // Reconciliation pass: drop `tool` wire messages whose
+  // `toolCallId` is unknown to the assistant-history set we
+  // accumulated above. Anthropic rejects these with
+  // "invalid params, tool result's tool id not found" (2013);
+  // MiniMax returns the same 400. Surface a warning for each
+  // dropped result so the chat-provider can log it at warn
+  // level. The turn continues with the surviving messages.
+  const reconciled: MiniMaxWireMessage[] = [];
+  for (const m of wireMessages) {
+    if (m.role === 'tool') {
+      const callId = m.toolCallId ?? '';
+      if (callId.length === 0 || !assistantToolCallIds.has(callId)) {
+        warnings.push({
+          kind: 'unsupported-content',
+          reason: `orphan tool-result dropped: toolCallId=${callId} has no matching assistant tool_use`,
+        });
+        continue;
+      }
+    }
+    reconciled.push(m);
+  }
+
+  return { messages: reconciled, warnings };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

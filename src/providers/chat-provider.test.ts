@@ -32,7 +32,11 @@ import { describe, it } from 'node:test';
 
 import * as vscode from 'vscode';
 
-import { ChatProvider, toLanguageModelChatInformation } from './chat-provider.js';
+import {
+  ChatProvider,
+  toLanguageModelChatInformation,
+  vscodeToDomainMessage,
+} from './chat-provider.js';
 import {
   MiniMaxClientError,
   type MiniMaxClient,
@@ -497,7 +501,10 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     // Create a client that throws a MiniMaxClientError (simulating a transport failure)
     const errorClient: MiniMaxClient = {
       streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
-        const error = new MiniMaxClientError('rate-limit', 'Rate limit exceeded', { status: 429, retriable: true });
+        const error = new MiniMaxClientError('rate-limit', 'Rate limit exceeded', {
+          status: 429,
+          retriable: true,
+        });
         return {
           [Symbol.asyncIterator]() {
             return {
@@ -540,10 +547,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     ok(caughtError instanceof Error, 'expected a plain Error (not MiniMaxClientError)');
     ok(!(caughtError instanceof MiniMaxClientError), 'transport error should be wrapped');
     if (caughtError instanceof Error) {
-      ok(
-        caughtError.message.includes('rate-limit'),
-        'error message should include the kind',
-      );
+      ok(caughtError.message.includes('rate-limit'), 'error message should include the kind');
     }
 
     // Verify the error was logged
@@ -646,5 +650,106 @@ describe('ChatProvider change emitter', () => {
     provider.fireChange();
     strictEqual(fired, 2);
     sub.dispose();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vscodeToDomainMessage — tool-result content normalization
+//
+// Regression for the `[object Object]` rendering bug. A non-text
+// tool-result content part (e.g. a `LanguageModelDataPart` or any
+// future content kind) must land in the domain message as a
+// JSON-encoded string, NOT the literal `[object Object]` that
+// `String(payload)` produces. Mirrors the defensive
+// `JSON.stringify` in the message mapper at
+// `src/lib/domain/messages.ts:mapRequestToMiniMax`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('vscodeToDomainMessage — tool-result content normalization', () => {
+  it('JSON-encodes a structured object in tool-result content (not [object Object])', () => {
+    // Build a tool-result content list that holds a structured
+    // object — analogous to what `LanguageModelDataPart` would
+    // look like to the converter.
+    const structuredPayload = { errors: ['one', 'two'], path: 'src/foo.ts' };
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      // `name` is a required field on `LanguageModelChatRequestMessage`
+      // even though our domain `ChatMessage` makes it optional.
+      // Pass undefined to satisfy the vscode type without changing
+      // observable behavior in the chat-provider.
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_e1', [
+          // A non-LanguageModelTextPart content item. The chat-provider
+          // branch we just fixed is the fallback path for these.
+          structuredPayload as unknown as vscode.LanguageModelTextPart,
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    strictEqual(domain.role, 'user');
+    strictEqual(domain.content.length, 1);
+    const part = domain.content[0]!;
+    strictEqual(part.type, 'tool-result');
+    if (part.type !== 'tool-result') return;
+    strictEqual(part.toolResult.callId, 'call_e1');
+    const resultContent = part.toolResult.content;
+    strictEqual(resultContent.length, 1);
+    const serialized = resultContent[0];
+    // The serialized form must be a string — never the
+    // `[object Object]` produced by `String(obj)`.
+    strictEqual(typeof serialized, 'string');
+    if (typeof serialized !== 'string') return;
+    ok(
+      !serialized.includes('[object Object]'),
+      `tool-result content must not be the literal '[object Object]'; got: ${serialized}`,
+    );
+    // And it must be parseable back to the original payload —
+    // i.e. `JSON.stringify` was the encode path.
+    const parsed = JSON.parse(serialized) as { errors: string[]; path: string };
+    deepStrictEqual(parsed.errors, ['one', 'two']);
+    strictEqual(parsed.path, 'src/foo.ts');
+  });
+
+  it('emits a marker string when JSON.stringify throws on circular content', () => {
+    // Build a circular object. `JSON.stringify` will throw with
+    // "Converting circular structure to JSON". The chat-provider
+    // must catch the error and fall back to a typed marker that
+    // the model can see. The helper is a pure function (not a
+    // class method) so it does not log — the marker string is
+    // itself the diagnostic, both on the wire and in any
+    // downstream chat transcript.
+    const circular: Record<string, unknown> = { name: 'cycle' };
+    circular['self'] = circular;
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_circ', [
+          circular as unknown as vscode.LanguageModelTextPart,
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    const part = domain.content[0]!;
+    if (part.type !== 'tool-result') {
+      ok(false, 'expected a tool-result part');
+      return;
+    }
+    const serialized = part.toolResult.content[0];
+    strictEqual(typeof serialized, 'string');
+    if (typeof serialized !== 'string') return;
+    // The marker string is what's emitted on the fallback path.
+    // It must contain the constructor name (here `Object`) so the
+    // model and the wire payload both have a hint about what
+    // failed.
+    ok(
+      serialized.startsWith('[unserializable tool result content:'),
+      `expected the unserializable marker; got: ${serialized}`,
+    );
+    ok(
+      serialized.includes('Object'),
+      `marker should include the constructor name 'Object'; got: ${serialized}`,
+    );
   });
 });

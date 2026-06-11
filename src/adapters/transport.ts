@@ -121,6 +121,21 @@ interface MutableParseState {
    * `lastCacheReadTokens` rise.
    */
   lastCacheCreateTokens: number | undefined;
+  /**
+   * Buffer of pending `content_block_start` (tool_use) events
+   * keyed by content block index. Anthropic emits the tool
+   * header and argument fragments as separate SSE records; the
+   * transport merges the header with the FIRST argument fragment
+   * so downstream consumers see one `toolCallDelta` carrying
+   * `id` + `name` + first `argumentsDelta` followed by
+   * continuation fragments.
+   *
+   * Lives on `MutableParseState` (per-request) rather than
+   * module-level so an abandoned stream cannot leak entries
+   * into a later concurrent request on the same transport
+   * instance. The map's lifetime is the request's lifetime.
+   */
+  pendingToolUseStarts: Map<number, { id?: string; name?: string }>;
 }
 
 export class MiniMaxClientAdapter implements MiniMaxClient {
@@ -179,6 +194,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       sawAnyEvent: false,
       lastCacheReadTokens: undefined,
       lastCacheCreateTokens: undefined,
+      pendingToolUseStarts: new Map(),
     };
     // The abandonment check is stashed in this local rather than
     // thrown directly inside the `finally` block: the
@@ -968,7 +984,7 @@ function* anthropicEventToStreamEvents(
       const start: { id?: string; name?: string } = {};
       if (typeof id === 'string') start.id = id;
       if (typeof name === 'string') start.name = name;
-      pendingToolUseStarts.set(idx, start);
+      parseState.pendingToolUseStarts.set(idx, start);
     }
     return;
   }
@@ -991,7 +1007,7 @@ function* anthropicEventToStreamEvents(
       const index = (parsed as { index?: unknown }).index;
       if (typeof partial === 'string') {
         const idx = typeof index === 'number' ? index : 0;
-        const start = pendingToolUseStarts.get(idx);
+        const start = parseState.pendingToolUseStarts.get(idx);
         if (start) {
           // First fragment: emit a combined event with id + name + fragment.
           const toolDelta: MiniMaxStreamEvent['toolCallDelta'] = {
@@ -1001,7 +1017,7 @@ function* anthropicEventToStreamEvents(
           if (start.id !== undefined) toolDelta.id = start.id;
           if (start.name !== undefined) toolDelta.name = start.name;
           yield { toolCallDelta: toolDelta };
-          pendingToolUseStarts.delete(idx);
+          parseState.pendingToolUseStarts.delete(idx);
         } else {
           // Continuation fragment.
           yield {
@@ -1021,7 +1037,7 @@ function* anthropicEventToStreamEvents(
       // A block may end without ever receiving an input_json_delta
       // (e.g. a malformed tool_use). Clear any pending start so the
       // buffer does not leak into a later block at the same index.
-      pendingToolUseStarts.delete(index);
+      parseState.pendingToolUseStarts.delete(index);
     }
     return;
   }
@@ -1069,11 +1085,11 @@ function* anthropicEventToStreamEvents(
  * one `toolCallDelta` carrying `id` + `name` + first `argumentsDelta`
  * followed by continuation fragments.
  *
- * State is bounded by content_block_stop (or message_stop upstream),
- * which clears the entry. Keying by `index` prevents leakage across
- * parallel tool calls in the same turn.
+ * **Moved onto `MutableParseState` (request-scoped) in 0.1.3** so
+ * an abandoned stream cannot leak entries into a later concurrent
+ * request on the same transport instance. The map's lifetime
+ * is the request's lifetime.
  */
-const pendingToolUseStarts = new Map<number, { id?: string; name?: string }>();
 
 function normalizeAnthropicStopReason(reason: string): FinishReason {
   switch (reason) {

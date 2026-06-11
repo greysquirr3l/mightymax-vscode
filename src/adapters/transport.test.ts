@@ -1142,3 +1142,139 @@ describe('MiniMaxClientAdapter — stream abandonment', () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. Request-scoped state isolation
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('MiniMaxClientAdapter — request-scoped state isolation', () => {
+  /**
+   * Regression for a state-leak class: `pendingToolUseStarts`
+   * used to be a module-level Map shared across every concurrent
+   * `streamCompletion` call. An abandoned stream that left a
+   * tool-use header set but never delivered the matching
+   * `input_json_delta` would have its entry inherited by the
+   * NEXT concurrent request, causing that request's
+   * `input_json_delta` to merge with the wrong `id`/`name`.
+   *
+   * The fix moves the Map onto `MutableParseState` so each
+   * `streamCompletion` call owns its own buffer. This test
+   * proves the isolation: two concurrent abandoned streams
+   * that each leave a tool-use header set must NOT affect a
+   * third normal stream's tool-call output.
+   */
+  it('does not leak pendingToolUseStarts entries across concurrent abandoned streams', async () => {
+    // Two requests that each deliver ONLY a content_block_start
+    // (a tool-use header) and then hang. Both should be classified
+    // as abandoned by the transport and throw MiniMaxClientError
+    // ('abandoned'). The map entries they leave in their
+    // (now per-request) buffers must be discarded with the rest
+    // of the MutableParseState when the generator returns.
+    const abandonedRecords: SseRecord[] = [
+      { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+      {
+        event: 'content_block_start',
+        data: JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_LEAK_A', name: 'leak_a' },
+        }),
+      },
+      // No content_block_delta, no message_delta, no message_stop.
+      // The connection just hangs.
+    ];
+    const normalRecords: SseRecord[] = [
+      { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+      {
+        event: 'content_block_start',
+        data: JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'toolu_REAL', name: 'real_tool' },
+        }),
+      },
+      {
+        event: 'content_block_delta',
+        data: JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"a":1}' },
+        }),
+      },
+      {
+        event: 'content_block_stop',
+        data: JSON.stringify({ type: 'content_block_stop', index: 0 }),
+      },
+      {
+        event: 'message_delta',
+        data: JSON.stringify({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+        }),
+      },
+      { event: 'message_stop', data: JSON.stringify({ type: 'message_stop' }) },
+    ];
+
+    // Mock server: serve abandonedRecords for the first N
+    // requests (where N >= 2), then normalRecords for any
+    // subsequent request.
+    let requestCount = 0;
+    const server = await startMockServer((_req, res) => {
+      requestCount += 1;
+      const records = requestCount <= 2 ? abandonedRecords : normalRecords;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(serializeSse(records));
+    });
+
+    try {
+      const client = new MiniMaxClientAdapter({
+        baseUrl: () => server.url,
+        maxRetries: 0,
+        // Both thresholds at 0 so any request with a clean
+        // finish marker is fine, and any request without one
+        // is classified as abandoned immediately.
+        slowRequestThresholdMs: 0,
+        abandonmentThresholdMs: 0,
+      });
+      const logger = makeRecordingLogger();
+
+      // Fire two abandoned requests "concurrently" (sequentially
+      // in this test, but each one starts and ends within its
+      // own MutableParseState lifetime).
+      for (let i = 0; i < 2; i += 1) {
+        await rejects(
+          collectEvents(
+            client,
+            { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+            neverAbort,
+            logger,
+          ),
+          (err: unknown) =>
+            err instanceof MiniMaxClientError &&
+            (err.kind === 'abandoned' || err.kind === 'network'),
+        );
+      }
+
+      // Now a normal request. The fact that two prior abandoned
+      // requests left a tool-use header in some shared map
+      // would show up as the wrong id/name in the resulting
+      // toolCallDelta.
+      const events = await collectEvents(
+        client,
+        { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+        neverAbort,
+        makeRecordingLogger(),
+      );
+      const firstTool = events.find((e) => e.toolCallDelta !== undefined);
+      ok(firstTool, 'expected a toolCallDelta event');
+      strictEqual(
+        firstTool?.toolCallDelta?.id,
+        'toolu_REAL',
+        'normal request must use its own id, not one leaked from an abandoned stream',
+      );
+      strictEqual(firstTool?.toolCallDelta?.name, 'real_tool');
+    } finally {
+      await server.close();
+    }
+  });
+});

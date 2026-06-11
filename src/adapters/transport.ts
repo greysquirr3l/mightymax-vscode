@@ -48,6 +48,21 @@ export interface MiniMaxClientOptions {
   fetchImpl?: typeof fetch;
   /** Optional sleep override (used by the tests to skip real waits). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Default: 20000ms. Wall-clock threshold above which the
+   * transport emits a `warn`-level "MiniMax request slow" line.
+   * Tests can lower this to sub-second values to exercise the
+   * warn path without real wall-clock waits.
+   */
+  slowRequestThresholdMs?: number;
+  /**
+   * Default: 30000ms. Wall-clock threshold above which a stream
+   * that ends without a finish marker is classified as
+   * `abandoned` (the model's tool loop was interrupted
+   * mid-flight). Tests can lower this to sub-second values to
+   * exercise the abandonment path without real wall-clock waits.
+   */
+  abandonmentThresholdMs?: number;
 }
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -58,6 +73,56 @@ const DEFAULTS = {
   maxBackoffMs: 8_000,
 };
 
+/**
+ * Threshold above which a request is flagged as a "slow request"
+ * warning. M3 tool-calling requests are typically 5-15 seconds;
+ * anything over 20s is anomalous and likely indicates either a
+ * context-window-bound request, a server-side stall, or a tool
+ * loop that has gone off the rails. The warning is emitted at
+ * `warn` level so it surfaces in the Mighty Max output channel
+ * at the default log level.
+ */
+const SLOW_REQUEST_THRESHOLD_MS = 20_000;
+
+/**
+ * Threshold above which a stream that ends without a finish
+ * marker is classified as `abandoned` (the model's tool loop
+ * was interrupted mid-flight). Below this threshold, a missing
+ * finish marker is treated as a clean termination of an empty
+ * stream — the chat-provider accepts the partial response.
+ */
+const ABANDONMENT_THRESHOLD_MS = 30_000;
+
+/**
+ * Mutable parse state the SSE parsers update as they consume the
+ * stream. The transport reads this in the `finally` block of
+ * `streamCompletion` to decide whether the request was slow,
+ * abandoned, or terminated without delivering any events.
+ */
+interface MutableParseState {
+  /** Set to true when any yielded event carries a `finishReason`. */
+  sawFinishReason: boolean;
+  /** Set to true on the first yielded event of any kind. */
+  sawAnyEvent: boolean;
+  /**
+   * Most recent `cache_read_input_tokens` value from the
+   * stream's `usage` block, if any. Used by the transport to
+   * surface cache-hit-ratio information in the slow-request
+   * warn and the completion `info` log — a request that ran
+   * for 60s but had 95% cache hit ratio is genuinely
+   * server-side stalled, not load-bearing on the model.
+   */
+  lastCacheReadTokens: number | undefined;
+  /**
+   * Most recent `cache_creation_input_tokens` value from the
+   * stream's `usage` block, if any. A non-zero value means the
+   * server cached new content for the first time on this
+   * request; subsequent requests will likely see
+   * `lastCacheReadTokens` rise.
+   */
+  lastCacheCreateTokens: number | undefined;
+}
+
 export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly baseUrl: () => string;
   private readonly maxRetries: number;
@@ -65,6 +130,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly maxBackoffMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly slowRequestThresholdMs: number;
+  private readonly abandonmentThresholdMs: number;
 
   constructor(options: MiniMaxClientOptions) {
     this.baseUrl = options.baseUrl;
@@ -74,6 +141,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.sleep =
       options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this.slowRequestThresholdMs = options.slowRequestThresholdMs ?? SLOW_REQUEST_THRESHOLD_MS;
+    this.abandonmentThresholdMs = options.abandonmentThresholdMs ?? ABANDONMENT_THRESHOLD_MS;
   }
 
   async *streamCompletion(
@@ -101,14 +170,99 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     if (!response.body) {
       throw new MiniMaxClientError('network', 'MiniMax response has no body');
     }
+    // Mutable state the parsers update as they consume the stream.
+    // The transport inspects this after the stream yields to
+    // decide whether the request was abandoned (no terminal
+    // marker ever arrived) — see abandonment detection below.
+    const parseState: MutableParseState = {
+      sawFinishReason: false,
+      sawAnyEvent: false,
+      lastCacheReadTokens: undefined,
+      lastCacheCreateTokens: undefined,
+    };
+    // The abandonment check is stashed in this local rather than
+    // thrown directly inside the `finally` block: the
+    // `no-unsafe-finally` lint rule forbids `throw` in `finally`
+    // because it masks any prior error and overrides the function
+    // return path. After the `try`/`finally` returns, we read the
+    // stashed error and throw it once, which propagates to the
+    // caller's `for await` loop.
+    let abandonmentError: MiniMaxClientError | undefined;
     try {
-      yield* parseStream(response.body, dialect, signal, logger);
+      yield* parseStream(response.body, dialect, signal, parseState, logger);
     } finally {
+      const elapsedMs = Date.now() - startedAt;
+      // Slow-request warning: anything over the threshold is
+      // anomalous. M3 tool-calling requests are typically 5-15s;
+      // longer requests are either context-window-bound,
+      // server-side stalled, or a sign that the tool loop has
+      // gone off the rails. The warning is visible in the Mighty
+      // Max output channel at the default `warn` log level, unlike
+      // the existing `info` completion line which is invisible
+      // without enabling debug.
+      if (elapsedMs > this.slowRequestThresholdMs) {
+        logger.warn('MiniMax request slow — possible model stall', {
+          dialect,
+          model: request.model,
+          elapsedMs,
+          sawAnyEvent: parseState.sawAnyEvent,
+          // Cache-hit ratio context: a 60s request with 95%
+          // cache hits is server-side stalled (idle cache
+          // warming or upstream queue); a 60s request with 0%
+          // cache hits is the model itself doing real work
+          // on a long input. The signal is useful for
+          // diagnosing which class of stall we're seeing.
+          ...(parseState.lastCacheReadTokens !== undefined && {
+            cacheReadTokens: parseState.lastCacheReadTokens,
+          }),
+          ...(parseState.lastCacheCreateTokens !== undefined && {
+            cacheCreateTokens: parseState.lastCacheCreateTokens,
+          }),
+        });
+      }
       logger.info('MiniMax request complete', {
         dialect,
         model: request.model,
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs,
+        // Same cache info on the always-emitted completion line
+        // so non-slow requests are also observable. A gradual
+        // rise in `cacheReadTokens` across a session indicates
+        // the model is reusing prior context — useful
+        // operational signal.
+        ...(parseState.lastCacheReadTokens !== undefined && {
+          cacheReadTokens: parseState.lastCacheReadTokens,
+        }),
+        ...(parseState.lastCacheCreateTokens !== undefined && {
+          cacheCreateTokens: parseState.lastCacheCreateTokens,
+        }),
       });
+      // Abandonment detection: the stream ended without a finish
+      // marker. If we also have no events at all, treat as a
+      // network failure (likely an early-terminated response
+      // body). If we have events but no finish, and the request
+      // took longer than the abandonment threshold, the model's
+      // tool loop was likely interrupted mid-flight — surface
+      // a typed `abandoned` error so the chat-provider can emit
+      // a user-visible chat error instead of letting the turn
+      // end silently.
+      if (!parseState.sawFinishReason) {
+        if (!parseState.sawAnyEvent) {
+          abandonmentError = new MiniMaxClientError(
+            'network',
+            'MiniMax stream ended without delivering any events',
+            { retriable: true },
+          );
+        } else if (elapsedMs > this.abandonmentThresholdMs) {
+          abandonmentError = new MiniMaxClientError(
+            'abandoned',
+            `MiniMax stream ended after ${elapsedMs}ms without a finish marker — the model's tool loop was likely interrupted`,
+            { retriable: true },
+          );
+        }
+      }
+    }
+    if (abandonmentError !== undefined) {
+      throw abandonmentError;
     }
   }
 
@@ -184,7 +338,9 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
             logger.error(`MiniMax 400 Bad Request - Response: ${errorBody}`);
           }
         }
-        throw new MiniMaxClientError('http', `MiniMax returned ${status}${errorDetail}`, { status });
+        throw new MiniMaxClientError('http', `MiniMax returned ${status}${errorDetail}`, {
+          status,
+        });
       } catch (err) {
         if (err instanceof MiniMaxClientError) {
           if (err.kind === 'abort') throw err;
@@ -230,7 +386,9 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   ): Promise<Response> {
     const baseUrl = this.baseUrl().replace(/\/+$/, '');
     const url =
-      dialect === 'anthropic' ? `${baseUrl}/anthropic/v1/messages` : `${baseUrl}/v1/chat/completions`;
+      dialect === 'anthropic'
+        ? `${baseUrl}/anthropic/v1/messages`
+        : `${baseUrl}/v1/chat/completions`;
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
@@ -474,12 +632,13 @@ async function* parseStream(
   body: ReadableStream<Uint8Array>,
   dialect: MiniMaxDialect,
   signal: AbortSignal,
+  parseState: MutableParseState,
   logger: Logger,
 ): AsyncIterable<MiniMaxStreamEvent> {
   if (dialect === 'openai') {
-    yield* parseOpenAiStream(body, signal, logger);
+    yield* parseOpenAiStream(body, signal, parseState, logger);
   } else {
-    yield* parseAnthropicStream(body, signal, logger);
+    yield* parseAnthropicStream(body, signal, parseState, logger);
   }
 }
 
@@ -547,6 +706,7 @@ function parseSseRecord(raw: string): SseRecord {
 async function* parseOpenAiStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  parseState: MutableParseState,
   logger: Logger,
 ): AsyncIterable<MiniMaxStreamEvent> {
   const reader = body.getReader();
@@ -577,7 +737,7 @@ async function* parseOpenAiStream(
             `MiniMax SSE JSON parse error: ${errorMessage(err)}`,
           );
         }
-        for (const event of openAiEventToStreamEvents(parsed)) {
+        for (const event of openAiEventToStreamEvents(parsed, parseState)) {
           yield event;
         }
       }
@@ -587,7 +747,7 @@ async function* parseOpenAiStream(
       if (record.data && record.data !== '[DONE]') {
         try {
           const parsed = JSON.parse(record.data) as unknown;
-          for (const event of openAiEventToStreamEvents(parsed)) yield event;
+          for (const event of openAiEventToStreamEvents(parsed, parseState)) yield event;
         } catch {
           // Drop on the floor; stream is already done.
         }
@@ -604,8 +764,15 @@ async function* parseOpenAiStream(
   }
 }
 
-function* openAiEventToStreamEvents(parsed: unknown): Generator<MiniMaxStreamEvent> {
+function* openAiEventToStreamEvents(
+  parsed: unknown,
+  parseState: MutableParseState,
+): Generator<MiniMaxStreamEvent> {
   if (!isObject(parsed)) return;
+  // From here on, any yielded event counts as "stream is alive".
+  // The finish-reason flag is set explicitly at the two yield
+  // sites below that emit a finish event.
+  parseState.sawAnyEvent = true;
   const choices = (parsed as { choices?: unknown }).choices;
   const usage = (parsed as { usage?: unknown }).usage;
   // The terminal record combines `choices[].finish_reason` and the
@@ -665,18 +832,30 @@ function* openAiEventToStreamEvents(parsed: unknown): Generator<MiniMaxStreamEve
     if (typeof u.prompt_tokens === 'number') out.promptTokens = u.prompt_tokens;
     if (typeof u.completion_tokens === 'number') out.completionTokens = u.completion_tokens;
     if (typeof u.total_tokens === 'number') out.totalTokens = u.total_tokens;
-    if (typeof u.cache_read_input_tokens === 'number')
+    if (typeof u.cache_read_input_tokens === 'number') {
       out.cacheReadTokens = u.cache_read_input_tokens;
+      // Stash on parseState for the transport's slow-request
+      // warn / completion log. A new value overwrites the
+      // previous one; OpenAI emits usage at most once per
+      // stream, so the stashed value is the final cache
+      // reading for the request.
+      parseState.lastCacheReadTokens = u.cache_read_input_tokens;
+    }
     if (typeof u.cache_creation_input_tokens === 'number') {
       out.cacheCreateTokens = u.cache_creation_input_tokens;
+      parseState.lastCacheCreateTokens = u.cache_creation_input_tokens;
     }
     if (Object.keys(out).length > 0) usageEvent = { usage: out };
   }
   if (pendingFinishReason !== undefined && usageEvent) {
+    parseState.sawFinishReason = true;
     yield { ...usageEvent, finishReason: pendingFinishReason };
   } else {
     if (usageEvent) yield usageEvent;
-    if (pendingFinishReason !== undefined) yield { finishReason: pendingFinishReason };
+    if (pendingFinishReason !== undefined) {
+      parseState.sawFinishReason = true;
+      yield { finishReason: pendingFinishReason };
+    }
   }
 }
 
@@ -702,6 +881,7 @@ function normalizeOpenAiFinishReason(reason: string): FinishReason {
 async function* parseAnthropicStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  parseState: MutableParseState,
   logger: Logger,
 ): AsyncIterable<MiniMaxStreamEvent> {
   const reader = body.getReader();
@@ -731,7 +911,7 @@ async function* parseAnthropicStream(
             `MiniMax Anthropic SSE parse error: ${errorMessage(err)}`,
           );
         }
-        for (const event of anthropicEventToStreamEvents(parsed)) yield event;
+        for (const event of anthropicEventToStreamEvents(parsed, parseState)) yield event;
       }
     }
   } catch (err) {
@@ -745,13 +925,21 @@ async function* parseAnthropicStream(
   }
 }
 
-function* anthropicEventToStreamEvents(parsed: unknown): Generator<MiniMaxStreamEvent> {
+function* anthropicEventToStreamEvents(
+  parsed: unknown,
+  parseState: MutableParseState,
+): Generator<MiniMaxStreamEvent> {
   if (!isObject(parsed)) return;
+  // From here on, any yielded event counts as "stream is alive".
+  // The finish-reason flag is set explicitly at the two yield
+  // sites below that emit a finish event.
+  parseState.sawAnyEvent = true;
   const type = (parsed as { type?: unknown }).type;
   if (type === 'error') {
     const err = (parsed as { error?: unknown }).error;
     if (isObject(err)) {
       const message = (err as { message?: unknown }).message;
+      parseState.sawFinishReason = true;
       yield {
         error: {
           message: typeof message === 'string' ? message : 'unknown error',
@@ -842,7 +1030,31 @@ function* anthropicEventToStreamEvents(parsed: unknown): Generator<MiniMaxStream
     if (isObject(delta)) {
       const stop = (delta as { stop_reason?: unknown }).stop_reason;
       if (typeof stop === 'string' && stop.length > 0) {
+        parseState.sawFinishReason = true;
         yield { finishReason: normalizeAnthropicStopReason(stop) };
+      }
+    }
+    // Anthropic's `message_delta` event also carries a
+    // top-level `usage` block (cumulative tokens so far,
+    // including cache_read_input_tokens and
+    // cache_creation_input_tokens). Stash the cache values
+    // on parseState so the transport's slow-request warn can
+    // include them. We don't yield a `usage` event from the
+    // message_delta — the chat-provider already gets one
+    // from the `message_start` event if it asks for it; the
+    // transport uses the cumulative value for its own
+    // diagnostic log only.
+    const usage = (parsed as { usage?: unknown }).usage;
+    if (isObject(usage)) {
+      const u = usage as {
+        cache_read_input_tokens?: unknown;
+        cache_creation_input_tokens?: unknown;
+      };
+      if (typeof u.cache_read_input_tokens === 'number') {
+        parseState.lastCacheReadTokens = u.cache_read_input_tokens;
+      }
+      if (typeof u.cache_creation_input_tokens === 'number') {
+        parseState.lastCacheCreateTokens = u.cache_creation_input_tokens;
       }
     }
     return;

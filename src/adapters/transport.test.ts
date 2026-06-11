@@ -881,3 +881,264 @@ describe('MiniMaxClientAdapter — non-2xx', () => {
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. Stream abandonment detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('MiniMaxClientAdapter — stream abandonment', () => {
+  /**
+   * Slow-request warn: the transport logs at `warn` level when
+   * elapsedMs > slowRequestThresholdMs. Tests lower the threshold
+   * to a tiny value so the warn path fires in milliseconds rather
+   * than 20 seconds.
+   */
+  it('emits a warn-level slow-request line when elapsedMs exceeds the threshold', async () => {
+    // Stream that completes normally — message_start, one text
+    // delta, message_delta with stop_reason, message_stop — so the
+    // abandonment check does NOT fire and the slow-request warn is
+    // the only anomaly the test observes.
+    const records: SseRecord[] = [
+      { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+      {
+        event: 'content_block_start',
+        data: JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      },
+      {
+        event: 'content_block_delta',
+        data: JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'hi' },
+        }),
+      },
+      {
+        event: 'message_delta',
+        data: JSON.stringify({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+        }),
+      },
+      { event: 'message_stop', data: JSON.stringify({ type: 'message_stop' }) },
+    ];
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(serializeSse(records));
+    });
+
+    try {
+      // Threshold of 0ms: any completed request exceeds it.
+      const client = new MiniMaxClientAdapter({
+        baseUrl: () => server.url,
+        maxRetries: 0,
+        slowRequestThresholdMs: 0,
+        abandonmentThresholdMs: 0,
+      });
+      const logger = makeRecordingLogger();
+      await collectEvents(
+        client,
+        { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+        neverAbort,
+        logger,
+      );
+      // The slow-request warn line must be present.
+      const slowCalls = logger.calls.filter(
+        (c) => c.level === 'warn' && c.message.includes('MiniMax request slow'),
+      );
+      ok(slowCalls.length >= 1, 'expected a slow-request warn line');
+      // The completion info line is also still emitted.
+      const completionCalls = logger.calls.filter(
+        (c) =>
+          c.level === 'info' &&
+          typeof c.message === 'string' &&
+          c.message.includes('MiniMax request complete'),
+      );
+      ok(completionCalls.length >= 1, 'expected a request-complete info line');
+    } finally {
+      await server.close();
+    }
+  });
+
+  /**
+   * Abandonment: the server sends a `message_start` + a text
+   * delta, then closes the response body WITHOUT sending
+   * `message_delta` or `message_stop`. The stream is alive but
+   * the model never produced a finish marker. With
+   * abandonmentThresholdMs=0, the transport must surface a
+   * typed `abandoned` error to the caller.
+   */
+  it('surfaces MiniMaxClientError(abandoned) when the stream ends without a finish marker and the threshold is exceeded', async () => {
+    const records: SseRecord[] = [
+      { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+      {
+        event: 'content_block_start',
+        data: JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      },
+      {
+        event: 'content_block_delta',
+        data: JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: "I'll build the WXR exporter now" },
+        }),
+      },
+      // NO message_delta, NO message_stop — stream ends after
+      // the text delta. This is the abandonment case.
+    ];
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(serializeSse(records));
+    });
+
+    try {
+      const client = new MiniMaxClientAdapter({
+        baseUrl: () => server.url,
+        maxRetries: 0,
+        slowRequestThresholdMs: 100_000, // far above elapsedMs — warn should NOT fire
+        abandonmentThresholdMs: 0, // every completed request exceeds it
+      });
+      const logger = makeRecordingLogger();
+      await rejects(
+        collectEvents(
+          client,
+          { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+          neverAbort,
+          logger,
+        ),
+        (err: unknown) => {
+          ok(err instanceof MiniMaxClientError, `expected MiniMaxClientError, got ${String(err)}`);
+          strictEqual(err.kind, 'abandoned');
+          ok(err.retriable, 'abandoned should be retriable');
+          ok(
+            /finish marker/i.test(err.message),
+            'message should mention the missing finish marker',
+          );
+          return true;
+        },
+      );
+      // Slow-request warn must NOT fire when its threshold is far
+      // above elapsedMs (the abandonment error path takes
+      // precedence and we want clean signal in the log).
+      const slowCalls = logger.calls.filter(
+        (c) => c.level === 'warn' && c.message.includes('MiniMax request slow'),
+      );
+      strictEqual(slowCalls.length, 0, 'slow-request warn should not fire when threshold is high');
+    } finally {
+      await server.close();
+    }
+  });
+
+  /**
+   * Empty stream: the server returns 200 with no SSE records at
+   * all (a malformed or zero-length body). The transport must
+   * surface a typed `network` error, not `abandoned`, because
+   * `sawAnyEvent` is false — the request never produced a usable
+   * response.
+   */
+  it('surfaces MiniMaxClientError(network) when the stream ends with no events at all', async () => {
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(''); // zero-length SSE body
+    });
+
+    try {
+      const client = new MiniMaxClientAdapter({
+        baseUrl: () => server.url,
+        maxRetries: 0,
+        slowRequestThresholdMs: 100_000,
+        abandonmentThresholdMs: 0,
+      });
+      await rejects(
+        collectEvents(
+          client,
+          { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+          neverAbort,
+          makeRecordingLogger(),
+        ),
+        (err: unknown) => {
+          ok(err instanceof MiniMaxClientError, `expected MiniMaxClientError, got ${String(err)}`);
+          // Empty stream: distinquished from 'abandoned' by the
+          // sawAnyEvent flag. The transport throws 'network' here
+          // (the response was structurally a stream but delivered
+          // nothing — equivalent to a transport failure).
+          strictEqual(err.kind, 'network');
+          return true;
+        },
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  /**
+   * Negative control: when the stream completes cleanly
+   * (message_start + text_delta + message_delta with
+   * stop_reason + message_stop), the abandonment check must
+   * not fire even with abandonmentThresholdMs=0.
+   */
+  it('does not throw abandoned when the stream ends with a finish marker', async () => {
+    const records: SseRecord[] = [
+      { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+      {
+        event: 'content_block_start',
+        data: JSON.stringify({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        }),
+      },
+      {
+        event: 'content_block_delta',
+        data: JSON.stringify({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'final' },
+        }),
+      },
+      {
+        event: 'message_delta',
+        data: JSON.stringify({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+        }),
+      },
+      { event: 'message_stop', data: JSON.stringify({ type: 'message_stop' }) },
+    ];
+    const server = await startMockServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(serializeSse(records));
+    });
+
+    try {
+      const client = new MiniMaxClientAdapter({
+        baseUrl: () => server.url,
+        maxRetries: 0,
+        // Both thresholds at 0: with a clean finish marker, the
+        // transport must NOT throw — the abandonment check is
+        // gated on `!sawFinishReason` and never reaches the
+        // threshold comparison.
+        slowRequestThresholdMs: 0,
+        abandonmentThresholdMs: 0,
+      });
+      const events = await collectEvents(
+        client,
+        { ...defaultRequest, model: 'MiniMax-M3', maxTokens: 1024 },
+        neverAbort,
+        makeRecordingLogger(),
+      );
+      // Stream completed cleanly.
+      const last = events[events.length - 1];
+      ok(last?.finishReason === 'stop', 'expected a stop finishReason on the last event');
+    } finally {
+      await server.close();
+    }
+  });
+});

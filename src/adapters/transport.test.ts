@@ -852,16 +852,119 @@ describe('MiniMaxClientAdapter — secret redaction', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 8. Non-2xx (non-auth, non-429) → typed http error
+// 8. 5xx server errors — retry transient errors
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('MiniMaxClientAdapter — non-2xx', () => {
-  it('surfaces 500 as a typed http error and does NOT retry', async () => {
+describe('MiniMaxClientAdapter — 5xx server errors', () => {
+  it('retries 500 errors with backoff and surfaces typed http error after exhaustion', async () => {
     let attempts = 0;
     const server = await startMockServer((_req, res) => {
       attempts += 1;
       res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'server exploded' } }));
+      res.end(JSON.stringify({ error: { message: 'server exploded', type: 'api_error' } }));
+    });
+
+    try {
+      const client = makeClient(() => server.url);
+      const logger = makeRecordingLogger();
+      await rejects(
+        collectEvents(client, defaultRequest, neverAbort, logger),
+        (err: unknown) => {
+          ok(err instanceof MiniMaxClientError);
+          strictEqual(err.kind, 'http');
+          strictEqual(err.status, 500);
+          ok(err.retriable, '500 should be marked as retriable');
+          return true;
+        },
+      );
+      // maxRetries=2 → 1 initial + 2 retries = 3 attempts
+      strictEqual(attempts, 3, 'expected 3 attempts for 500 error');
+      // Logger should have retry warnings
+      const warns = logger.calls.filter((c) => c.level === 'warn' && c.message.includes('5xx server error'));
+      ok(warns.length >= 2, `expected at least 2 retry warnings, got ${warns.length}`);
+      // Logger should have error logs with request details
+      const errors = logger.calls.filter((c) => c.level === 'error' && c.message.includes('Server Error'));
+      ok(errors.length >= 3, `expected at least 3 error logs (one per attempt), got ${errors.length}`);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('retries 500 and succeeds on a later attempt', async () => {
+    let attempts = 0;
+    const server = await startMockServer((_req, res) => {
+      attempts += 1;
+      if (attempts < 2) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'temporary failure' } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(
+        serializeSse([
+          { event: 'message_start', data: JSON.stringify({ type: 'message_start' }) },
+          {
+            event: 'content_block_delta',
+            data: JSON.stringify({
+              type: 'content_block_delta',
+              delta: { type: 'text_delta', text: 'recovered' },
+            }),
+          },
+          {
+            event: 'message_delta',
+            data: JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }),
+          },
+          { event: 'message_stop', data: JSON.stringify({ type: 'message_stop' }) },
+        ]),
+      );
+    });
+
+    try {
+      const client = makeClient(() => server.url);
+      const logger = makeRecordingLogger();
+      const events = await collectEvents(client, defaultRequest, neverAbort, logger);
+      strictEqual(attempts, 2, 'expected 2 attempts (1 failure + 1 success)');
+      const textEvent = events.find((e) => e.textDelta !== undefined);
+      strictEqual(textEvent?.textDelta, 'recovered');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('retries 502, 503, 504, and 529 errors', async () => {
+    for (const status of [502, 503, 504, 529]) {
+      let attempts = 0;
+      const server = await startMockServer((_req, res) => {
+        attempts += 1;
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `${status} error` } }));
+      });
+
+      try {
+        const client = makeClient(() => server.url);
+        await rejects(
+          collectEvents(client, defaultRequest, neverAbort, makeRecordingLogger()),
+          (err: unknown) => {
+            ok(err instanceof MiniMaxClientError);
+            strictEqual(err.kind, 'http');
+            strictEqual(err.status, status);
+            ok(err.retriable, `${status} should be marked as retriable`);
+            return true;
+          },
+        );
+        strictEqual(attempts, 3, `expected 3 attempts for ${status} error`);
+      } finally {
+        await server.close();
+      }
+    }
+  });
+
+  it('does NOT retry non-transient 5xx errors like 501', async () => {
+    let attempts = 0;
+    const server = await startMockServer((_req, res) => {
+      attempts += 1;
+      res.writeHead(501, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'not implemented' } }));
     });
 
     try {
@@ -871,11 +974,12 @@ describe('MiniMaxClientAdapter — non-2xx', () => {
         (err: unknown) => {
           ok(err instanceof MiniMaxClientError);
           strictEqual(err.kind, 'http');
-          strictEqual(err.status, 500);
+          strictEqual(err.status, 501);
+          ok(!err.retriable, '501 should NOT be marked as retriable');
           return true;
         },
       );
-      strictEqual(attempts, 1, '5xx should not be retried');
+      strictEqual(attempts, 1, '501 should not be retried');
     } finally {
       await server.close();
     }

@@ -27,8 +27,8 @@ import {
  * Retry policy: 429 responses are retried with bounded exponential
  * backoff + jitter up to `maxRetries` times. After exhaustion the
  * adapter throws a typed `MiniMaxClientError({ kind: 'rate-limit' })`.
- * 5xx and other non-2xx responses are NOT retried (the model
- * vendor's server is broken, retrying won't help).
+ * Transient 5xx errors (500, 502, 503, 504, 529) are retried with the
+ * same backoff strategy. Other non-2xx responses are NOT retried.
  *
  * Cancellation: the caller-supplied `AbortSignal` is forwarded to
  * the underlying `fetch` call. Aborting mid-stream surfaces as
@@ -63,6 +63,18 @@ export interface MiniMaxClientOptions {
    * exercise the abandonment path without real wall-clock waits.
    */
   abandonmentThresholdMs?: number;
+  /**
+   * Default: 4. Maximum number of concurrent in-flight requests
+   * to MiniMax across all `streamCompletion` callers on this
+   * transport instance. Concurrent chat sessions share the
+   * same transport, so this caps total in-flight requests
+   * across every VS Code chat tab. The default (4) keeps
+   * individual sessions under the 200 RPM MiniMax limit even
+   * with 4 active chat tabs each making one request every 3
+   * seconds. Lower this to dogpile-test or to debug rate
+   * limiting; raise it for batched workloads.
+   */
+  maxConcurrentRequests?: number;
 }
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -71,6 +83,7 @@ const DEFAULTS = {
   maxRetries: 3,
   initialBackoffMs: 250,
   maxBackoffMs: 8_000,
+  maxConcurrentRequests: 4,
 };
 
 /**
@@ -99,6 +112,111 @@ const ABANDONMENT_THRESHOLD_MS = 30_000;
  * `streamCompletion` to decide whether the request was slow,
  * abandoned, or terminated without delivering any events.
  */
+
+/**
+ * Counting semaphore for in-process concurrency control on
+ * MiniMax requests. Acquire returns a permit token whose
+ * `release()` call frees the slot for the next waiter. The
+ * semaphore aborts `acquire` cleanly when the caller's
+ * `AbortSignal` fires, so a cancelled request never sits in
+ * the queue.
+ *
+ * Implementation note: a simple FIFO with an abort listener.
+ * `release()` always wakes the head of the queue; if no
+ * waiters are present, it just increments the available
+ * permit count. This is not a fair lock in the strict sense
+ * (a newly-arriving acquire when the queue is empty wins over
+ * a queue head), but that's intentional: real cancellation
+ * pressure from a higher-priority request should be able to
+ * jump the queue. The behavioral guarantee we care about is
+ * "no more than N concurrent in-flight requests, ever."
+ */
+class Semaphore {
+  private permits: number;
+  private readonly waiters: Array<{
+    resolve: (token: { release: () => void }) => void;
+    reject: (err: unknown) => void;
+    onAbort: () => void;
+  }> = [];
+
+  constructor(permits: number) {
+    if (!Number.isInteger(permits) || permits < 1) {
+      throw new RangeError(`Semaphore permits must be a positive integer; got ${permits}`);
+    }
+    this.permits = permits;
+  }
+
+  /**
+   * Acquire a permit. Resolves with a token whose `release()`
+   * the caller MUST invoke once (typically from a `finally`
+   * block) to free the slot. If the caller's `signal` aborts
+   * while waiting, the returned promise rejects with
+   * `MiniMaxClientError({ kind: 'abort' })` and the waiter is
+   * removed from the queue.
+   */
+  async acquire(signal: AbortSignal): Promise<{ release: () => void }> {
+    if (signal.aborted) {
+      throw new MiniMaxClientError('abort', 'request aborted before semaphore acquire', {
+        cause: signal.reason,
+      });
+    }
+    if (this.permits > 0) {
+      this.permits -= 1;
+      return { release: this.boundRelease };
+    }
+    return await new Promise<{ release: () => void }>((resolve, reject) => {
+      const onAbort = (): void => {
+        const idx = this.waiters.findIndex((w) => w.reject === reject);
+        if (idx >= 0) this.waiters.splice(idx, 1);
+        reject(
+          new MiniMaxClientError('abort', 'request aborted while waiting for semaphore', {
+            cause: signal.reason,
+          }),
+        );
+      };
+      const onResolve = (): void => {
+        signal.removeEventListener('abort', onAbort);
+        // Permits already decremented by the releaser.
+        resolve({ release: this.boundRelease });
+      };
+      this.waiters.push({ resolve: onResolve, reject, onAbort });
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  /**
+   * Bound version of `release` so callers can stash the
+   * token and use `token.release()` without losing `this`.
+   */
+  private readonly boundRelease = (): void => {
+    this.release();
+  };
+
+  private release(): void {
+    if (this.waiters.length > 0) {
+      const next = this.waiters.shift();
+      if (next === undefined) {
+        // Queue was emptied between the length check and the
+        // shift. Restore the permit. This branch is
+        // theoretically reachable under very tight concurrency
+        // if another caller's onAbort fires between the
+        // check and the shift; treat it as a permit back.
+        this.permits += 1;
+        return;
+      }
+      next.onAbort = (): void => {
+        /* replaced by onResolve; no-op on handover */
+      };
+      // Decrement the permit for the head waiter (we hand it
+      // directly to them rather than re-queueing).
+      this.permits -= 1;
+      next.resolve({ release: this.boundRelease });
+      return;
+    }
+    this.permits += 1;
+  }
+}
+
 interface MutableParseState {
   /** Set to true when any yielded event carries a `finishReason`. */
   sawFinishReason: boolean;
@@ -147,6 +265,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly slowRequestThresholdMs: number;
   private readonly abandonmentThresholdMs: number;
+  private readonly semaphore: Semaphore;
 
   constructor(options: MiniMaxClientOptions) {
     this.baseUrl = options.baseUrl;
@@ -158,6 +277,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.slowRequestThresholdMs = options.slowRequestThresholdMs ?? SLOW_REQUEST_THRESHOLD_MS;
     this.abandonmentThresholdMs = options.abandonmentThresholdMs ?? ABANDONMENT_THRESHOLD_MS;
+    this.semaphore = new Semaphore(options.maxConcurrentRequests ?? DEFAULTS.maxConcurrentRequests);
   }
 
   async *streamCompletion(
@@ -173,6 +293,18 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       throw new MiniMaxClientError('abort', 'request aborted before start');
     }
 
+    // Acquire a concurrency-control permit *before* the
+    // dispatch+retry loop so a 429 retry sequence keeps the
+    // permit for its full duration. Two concurrent chat
+    // sessions on the same transport instance are each
+    // bounded by `maxConcurrentRequests`; without this, they
+    // could each be in a 429-retry loop simultaneously and
+    // dogpile the server's rate-limit window. Aborts
+    // propagate cleanly (the Semaphore rejects with
+    // `kind:'abort'` when the caller's signal fires while
+    // waiting).
+    const permit = await this.semaphore.acquire(signal);
+
     const dialect = request.dialect ?? defaultDialectFor(request.model);
     const startedAt = Date.now();
     logger.debug('MiniMax request start', {
@@ -181,8 +313,18 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       toolCount: request.tools?.length ?? 0,
     });
 
-    const response = await this.doRequestWithRetries(request, apiKey, signal, dialect, logger);
+    let response: Response;
+    try {
+      response = await this.doRequestWithRetries(request, apiKey, signal, dialect, logger);
+    } catch (err) {
+      // Release the permit on any failure to dispatch
+      // (network error, auth, 4xx after retries, abort).
+      // The `finally` below handles the success path.
+      permit.release();
+      throw err;
+    }
     if (!response.body) {
+      permit.release();
       throw new MiniMaxClientError('network', 'MiniMax response has no body');
     }
     // Mutable state the parsers update as they consume the stream.
@@ -353,6 +495,40 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
           if (status === 400) {
             logger.error(`MiniMax 400 Bad Request - Response: ${errorBody}`);
           }
+        }
+        // Handle 5xx server errors with retry for transient failures
+        if (status >= 500 && status < 600) {
+          const requestBody =
+            dialect === 'anthropic'
+              ? serializeAnthropicRequest(request)
+              : serializeOpenAiRequest(request);
+          logger.error(
+            `MiniMax ${status} Server Error - dialect=${dialect}, model=${request.model}, request=${JSON.stringify(requestBody)}`,
+          );
+          if (errorBody) {
+            logger.error(`MiniMax ${status} Server Error - Response: ${errorBody}`);
+          }
+          // Retry transient 5xx errors (500, 502, 503, 504) and 529 (overloaded)
+          const isRetriable = status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
+          if (isRetriable && attempt < maxAttempts) {
+            const waitMs = computeBackoff({
+              attempt,
+              initialMs: this.initialBackoffMs,
+              maxMs: this.maxBackoffMs,
+            });
+            logger.warn('MiniMax 5xx server error — retrying', {
+              model: request.model,
+              status,
+              attempt,
+              waitMs,
+            });
+            await this.sleep(waitMs);
+            continue;
+          }
+          throw new MiniMaxClientError('http', `MiniMax returned ${status}${errorDetail}`, {
+            status,
+            retriable: isRetriable,
+          });
         }
         throw new MiniMaxClientError('http', `MiniMax returned ${status}${errorDetail}`, {
           status,

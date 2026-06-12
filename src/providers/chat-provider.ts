@@ -21,8 +21,19 @@ import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 import { toLanguageModelTextPart, toLanguageModelToolCallPart } from '../ports/message-mapping.js';
-import { mapRequestToMiniMax, mapStreamDeltaToResponseParts, isMessageMappingError } from '../lib/domain/messages.js';
-import { mapToolsToMiniMax, mapToolModeToChoice, accumulatorSeed, accumulateToolCallDelta, finalizeAccumulator, isToolSchemaError } from '../lib/domain/tools.js';
+import {
+  mapRequestToMiniMax,
+  mapStreamDeltaToResponseParts,
+  isMessageMappingError,
+} from '../lib/domain/messages.js';
+import {
+  mapToolsToMiniMax,
+  mapToolModeToChoice,
+  accumulatorSeed,
+  accumulateToolCallDelta,
+  finalizeAccumulator,
+  isToolSchemaError,
+} from '../lib/domain/tools.js';
 import type { ChatTool, ChatToolMode } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
 
@@ -82,7 +93,10 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       const entries = await this.catalog.listModels();
       if (token.isCancellationRequested) return [];
       const mapped = entries.map(toLanguageModelChatInformation);
-      this.logger.debug('ChatProvider: returning catalog', { count: mapped.length, silent: options.silent });
+      this.logger.debug('ChatProvider: returning catalog', {
+        count: mapped.length,
+        silent: options.silent,
+      });
       return mapped;
     } catch (err) {
       this.logger.error('ChatProvider: catalog read failed', err);
@@ -100,7 +114,9 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Check for API key
     const apiKey = await this.secretStore.getSecret('apiKey');
     if (!apiKey) {
-      throw new Error('MiniMax API key not configured. Run "Manage Mighty Max (Set API Key)" to configure.');
+      throw new Error(
+        'MiniMax API key not configured. Run "Manage Mighty Max (Set API Key)" to configure.',
+      );
     }
 
     // Convert vscode messages to domain format
@@ -146,7 +162,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       dialect,
     };
 
-    this.logger.debug('Starting streaming request', { model: model.id, dialect, messageCount: request.messages.length, toolCount: tools.length });
+    this.logger.debug('Starting streaming request', {
+      model: model.id,
+      dialect,
+      messageCount: request.messages.length,
+      toolCount: tools.length,
+    });
 
     try {
       // Set up tool-call accumulator
@@ -158,7 +179,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
       try {
         // Stream the completion
-        for await (const event of this.client.streamCompletion(request, apiKey, abortController.signal, this.logger)) {
+        for await (const event of this.client.streamCompletion(
+          request,
+          apiKey,
+          abortController.signal,
+          this.logger,
+        )) {
           if (token.isCancellationRequested) break;
 
           // Handle tool-call deltas
@@ -221,6 +247,18 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     } catch (err) {
       if (err instanceof MiniMaxClientError) {
         this.logger.error('MiniMax client error', err, { kind: err.kind, status: err.status });
+        // Abandoned requests get a distinct, user-facing message:
+        // the model returned a "I'll build X now" / planning turn
+        // but the tool loop never executed. Telling the user to
+        // retry is more useful than the generic `MiniMax API
+        // error (abandoned): ...` envelope.
+        if (err.kind === 'abandoned') {
+          throw new Error(
+            'The model started a response but its tool loop was interrupted ' +
+              'before any tool calls could run. Try again — if the issue persists, ' +
+              'the model may be hitting a context-window or rate-limit ceiling.',
+          );
+        }
         throw new Error(`MiniMax API error (${err.kind}): ${err.message}`);
       }
       throw err;
@@ -306,13 +344,23 @@ function buildTooltip(entry: ModelInfo): string {
  * Convert a VS Code chat message to the domain `ChatMessage` format.
  * This is a thin struct-by-struct copy that mirrors the shapes.
  */
-function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessage): ChatMessage {
+/**
+ * Convert a VS Code chat message to the domain `ChatMessage` format.
+ * This is a thin struct-by-struct copy that mirrors the shapes.
+ *
+ * Exported for unit testing — the `tool-result` content
+ * normalization (in particular, the JSON-encode fallback for
+ * non-text content) is a security-relevant boundary that
+ * benefits from direct regression coverage.
+ */
+export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessage): ChatMessage {
   const role = msg.role === vscode.LanguageModelChatMessageRole.User ? 'user' : 'assistant';
 
   const content: ChatMessageContentPart[] = [];
 
   // Handle content that can be string or array
-  const msgContent = typeof msg.content === 'string' ? [new vscode.LanguageModelTextPart(msg.content)] : msg.content;
+  const msgContent =
+    typeof msg.content === 'string' ? [new vscode.LanguageModelTextPart(msg.content)] : msg.content;
 
   for (const part of msgContent) {
     if (part instanceof vscode.LanguageModelTextPart) {
@@ -327,13 +375,39 @@ function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessage): Cha
         },
       });
     } else if (part instanceof vscode.LanguageModelToolResultPart) {
-      // Convert tool result content to the domain format
+      // Convert tool result content to the domain format.
+      // This helper is a free function (not a class method), so
+      // we keep it pure: no `this.logger`, no `console.warn`.
+      // The marker string on the JSON.stringify failure path is
+      // itself the diagnostic — it appears in the model's
+      // context and on the wire payload if a user wants to find
+      // unserializable tool results.
       const resultContent = part.content.map((c) => {
         if (c instanceof vscode.LanguageModelTextPart) {
           return c.value;
         }
-        // Other content types would be handled here
-        return String(c);
+        // Other content types would be handled here. We
+        // JSON-encode the payload so the model sees a primitive
+        // string on the wire. `String(c)` on a structured object
+        // produces the literal `[object Object]`, which leaks
+        // into the model's context as garbage and is the most
+        // common source of the `[object Object]` strings that
+        // appear in chat transcripts when a tool returns a
+        // non-text payload. Mirrors the defensive
+        // `JSON.stringify` in the message mapper boundary at
+        // `src/lib/domain/messages.ts:mapRequestToMiniMax`.
+        try {
+          return JSON.stringify(c);
+        } catch {
+          // Circular reference or BigInt or similar
+          // unserializable value. Fall back to a marker the
+          // model can see so the turn doesn't silently lose the
+          // tool result. The marker includes the constructor
+          // name (e.g. "Object", "Map") so a user inspecting
+          // the wire payload can identify the offending type.
+          const ctor = (c as { constructor?: { name?: string } })?.constructor?.name ?? typeof c;
+          return `[unserializable tool result content: ${ctor}]`;
+        }
       });
       content.push({
         type: 'tool-result',
@@ -356,7 +430,9 @@ function vscodeToDomainTool(tool: vscode.LanguageModelChatTool): ChatTool {
   return {
     name: tool.name,
     description: tool.description,
-    ...(tool.inputSchema !== undefined ? { inputSchema: tool.inputSchema as { readonly [key: string]: unknown } } : {}),
+    ...(tool.inputSchema !== undefined
+      ? { inputSchema: tool.inputSchema as { readonly [key: string]: unknown } }
+      : {}),
   };
 }
 
@@ -364,7 +440,8 @@ function vscodeToDomainTool(tool: vscode.LanguageModelChatTool): ChatTool {
  * Extract text content from a chat message for token counting.
  */
 function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string {
-  const msgContent = typeof msg.content === 'string' ? [new vscode.LanguageModelTextPart(msg.content)] : msg.content;
+  const msgContent =
+    typeof msg.content === 'string' ? [new vscode.LanguageModelTextPart(msg.content)] : msg.content;
 
   const textParts: string[] = [];
   for (const part of msgContent) {

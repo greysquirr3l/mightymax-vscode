@@ -250,6 +250,155 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
     equal(userMsg.content, 'Hi');
   });
 
+  it('serializes a structured (object) tool result as a JSON string, not [object Object]', () => {
+    // Regression for the `get_errors` payload leak: a tool result
+    // whose content list contains a plain object (e.g. the JSON
+    // result of `get_errors`) must land on the wire as a JSON
+    // string, not as the default `String(obj)` rendering. The
+    // Anthropic dialect rejects non-primitive `content` on a
+    // `tool_result` block.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCall: { callId: 'call_e1', name: 'get_errors', input: {} },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: {
+              callId: 'call_e1',
+              content: [{ errors: ['one', 'two'], path: 'src/foo.ts' }],
+            },
+          },
+        ],
+      },
+    ]);
+    equal(result.warnings.length, 0);
+    const toolMsg = result.messages.find((m) => m.role === 'tool') as MiniMaxWireMessage;
+    ok(toolMsg, 'expected a tool wire message');
+    equal(typeof toolMsg.content, 'string');
+    equal(toolMsg.toolCallId, 'call_e1');
+    // The string must be parseable JSON (the structured payload was
+    // serialized), and the call id round-trips.
+    const parsed = JSON.parse(toolMsg.content as string) as { errors: string[] };
+    deepStrictEqual(parsed.errors, ['one', 'two']);
+  });
+
+  it('drops an orphan tool-result whose toolCallId was never emitted by the assistant', () => {
+    // Reproduces the "invalid params, tool result's tool id not
+    // found (2013)" failure from error_from_console.txt. The user
+    // sent back a tool_result referencing call_ghost, but the prior
+    // assistant turn did not emit a tool_use with that id.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      { role: 'user', content: [{ type: 'text', value: 'do the thing' }] },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCall: { callId: 'call_real', name: 'read_file', input: { path: '/a' } },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_ghost', content: ['stray'] },
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCall: { callId: 'call_real2', name: 'read_file', input: { path: '/b' } },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_real2', content: ['ok'] },
+          },
+        ],
+      },
+    ]);
+    // The orphan tool-result for call_ghost is dropped, but the
+    // well-formed tool-result for call_real2 survives.
+    const toolMsgs = result.messages.filter((m) => m.role === 'tool');
+    equal(toolMsgs.length, 1);
+    equal(toolMsgs[0]?.toolCallId, 'call_real2');
+    // A warning is surfaced for the dropped orphan so the
+    // chat-provider can log it.
+    const orphanWarnings = result.warnings.filter(
+      (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result'),
+    );
+    equal(orphanWarnings.length, 1);
+  });
+
+  it('preserves a well-formed tool-result whose assistant tool_use is present', () => {
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCall: { callId: 'call_match', name: 'run_in_terminal', input: { command: 'ls' } },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_match', content: ['file1\nfile2'] },
+          },
+        ],
+      },
+    ]);
+    equal(result.warnings.length, 0);
+    const toolMsg = result.messages.find((m) => m.role === 'tool') as MiniMaxWireMessage;
+    ok(toolMsg, 'expected a tool wire message');
+    equal(toolMsg.toolCallId, 'call_match');
+    equal(toolMsg.content, 'file1\nfile2');
+  });
+
+  it('emits a stable call id list in the assistant wire message (no duplicates on retry)', () => {
+    // Two consecutive tool-call parts with the same call id should
+    // still serialize to a single id in the assistant wire message;
+    // the reconciler relies on the union, not a multi-set.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCall: { callId: 'call_dup', name: 'a', input: {} } },
+          { type: 'tool-call', toolCall: { callId: 'call_dup', name: 'a', input: {} } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool-result', toolResult: { callId: 'call_dup', content: ['ok'] } }],
+      },
+    ]);
+    const toolMsg = result.messages.find((m) => m.role === 'tool') as MiniMaxWireMessage;
+    ok(toolMsg, 'expected a tool wire message');
+    equal(toolMsg.toolCallId, 'call_dup');
+    equal(result.warnings.length, 0);
+  });
+
   it('surfaces a tool-result mapping error (missing call id) as a warning', () => {
     const msg: ChatMessage = {
       role: 'user',

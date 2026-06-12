@@ -145,7 +145,26 @@ export type MiniMaxDialect = 'openai' | 'anthropic';
  *                    malformed JSON.
  *  - `abort`       — caller cancelled the request via AbortSignal.
  */
-export type MiniMaxClientErrorKind = 'auth' | 'rate-limit' | 'http' | 'network' | 'parse' | 'abort';
+export type MiniMaxClientErrorKind =
+  | 'auth'
+  | 'rate-limit'
+  | 'http'
+  | 'network'
+  | 'parse'
+  | 'abort'
+  /**
+   * The server completed a streaming response without ever sending
+   * a terminal marker (no `finishReason`, no `message_stop`). The
+   * client was left waiting for an event that never came; the wall-
+   * clock elapsed time typically exceeds 30 seconds. Distinct from
+   * `http` (which is for non-2xx response status) and `network`
+   * (which is for transport-level failures): an abandoned request
+   * succeeded in HTTP terms but never produced a usable response.
+   * The chat-provider (T07) catches this and surfaces a user-visible
+   * chat error so a turn that returned "I'll build X now" with no
+   * follow-up execution is not silently swallowed.
+   */
+  | 'abandoned';
 
 export class MiniMaxClientError extends Error {
   public readonly kind: MiniMaxClientErrorKind;

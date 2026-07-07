@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-07
+
+### Fixed
+
+- **M3 Anthropic tool-call round-trip**: `mapRequestToMiniMax` now validates orphan `tool_result` blocks unconditionally, closing the `invalid params, tool result's tool id not found (2013)` failure captured in `error_from_console.txt`. A `tool_use_id` without a matching `tool_use` in the conversation is always dropped (with a warning) regardless of how many assistant tool-calls the request carries elsewhere.
+- **M3 catalog token budgets**: the static `BUILT_IN_CATALOG` now advertises `maxInputTokens: 1_000_000` and `maxOutputTokens: 128_000` for M3 (was `1_040_384` / `8_192`). The previous values were a guess and were hiding the model's real headroom from VS Code's context-window widget. Mirrors the canonical `models.dev` entry for the `minimax` provider. The actual request still ships with `max_tokens: 32_000` (opencode `OUTPUT_TOKEN_MAX`); the catalog value drives the picker UI and utility-model budget math, not the request body.
+- **M3 thinking parity with opencode**: `getThinkingConfig` now sends `thinking: { type: 'adaptive' }` for M3 on the Anthropic dialect (was `enabled` with an explicit `budget_tokens` of half the request's `max_tokens`). `adaptive` lets M3 decide its own per-request budget; locking it at a fixed fraction was burning output tokens on planning the model would not have spent on its own.
+
 ## [0.2.0] — 2026-06-17
 
 ### Added

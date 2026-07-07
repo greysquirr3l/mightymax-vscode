@@ -54,7 +54,13 @@ describe('mapToolsToMiniMax', () => {
     equal(mapped[0]?.function.description, 'Reads a file from disk.');
   });
 
-  it('passes the JSON-schema parameters through unchanged when provided', () => {
+  it('lowers Anthropic-incompatible schema keywords before serializing', () => {
+    // VS Code tool schemas from extensions / MCP servers ship keywords
+    // Anthropic rejects (`const`, tuple `items`, `additionalProperties:
+    // false`, `$ref` siblings). The domain runs every inputSchema
+    // through `sanitizeAnthropicSchema` before serializing so a tool
+    // definition that uses these keywords does not cause a 400 from
+    // the upstream.
     const schema = {
       type: 'object',
       properties: { path: { type: 'string' } },
@@ -65,7 +71,14 @@ describe('mapToolsToMiniMax', () => {
       { name: 'read_file', description: 'Reads a file.', inputSchema: schema },
     ];
     const mapped = mapToolsToMiniMax(tools);
-    deepStrictEqual(mapped[0]?.function.parameters, schema);
+    const params = mapped[0]?.function.parameters as Record<string, unknown>;
+    equal(params['type'], 'object');
+    deepStrictEqual(params['required'], ['path']);
+    // `additionalProperties: false` is dropped — Anthropic rejects the
+    // strict form.
+    equal('additionalProperties' in params, false);
+    // Properties round-trip verbatim.
+    deepStrictEqual(params['properties'], { path: { type: 'string' } });
   });
 
   it('omits the parameters key when inputSchema is undefined', () => {

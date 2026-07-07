@@ -43,6 +43,11 @@ import type {
 } from '../../ports/minimax-client.js';
 import type { ThinkingStyle } from '../../ports/model-catalog.js';
 import { mapToolResultToMiniMax } from './tools.js';
+import {
+  applyAnthropicRequestTransform,
+  sanitizeSurrogates,
+  type AnthropicTransformWarning,
+} from './anthropic-transform.js';
 
 // Re-export the port types so the test file and any future
 // consumer can import everything the domain exports from one
@@ -139,10 +144,18 @@ export interface MessageMappingModel {
  * array is the typed errors the mapper skipped along the way.
  * The chat-provider (T07) is expected to log the warnings at
  * `warn` level and continue with `messages`.
+ *
+ * `cacheMarkers` is the list of 1-indexed positions in `messages`
+ * to receive `cache_control: { type: 'ephemeral' }` when the
+ * request is serialized for the Anthropic dialect. System messages
+ * are always cached first; these markers stamp the last 1-2 user
+ * history messages so the conversation tail is reused across
+ * requests (opencode `applyCaching` pattern).
  */
 export interface MessageMappingResult {
   readonly messages: ReadonlyArray<MiniMaxWireMessage>;
   readonly warnings: ReadonlyArray<MessageMappingError>;
+  readonly cacheMarkers: ReadonlyArray<number>;
 }
 
 /**
@@ -216,14 +229,19 @@ export function mapRequestToMiniMax(
     for (const part of msg.content) {
       sawAnyPart = true;
       if (part.type === 'text') {
-        textParts.push(part.value);
+        // Sanitize surrogate code points inline. Anthropic returns
+        // HTTP 400 for strings with unpaired UTF-16 surrogates; the
+        // most common source is VS Code tool results that include
+        // raw file / terminal / error output.
+        textParts.push(sanitizeSurrogates(part.value));
         continue;
       }
       if (part.type === 'thinking') {
         // Accumulate thinking parts to prepend to assistant messages
         // (M3 Anthropic requirement: thinking must precede text/tool_use)
         if (msg.role === 'assistant') {
-          const thinkingPart: { thinking: string; signature?: string } = { thinking: part.value };
+          const fixed = sanitizeSurrogates(part.value);
+          const thinkingPart: { thinking: string; signature?: string } = { thinking: fixed };
           if (part.signature) thinkingPart.signature = part.signature;
           thinkingParts.push(thinkingPart);
         } else {
@@ -386,13 +404,20 @@ export function mapRequestToMiniMax(
   // `toolCallId` is unknown to the assistant-history set we
   // accumulated above. Anthropic rejects these with
   // "invalid params, tool result's tool id not found" (2013);
-  // MiniMax returns the same 400. Surface a warning for each
-  // dropped result so the chat-provider can log it at warn
-  // level. The turn continues with the surviving messages.
+  // MiniMax returns the same 400. The check is unconditional:
+  // a `tool_use_id` with no matching `tool_use` is ALWAYS an
+  // orphan, regardless of whether the request happens to
+  // carry other assistant tool-calls elsewhere. Gating the
+  // pass on `assistantToolCallIds.size > 0` (the previous
+  // behavior) let a request with no assistant tool-calls but
+  // multiple tool-results slip every result through unchecked
+  // — the exact failure mode captured in
+  // error_from_console.txt. Surface a warning for each dropped
+  // result so the chat-provider can log it at warn level; the
+  // turn continues with the surviving messages.
   const reconciled: MiniMaxWireMessage[] = [];
-  const shouldReconcileToolResults = assistantToolCallIds.size > 0;
   for (const m of wireMessages) {
-    if (m.role === 'tool' && shouldReconcileToolResults) {
+    if (m.role === 'tool') {
       const callId = m.toolCallId ?? '';
       if (callId.length === 0 || !assistantToolCallIds.has(callId)) {
         warnings.push({
@@ -405,7 +430,57 @@ export function mapRequestToMiniMax(
     reconciled.push(m);
   }
 
-  return { messages: reconciled, warnings };
+  // Anthropic pre-flight: strip empty text parts / empty messages
+  // (Anthropic rejects with 400), and return the cache-control
+  // markers for the last 2 surviving messages. System messages are
+  // always hoisted out of the message list by the Anthropic
+  // serializer, so the transform works on user/assistant history
+  // only — `applyAnthropicRequestTransform` handles system
+  // separately.
+  const systemTexts: string[] = [];
+  const nonSystem: MiniMaxWireMessage[] = [];
+  for (const m of reconciled) {
+    if (m.role === 'system') {
+      const text = typeof m.content === 'string' ? m.content : extractTextFromParts(m.content);
+      if (text.length > 0) systemTexts.push(text);
+      continue;
+    }
+    nonSystem.push(m);
+  }
+  const transform = applyAnthropicRequestTransform(nonSystem, systemTexts.join('\n'));
+  for (const w of transform.warnings) {
+    const mw = anthropicWarningToMappingError(w);
+    if (mw !== undefined) warnings.push(mw);
+  }
+
+  return { messages: transform.messages, warnings, cacheMarkers: transform.cacheMarkers };
+}
+
+function anthropicWarningToMappingError(
+  w: AnthropicTransformWarning,
+): MessageMappingError | undefined {
+  if (w.kind === 'empty-part') {
+    return { kind: 'unsupported-content', reason: `anthropic: empty ${w.role} text part dropped` };
+  }
+  if (w.kind === 'empty-message') {
+    return { kind: 'empty-message', role: 'user' };
+  }
+  if (w.kind === 'surrogate-fix') {
+    return {
+      kind: 'unsupported-content',
+      reason: 'anthropic: lone surrogate code points replaced with U+FFFD',
+    };
+  }
+  return undefined;
+}
+
+function extractTextFromParts(
+  parts: ReadonlyArray<MiniMaxWireContentPart>,
+): string {
+  return parts
+    .filter((p): p is Extract<MiniMaxWireContentPart, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

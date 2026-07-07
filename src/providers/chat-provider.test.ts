@@ -345,6 +345,39 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     strictEqual(sent.tools?.length, 1);
     strictEqual(sent.tools?.[0]?.function.name, 'read_file');
     strictEqual(client.calls[0]?.apiKey, API_KEY);
+
+    // Per-model sampling parameters (opencode defaults): the M-series
+    // is tuned at temp=1.0, topP=0.95, topK=20.
+    strictEqual(sent.temperature, 1.0);
+    strictEqual(sent.topP, 0.95);
+    strictEqual(sent.topK, 20);
+    // Output token clamp (opencode OUTPUT_TOKEN_MAX).
+    strictEqual(sent.maxTokens, 32_000);
+    // M3 native thinking is opted in with `adaptive` (opencode
+    // transform.ts:680-688, 1147-1150). M3's Anthropic interface
+    // defaults thinking off; the chat-provider must opt in.
+    // `adaptive` lets the model decide its own per-request budget
+    // instead of locking it at a fraction of max_tokens.
+    ok(sent.thinking, 'expected thinking to be set for M3 on anthropic dialect');
+    if (sent.thinking) {
+      strictEqual(sent.thinking.type, 'adaptive');
+      strictEqual(
+        sent.thinking.budgetTokens,
+        undefined,
+        'adaptive thinking must not carry an explicit budgetTokens',
+      );
+    }
+    // Default M3 system prompt is sent on every M3 request.
+    ok(sent.systemPrompt, 'expected a default system prompt on M3 requests');
+    if (sent.systemPrompt) {
+      ok(
+        sent.systemPrompt.includes('coding assistant'),
+        `expected the default preamble, got: ${sent.systemPrompt}`,
+      );
+    }
+    // Cache markers: the last message in the (single-message) user
+    // history gets a cache_control stamp on the wire.
+    deepStrictEqual(sent.cacheMarkers, [1]);
   });
 
   it('maps a follow-up tool-result message into a role:tool wire message with the call id', async () => {
@@ -461,7 +494,18 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
       new vscode.CancellationTokenSource().token,
     );
 
-    strictEqual(client.calls[0]?.request.toolChoice, 'required');
+    const sent = client.calls[0]?.request;
+    ok(sent, 'request should be captured');
+    if (!sent) return;
+    strictEqual(sent.toolChoice, 'required');
+    // M2.x is NOT in the M3 thinking opt-in list — the
+    // chat-provider must NOT enable native thinking for it.
+    strictEqual(sent.thinking, undefined);
+    // M2.x still gets the per-model sampler (temp=1.0, topP=0.95,
+    // topK=40 for the M2.5 variant family per opencode defaults).
+    strictEqual(sent.temperature, 1.0);
+    strictEqual(sent.topP, 0.95);
+    strictEqual(sent.topK, 40);
   });
 
   it('throws a typed error if the API key is missing on a non-silent request', async () => {

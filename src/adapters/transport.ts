@@ -639,6 +639,7 @@ interface OpenAiRequest {
   tools?: ReadonlyArray<unknown>;
   tool_choice?: unknown;
   temperature?: number;
+  top_p?: number;
   max_tokens?: number;
 }
 
@@ -654,6 +655,9 @@ function serializeOpenAiRequest(request: MiniMaxCompletionRequest): OpenAiReques
     // MiniMax OpenAI API requires temperature in [0, 2]
     out.temperature = Math.max(0, Math.min(2, request.temperature));
   }
+  if (request.topP !== undefined) {
+    out.top_p = Math.max(0, Math.min(1, request.topP));
+  }
   if (request.maxTokens !== undefined) out.max_tokens = request.maxTokens;
   return out;
 }
@@ -668,13 +672,16 @@ function serializeOpenAiMessage(message: MiniMaxWireMessage): unknown {
 
 interface AnthropicRequest {
   model: string;
-  system?: string;
+  system?: string | ReadonlyArray<{ type: 'text'; text: string; cache_control?: unknown }>;
   messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: unknown }>;
   stream: true;
   max_tokens: number;
   tools?: ReadonlyArray<unknown>;
   tool_choice?: unknown;
   temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  thinking?: { type: 'enabled' | 'adaptive' | 'disabled'; budget_tokens?: number };
 }
 
 function serializeAnthropicRequest(request: MiniMaxCompletionRequest): AnthropicRequest {
@@ -810,9 +817,30 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
     model: request.model,
     messages,
     stream: true,
-    max_tokens: request.maxTokens ?? 4_096,
+    max_tokens: request.maxTokens ?? 32_000,
   };
-  if (systemParts.length > 0) out.system = systemParts.join('\n');
+  if (systemParts.length > 0) {
+    // System block always carries `cache_control: ephemeral` so
+    // the prefix is reused across requests. The Anthropic
+    // interface expects `system` to be a string OR a list of
+    // content blocks; the list form is required to attach
+    // `cache_control` to the system block itself.
+    out.system = [
+      {
+        type: 'text',
+        text: systemParts.join('\n'),
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+  } else if (request.systemPrompt !== undefined && request.systemPrompt.length > 0) {
+    out.system = [
+      {
+        type: 'text',
+        text: request.systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ];
+  }
   if (request.tools !== undefined && request.tools.length > 0) {
     // Convert OpenAI-format tools to Anthropic format
     out.tools = request.tools.map((t) => ({
@@ -837,6 +865,56 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
     // MiniMax Anthropic API requires temperature in [0, 2]
     out.temperature = Math.max(0, Math.min(2, request.temperature));
   }
+  if (request.topP !== undefined) {
+    out.top_p = Math.max(0, Math.min(1, request.topP));
+  }
+  if (request.topK !== undefined && request.topK > 0) {
+    out.top_k = Math.floor(request.topK);
+  }
+  if (request.thinking !== undefined) {
+    out.thinking = {
+      type: request.thinking.type,
+      ...(request.thinking.budgetTokens !== undefined
+        ? { budget_tokens: Math.floor(request.thinking.budgetTokens) }
+        : {}),
+    };
+  }
+
+  // Cache markers: stamp `cache_control: { type: 'ephemeral' }`
+  // on the last 1-2 user-history messages. The mapper's
+  // `cacheMarkers` is 1-indexed into the `messages` array (which
+  // we built above, after coalescing tool messages and hoisting
+  // out the first system message). The stamp attaches to the
+  // last text or tool_use block in the message — Anthropic only
+  // honors `cache_control` on text / image / tool_use blocks.
+  if (request.cacheMarkers !== undefined) {
+    for (const marker of request.cacheMarkers) {
+      const idx = marker - 1;
+      const msg = out.messages[idx];
+      if (msg === undefined) continue;
+      const content = msg.content;
+      if (typeof content === 'string') {
+        // Convert string content to a single text block with the
+        // cache_control marker; preserves the wire compatibility
+        // for the chat-provider.
+        msg.content = [
+          { type: 'text', text: content, cache_control: { type: 'ephemeral' } },
+        ];
+      } else if (Array.isArray(content)) {
+        // Find the last text or tool_use block. Skip image
+        // blocks (Anthropic does not honor cache_control on
+        // images).
+        for (let i = content.length - 1; i >= 0; i -= 1) {
+          const block = content[i] as { type?: unknown };
+          if (block.type === 'text' || block.type === 'tool_use') {
+            (content[i] as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+            break;
+          }
+        }
+      }
+    }
+  }
+
   return out;
 }
 

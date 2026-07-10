@@ -49,3 +49,9 @@ docs/dev/
 assets/img/mightymax_head2.png
 assets/img/mightymax_head2_inv.png
 assets/img/mighty_max_logo.png
+
+# Regeneration tools: `widen-head.py` is a fontforge script that
+# rebuilds `assets/fonts/mightymax.woff` from the pre-widened
+# version in git HEAD. It's a developer convenience for future
+# tweaks, not an extension asset.
+assets/fonts/widen-head.py

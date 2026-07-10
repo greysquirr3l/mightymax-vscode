@@ -120,6 +120,30 @@ Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3).
 Utility requests are short, tool-less completions optimized for
 quick, focused responses.
 
+#### One-click utility model configuration for BYOK agent mode
+
+When you select a MiniMax model as your main agent model, Copilot Chat
+surfaces the warning
+
+> No utility model is configured for 'copilot-utility-small' while the selected main agent model is BYOK.
+
+until `chat.byokUtilityModelDefault` (or `chat.utilityModel` +
+`chat.utilitySmallModel`) is set. Mighty Max offers a one-click fix via
+the **Mighty Max: Configure Utility Models** command (also reachable
+from the *Manage Mighty Max* QuickPick). The picker offers three
+options:
+
+- **Use MiniMax for utility tasks (recommended)** — writes
+  `chat.utilityModel = "minimax/MiniMax-M3"` and
+  `chat.utilitySmallModel = "minimax/MiniMax-M2.5"`. No extra quota;
+  usage is billed to your MiniMax account.
+- **Use the main agent model** — writes
+  `chat.byokUtilityModelDefault = "mainAgent"`. Copilot reuses the
+  MiniMax model for utility tasks.
+- **Use Copilot's models (uses Copilot quota)** — writes
+  `chat.byokUtilityModelDefault = "copilot"`. Utility tasks run on
+  Copilot's hosted models.
+
 ## What Mighty Max provides
 
 Mighty Max covers every BYOK-supported surface in VS Code Chat:

@@ -6,6 +6,36 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-09
+
+T17–T22 + extraction follow-ups. The T17–T22 sweep closed six
+production-failure modes captured in `error_from_console.txt` and
+the AGENTS.md redaction rule. This release also adds the T20
+activation-nudge UI wiring (the `decideUtilityNudge` pure helper from
+0.2.2 was already in place; this release surfaces the prompt at
+activation time) and extracts the per-event stream loop into
+`src/providers/stream-pump.ts` so `src/providers/chat-provider.ts`
+shrinks below the 900-line godfile threshold.
+
+### Fixed
+
+- **T17 — Per-model dialect routing**: `dialectForModel(entry)` is a pure domain function; M3 routes through `{baseUrl}/anthropic/v1/messages` (native thinking blocks, `cache_control`, `top_k`), every other model through `{baseUrl}/v1/chat/completions` (OpenAI-style `reasoning_content`). The OpenAI serializer was completed: system prompt injected as a leading `{role:'system',...}` message, `{type:'thinking'}` content parts stripped, `top_k` forwarded when supplied, tool schemas passed through verbatim. `sanitizeAnthropicSchema` lowering moved out of the domain mapper into `serializeAnthropicRequest` so it only fires on the Anthropic path.
+
+- **T18 — Tool-call ID fidelity (MiniMax error 2013)**: orphan tool-result messages now ADOPT rather than DROP. When a `tool_result` arrives without a matching `tool_use` earlier in the outbound message list, the mapper synthesizes a minimal assistant turn (`{role:'assistant', content:'', toolCalls:[{id, type:'function', function:{name:'unknown_tool', arguments:'{}'}}]}`) immediately before the orphan. Tool-call parts found in user-role messages are HOISTED into a synthesized assistant turn at that position instead of being discarded. IDs round-trip byte-identical for the production-shaped id (`call_function_sdx5mhd9w4lr_1`), Unicode (CJK, emoji, greek, punctuation mix, 255-char ids), and underscore-only strings. Empty-text assistant + toolCalls survives both serializers.
+
+- **T19 — Response-part correctness**: the `__minimax_usage__:${json}` chat-text leak is REMOVED; usage now logs as token-count metadata at `debug` only. Thinking parts surface via `progress.report` (using `LanguageModelDataPart` with `application/vnd.minimax.thinking+json` MIME since `LanguageModelThinkingPart` is not in `@types/vscode 1.104` stable typings). Tool-call accumulator flushes on every terminal path — `finishReason === 'tool_calls'`, `finishReason === 'stop' / 'length' / 'content_filter'` after a tool-call delta, stream-end with no finish marker (abandonment), and mid-stream transport errors. Idempotent via the empty-state guard.
+
+- **T21 — Tool filtering defaults**: smart filtering now defaults to **OFF**. `maxTools` raised to 64. `alwaysIncludeTools` switched to the real Copilot tool names with the `copilot_` prefix pin (and `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`). The pure-domain `filterTools` (`src/lib/domain/tool-filter.ts`) replaces the inline `ChatProvider.filterTools` method. History-referenced tools (already used in this request's tool_use history) are pinned automatically and cannot be silently dropped by the cap. The matcher's substring rule does NOT also fire for prefix pins (so `my_copilot_helper` is NOT falsely matched by `copilot_`).
+
+- **T22 — Logging hygiene**: `summarizeRequestForLog(request, dialect)` returns only structural keys (dialect, model, message counts by role, tool count, referenced tool-call ids, has-system / has-thinking / cache-marker presence, approximate content char-count). Never message content, never tool schemas. `summarizeErrorBody(bodyText)` parses the MiniMax error envelope as JSON and surfaces `{errorType, errorMessage, errorCode}`; falls back to `{bodyParseFailed: true}` for HTML / non-JSON bodies. All four `JSON.stringify(requestBody)` and raw `errorBody` log sites in the 400/5xx branches were rewritten to use these helpers. The sentinel-based redaction guard test plants `SENTINEL_USER_CONTENT_9f3a` in the user message + system prompt and asserts no captured log line contains message-boundary keys (`"messages":`, `"system":`).
+
+### Added
+
+- **T20 — Utility-model onboarding**: new command `mightyMax.configureUtilityModels` (and a "Configure utility models" row on the `mightyMax.manage` QuickPick) writes one of three settings with a single click. **Activation nudge** (this release) fires at most once per VS Code install: when the API key is stored AND `chat.byokUtilityModelDefault` is `'none'`/unset AND `chat.utilityModel` is unset AND the user has not previously dismissed the prompt, an information message surfaces with *Configure* / *Don't ask again* buttons. The dismissal flag persists in `globalState` (key `minimax.utilityNudgeDismissed.v1`); the prompt never reappears after either outcome.
+- **Stream-pump extraction**: the per-event `for await` consumer inside `ChatProvider.provideLanguageModelChatResponse` moved to `src/providers/stream-pump.ts` (`pumpProviderStream`). The function consumes a `MiniMaxStreamEvent` iterable, projects it onto `vscode.Progress<vscode.LanguageModelResponsePart>`, accumulates text / thinking / tool-calls, and flushes the tool-call accumulator on every terminal path (mid-stream error, any `finishReason`, stream-end with no finish marker). New tests in `src/providers/stream-pump.test.ts` lock the four T19 invariants (finish/tool_calls, finish/stop after tool-call, stream-end with no marker, mid-stream error). `chat-provider.ts` shrinks to ~720 lines, below the 900-line godfile threshold the T19 spec called out.
+
+  Closes the `No utility model is configured for 'copilot-utility-small'` error users hit the moment they select a MiniMax model as the main agent model. The pure `decideUtilityNudge` helper (the 4-condition conjunction, 8-case truth table fully tested) drives the new activation nudge.
+
 ## [0.2.1] — 2026-07-07
 
 ### Fixed

@@ -238,9 +238,7 @@ describe('Thinking pass-back', () => {
     const round2Request = client.calls[1]?.request;
     ok(round2Request, 'Round 2 request should exist');
 
-    // Log the entire request for debugging
-    console.log('\n=== Round 2 Request Messages ===');
-    console.log(JSON.stringify(round2Request.messages, null, 2));
+    // Log the entire request for debugging removed (no-console).
 
     // Find the assistant message with tool calls
     const assistantMessages = round2Request.messages.filter(m => m.role === 'assistant');
@@ -253,8 +251,7 @@ describe('Thinking pass-back', () => {
         for (const part of msg.content) {
           if (typeof part === 'object' && part !== null && 'type' in part && part.type === 'thinking') {
             foundThinking = true;
-            console.log('\n=== Found thinking block ===');
-            console.log(JSON.stringify(part, null, 2));
+            // console.log debug helper removed (no-console).
             // Verify thinking content and signature
             strictEqual((part as { thinking?: string }).thinking, THINKING_TEXT, 'Thinking content should match');
             strictEqual((part as { signature?: string }).signature, THINKING_SIG, 'Thinking signature should match');
@@ -338,9 +335,7 @@ describe('Thinking pass-back', () => {
     const round2Request = client.calls[1]?.request;
     ok(round2Request, 'Round 2 request should exist');
 
-    // Log the request to verify coalescing
-    console.log('\n=== Round 2 Request (Parallel Tools) ===');
-    console.log(JSON.stringify(round2Request.messages, null, 2));
+    // Log the request to verify coalescing removed (no-console).
 
     // Count user messages with tool_result content
     const userMessages = round2Request.messages.filter(m => m.role === 'user');

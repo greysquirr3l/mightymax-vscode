@@ -41,10 +41,11 @@ docs/dev/
 # Marketplace.
 .gitleaks.toml
 
-# Stray / untracked logo images not referenced by package.json
-# `icon`, the README, or the CHANGELOG. mighty_max_logo_readme.png
-# is a candidate for cleanup once the README is updated; the head2
-# files are local variants that should never ship.
+# Logo variants not referenced by package.json `icon`, the README, or
+# the CHANGELOG. `mighty_max_logo.png` (8.9 MB) was the prior hero
+# image; the README now points at the lighter
+# `mighty_max_logo_readme.png` (145 kB) so the heavy variant should
+# never ship. The head2 PNGs are local inverted variants.
 assets/img/mightymax_head2.png
 assets/img/mightymax_head2_inv.png
-assets/img/mighty_max_logo_readme.png
+assets/img/mighty_max_logo.png

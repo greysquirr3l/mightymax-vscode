@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-07-10
+
 T27 — Token Plan usage indicator. Surfaces the MiniMax Token Plan
 quota bar as a right-side status-bar item backed by a typed error
 model, so PAYG keys and network failures stay neutral instead of
@@ -54,6 +56,15 @@ left.
   is not on the `.vscodeignore` deny list, so `vsce package` ships
   the font alongside the existing `assets/img/mighty_max_head.png`
   marketplace icon.
+
+### Changed
+
+- **README logo**: the hero `<img>` now points at
+  `assets/img/mighty_max_logo_readme.png` (145 kB) instead of
+  `mighty_max_logo.png` (8.9 MB). Speeds Marketplace preview
+  render and shaves ~8.7 MB off the README payload weight. The
+  larger PNG is still in the repo but is now `.vscodeignore`-listed
+  so it doesn't ship in the .vsix.
 
 ## [0.2.2] — 2026-07-09
 

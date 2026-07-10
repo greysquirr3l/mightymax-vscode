@@ -5,6 +5,8 @@ import { MiniMaxClientAdapter } from './adapters/transport.js';
 import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
 import { runManageCommand, type ManageUi } from './commands/manage-command.js';
+import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
+import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -106,6 +108,22 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
       });
     }),
+    vscode.commands.registerCommand('mightyMax.configureUtilityModels', () => {
+      logger.info('Mighty Max configure-utility-models command invoked');
+      const ui = createVsCodeUi();
+      return runConfigureUtilityModelsCommand({
+        logger,
+        ui,
+        getConfig: () => ({
+          update: (key, value) =>
+            Promise.resolve(
+              vscode.workspace
+                .getConfiguration()
+                .update(key, value, vscode.ConfigurationTarget.Global),
+            ),
+        }),
+      });
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('mightyMax.logLevel')) {
         const next = vscode.workspace.getConfiguration('mightyMax').get<unknown>('logLevel');
@@ -126,6 +144,60 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   logger.info('Mighty Max extension activated', { vendor: 'minimax', baseUrl: baseUrl() });
+
+  // T20 activation nudge — fires at most once after activation
+  // when an API key is stored and the BYOK utility settings are
+  // not yet configured. The predicate is pure (domain); this
+  // block only carries the UI / persistence wiring. The nudge
+  // never blocks activation: we let it resolve in the
+  // background and never await it from the activation path.
+  void runUtilityNudge({
+    getByokDefault: () => {
+      const v = vscode.workspace
+        .getConfiguration()
+        .get<string>('chat.byokUtilityModelDefault');
+      return typeof v === 'string' ? v : undefined;
+    },
+    getUtilityModel: () => {
+      const v = vscode.workspace
+        .getConfiguration()
+        .get<string>('chat.utilityModel');
+      return typeof v === 'string' ? v : undefined;
+    },
+    hasApiKey: async () => secretStore.hasSecret('apiKey'),
+    globalState: context.globalState,
+    logger,
+    showInformationMessage: async (message, options) => {
+      // Map VS Code's localized label back to our discriminated
+      // union. The vscode API returns the localized button label
+      // (or undefined for dismiss-by-close); we reconstruct the
+      // discriminated union so the utility-nudge module never has
+      // to know about VS Code's button-label API.
+      const picked = await vscode.window.showInformationMessage(
+        message,
+        options.configure,
+        options.dismiss,
+      );
+      if (picked === options.dismiss) return 'dismiss';
+      if (picked === options.configure) return 'configure';
+      return undefined;
+    },
+    runConfigure: () => {
+      const ui = createVsCodeUi();
+      return runConfigureUtilityModelsCommand({
+        logger,
+        ui,
+        getConfig: () => ({
+          update: (key, value) =>
+            Promise.resolve(
+              vscode.workspace
+                .getConfiguration()
+                .update(key, value, vscode.ConfigurationTarget.Global),
+            ),
+        }),
+      });
+    },
+  });
 }
 
 export function deactivate(): void {

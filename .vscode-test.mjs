@@ -16,7 +16,12 @@ export default defineConfig([
     // VS Code host. The src/lib/no-vscode.test.ts static guard enforces
     // that the domain layer stays framework-free; adapter tests
     // intentionally import HTTP modules.
-    files: ['out/lib/**/*.test.js', 'out/adapters/**/*.test.js'],
+    files: [
+      'out/lib/**/*.test.js',
+      'out/adapters/**/*.test.js',
+      'out/commands/**/*.test.js',
+      'out/providers/**/*.test.js',
+    ],
     mocha: {
       // BDD: the test files use `describe`/`it`/`beforeEach`/`afterEach`,
       // which only register with mocha under the BDD interface. The TDD

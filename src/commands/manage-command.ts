@@ -1,6 +1,7 @@
 import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
 import { validateApiKey } from '../adapters/api-key-validator.js';
+import { runConfigureUtilityModelsCommand } from './configure-utility-models.js';
 
 /**
  * runManageCommand — orchestrates the `mightyMax.manage` QuickPick UI.
@@ -77,7 +78,14 @@ const PICK_ITEMS: readonly ManagePickItem[] = [
   },
   { label: 'Test connection', description: 'Validate the currently-stored API key' },
   { label: 'Clear API key', description: 'Remove the stored MiniMax API key' },
+  {
+    label: 'Configure utility models',
+    description: 'Fix the BYOK "no utility model configured" error',
+  },
 ] as const;
+
+/** Subset of PICK_ITEMS handled inline (the rest delegate out). */
+type InlinePick = 'Set API key' | 'Set base URL' | 'Test connection' | 'Clear API key';
 
 function pickByLabel(label: string): ManagePickItem {
   const found = PICK_ITEMS.find((p) => p.label === label);
@@ -105,8 +113,13 @@ export async function runManageCommand(deps: ManageDeps): Promise<void> {
     await handleTestConnection(deps);
   } else if (choice.label === pickByLabel('Clear API key').label) {
     await handleClearApiKey(deps);
+  } else if (choice.label === pickByLabel('Configure utility models').label) {
+    await handleConfigureUtilityModels(deps);
   }
 }
+
+/** Inline pick labels excluding "Configure utility models" (delegated). */
+export type InlinePickLabel = InlinePick;
 
 async function handleSetApiKey(deps: ManageDeps): Promise<void> {
   const key = await deps.ui.showInputBox({
@@ -229,6 +242,30 @@ async function handleClearApiKey(deps: ManageDeps): Promise<void> {
   deps.logger.info('Manage command: API key cleared');
   deps.fireChange();
   await deps.ui.showInfoMessage('API key cleared.');
+}
+
+/**
+ * T20: routes the "Configure utility models" pick into the dedicated
+ * configure-utility-models command. Reuses the same `ManageUi` shim
+ * via `as unknown as ConfigureUtilityUi` — both interfaces are
+ * structurally identical at the call sites we use here, so the
+ * cast is sound and keeps the manage-command module free of new
+ * UI fields.
+ */
+async function handleConfigureUtilityModels(deps: ManageDeps): Promise<void> {
+  deps.logger.info('Manage command: routing to configure-utility-models');
+  await runConfigureUtilityModelsCommand({
+    logger: deps.logger,
+    ui: deps.ui as unknown as Parameters<typeof runConfigureUtilityModelsCommand>[0]['ui'],
+    getConfig: () => ({
+      update: async (key, value) => {
+        if (!deps.getConfig) {
+          throw new Error('Manage command: getConfig is not wired');
+        }
+        return deps.getConfig().update(key, value);
+      },
+    }),
+  });
 }
 
 // Internal export for tests that want to drive the per-flow helpers

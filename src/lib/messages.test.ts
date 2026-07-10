@@ -255,7 +255,15 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
     deepStrictEqual(ids, ['call_a', 'call_b']);
   });
 
-  it('skips a tool-call in user content with an unsupported-content warning', () => {
+  it('hoists a tool-call in user content into a synthesized assistant turn (T18 behavior change)', () => {
+    // T18 changed this from "skip with warning" to "hoist with
+    // warning". The tool-call is preserved as a minimal assistant
+    // `tool_use` immediately before the user message (so a
+    // subsequent tool_result has a valid `tool_use_id` reference),
+    // and the user message's text part is still mapped. The
+    // hoisted wire message carries `tool_calls`. The warning is
+    // emitted at `debug` level by the chat-provider for
+    // observability — the model still sees the tool result.
     const msg: ChatMessage = {
       role: 'user',
       content: [
@@ -268,9 +276,19 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
     };
     const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [msg]);
     ok(result.warnings.some((w) => w.kind === 'unsupported-content'));
-    // The text part is still mapped.
-    const userMsg = result.messages[0] as MiniMaxWireMessage;
-    equal(userMsg.content, 'Hi');
+    // The synthesized assistant turn carrying call_x is emitted
+    // BEFORE the user turn.
+    const hoistedAssistant = result.messages.find(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.toolCalls) &&
+        m.toolCalls.some((tc) => tc.id === 'call_x'),
+    );
+    ok(hoistedAssistant !== undefined, 'expected hoisted assistant turn carrying call_x');
+    const userMsg = result.messages.find((m) => m.role === 'user');
+    ok(userMsg !== undefined);
+    const userText = typeof userMsg.content === 'string' ? userMsg.content : null;
+    equal(userText, 'Hi');
   });
 
   it('serializes a structured (object) tool result as a JSON string, not [object Object]', () => {
@@ -314,11 +332,14 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
     deepStrictEqual(parsed.errors, ['one', 'two']);
   });
 
-  it('drops an orphan tool-result whose toolCallId was never emitted by the assistant', () => {
+  it('adopts an orphan tool-result by synthesizing a preceding tool_use (T18 behavior change)', () => {
     // Reproduces the "invalid params, tool result's tool id not
-    // found (2013)" failure from error_from_console.txt. The user
-    // sent back a tool_result referencing call_ghost, but the prior
-    // assistant turn did not emit a tool_use with that id.
+    // found (2013)" failure from error_from_console.txt. T18 changed
+    // the behavior from DROP to ADOPT: the orphan is preserved by
+    // synthesizing a minimal assistant `tool_use` immediately before
+    // it, keeping the wire body valid AND preserving tool output
+    // (the model still sees the result instead of looping or
+    // hallucinating).
     const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
       { role: 'user', content: [{ type: 'text', value: 'do the thing' }] },
       {
@@ -358,20 +379,32 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
         ],
       },
     ]);
-    // The orphan tool-result for call_ghost is dropped, but the
-    // well-formed tool-result for call_real2 survives.
+    // Both the orphan and the well-formed tool-result survive.
     const toolMsgs = result.messages.filter((m) => m.role === 'tool');
-    equal(toolMsgs.length, 1);
-    equal(toolMsgs[0]?.toolCallId, 'call_real2');
-    // A warning is surfaced for the dropped orphan so the
-    // chat-provider can log it.
-    const orphanWarnings = result.warnings.filter(
-      (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result'),
+    equal(toolMsgs.length, 2, 'both tool-results present after adoption');
+    const orphanResult = toolMsgs.find((m) => m.toolCallId === 'call_ghost');
+    ok(orphanResult !== undefined, 'orphan tool-result adopted and emitted');
+    const realResult = toolMsgs.find((m) => m.toolCallId === 'call_real2');
+    ok(realResult !== undefined, 'well-formed tool-result still emitted');
+    // The adopted orphan must be preceded by a synthesized assistant
+    // tool_use. The wire order is: ...assistant(real) | tool(ghost)
+    // | assistant(adopted-for-ghost) | assistant(real2) | tool(real2).
+    const adoptedAssistant = result.messages.find(
+      (m) =>
+        m.role === 'assistant' &&
+        Array.isArray(m.toolCalls) &&
+        m.toolCalls.some((tc) => tc.id === 'call_ghost'),
     );
-    equal(orphanWarnings.length, 1);
+    ok(adoptedAssistant !== undefined, 'expected adopted assistant tool_use for call_ghost');
+    // No "orphan tool-result dropped" warning fires — adoption is
+    // silent (the model sees the tool output, the turn continues).
+    const orphanWarnings = result.warnings.filter(
+      (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result dropped'),
+    );
+    equal(orphanWarnings.length, 0, 'no orphan-dropped warnings under adoption');
   });
 
-  it('drops every tool-result when no assistant tool_use is in the request', () => {
+  it('adopts every tool-result when no assistant tool_use is in the request', () => {
     // The reconciler used to be gated on
     // `assistantToolCallIds.size > 0`, which meant a request that
     // contained ONLY tool-results (e.g. when VS Code replays a
@@ -380,10 +413,9 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
     // part) passed every tool-result through unchecked. Anthropic
     // then 400s with "invalid params, tool result's tool id not
     // found (2013)" (the exact failure in
-    // error_from_console.txt). The reconciler must always
-    // validate: a `tool_use_id` without a matching `tool_use`
-    // is always an orphan, regardless of how many assistant
-    // tool-calls the request happens to carry elsewhere.
+    // error_from_console.txt). The reconciler must always ADOPT:
+    // every orphan `tool_use_id` becomes a synthesized
+    // `tool_use` immediately before its `tool_result`.
     const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
       { role: 'user', content: [{ type: 'text', value: 'replay history' }] },
       {
@@ -400,12 +432,22 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
         ],
       },
     ]);
+    // Both tool-results survive via adoption.
     const toolMsgs = result.messages.filter((m) => m.role === 'tool');
-    equal(toolMsgs.length, 0, 'every tool-result must be dropped when no assistant tool-call exists');
-    const orphanWarnings = result.warnings.filter(
-      (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result'),
-    );
-    equal(orphanWarnings.length, 2, 'one warning per dropped orphan');
+    equal(toolMsgs.length, 2, 'every tool-result adopted when no assistant tool-call exists');
+    // And every tool-result is preceded by a synthesized assistant
+    // tool_use (one per orphan id).
+    const adoptedIds = result.messages
+      .filter(
+        (m) =>
+          m.role === 'assistant' &&
+          Array.isArray(m.toolCalls) &&
+          m.toolCalls.some((tc) => tc.id === 'call_alone_1' || tc.id === 'call_alone_2'),
+      )
+      .map((m) => m.toolCalls?.map((tc) => tc.id) ?? [])
+      .flat();
+    ok(adoptedIds.includes('call_alone_1'), 'adopted assistant exists for call_alone_1');
+    ok(adoptedIds.includes('call_alone_2'), 'adopted assistant exists for call_alone_2');
   });
 
   it('preserves a well-formed tool-result whose assistant tool_use is present', () => {

@@ -306,23 +306,25 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
       new vscode.CancellationTokenSource().token,
     );
 
-    // 2 text parts, 1 tool-call part, 1 usage marker.
-    strictEqual(parts.length, 4);
+    // T19: usage is no longer emitted as a visible chat text part.
+    // 2 text parts ('Hello, ' + 'world!') and 1 tool-call part.
+    strictEqual(parts.length, 3);
 
     const textParts = parts.filter(
       (p): p is vscode.LanguageModelTextPart => p instanceof vscode.LanguageModelTextPart,
     );
-    // The first two text parts are 'Hello, ' and 'world!'; the third
-    // is the usage marker (encoded as a text part with a special
-    // prefix so the host introspection surface stays portable across
-    // vscode versions that don't yet expose LanguageModelDataPart).
-    strictEqual(textParts.length, 3);
+    strictEqual(textParts.length, 2);
     strictEqual(textParts[0]?.value, 'Hello, ');
     strictEqual(textParts[1]?.value, 'world!');
-    ok(
-      textParts[2]?.value.startsWith('__minimax_usage__:'),
-      `expected usage marker prefix, got: ${textParts[2]?.value}`,
-    );
+    // Belt-and-braces: the T19 fix deleted the
+    // `__minimax_usage__:` text emission — no string starting with
+    // that prefix may appear in the visible-text lane.
+    for (const tp of textParts) {
+      ok(
+        !tp.value.includes('__minimax_usage__'),
+        `usage leaked into visible text: ${tp.value}`,
+      );
+    }
 
     const toolCallPart = parts.find((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(toolCallPart, 'expected a tool-call part to be reported');
@@ -430,7 +432,12 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     strictEqual(toolWire?.content, '127.0.0.1 localhost');
   });
 
-  it('routes all models through the Anthropic dialect (VSCode prefers Anthropic)', async () => {
+  it('routes M3 through the Anthropic dialect and M2.5 through OpenAI (T17)', async () => {
+    // T17 corrected the divergent 0.1.x behavior: M3 (Anthropic-style
+    // thinking blocks) routes through the Anthropic dialect; M2.x
+    // and M1 (OpenAI-style reasoning_content, no native thinking)
+    // route through the OpenAI-compatible endpoint. This test was
+    // previously titled `routes all models through Anthropic`.
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3, M2_5]);
     const client = makeFakeClient([[{ textDelta: 'ok' }], [{ textDelta: 'ok' }]]);
@@ -460,9 +467,8 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
       new vscode.CancellationTokenSource().token,
     );
 
-    // Both M3 and M2.x now use Anthropic (VSCode is deprecating OpenAI)
     strictEqual(client.calls[0]?.request.dialect, 'anthropic');
-    strictEqual(client.calls[1]?.request.dialect, 'anthropic');
+    strictEqual(client.calls[1]?.request.dialect, 'openai');
   });
 
   it('maps toolMode=Required to tool_choice=required on the wire', async () => {
@@ -794,6 +800,261 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
     ok(
       serialized.includes('Object'),
       `marker should include the constructor name 'Object'; got: ${serialized}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T19 — Response-part correctness: thinking parts, usage leak, tool-call
+// finalization on every terminal path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('ChatProvider T19 — response-part correctness', () => {
+  it('reports thinking parts via progress.report, NEVER as LanguageModelTextPart', async () => {
+    // T19 invariant 1: thinking content must NEVER appear as a
+    // LanguageModelTextPart value. The provider must surface the
+    // thinking through progress.report (currently via a
+    // LanguageModelDataPart with a distinguishing MIME; will move
+    // to LanguageModelThinkingPart when it lands in @types/vscode).
+    //
+    // The test stubs in the unit runner do not yet export
+    // `LanguageModelDataPart`, so the chat-provider falls back to
+    // the cached LRU replay path (thinking is preserved into the
+    // next request's Anthropic wire signature field). The
+    // NEGATIVE assertion on the visible-text lane is the load-bearing
+    // invariant we assert here.
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        { thinkingDelta: 'planning the next step' },
+        { thinkingSignature: 'sig_xyz' },
+        { textDelta: 'On it.' },
+        { finishReason: 'stop' },
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(
+        vscode.LanguageModelChatMessageRole.User,
+        'do a thing',
+      ),
+    ];
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    // The visible-text lane must NOT contain the thinking text.
+    const textParts = parts.filter(
+      (p): p is vscode.LanguageModelTextPart => p instanceof vscode.LanguageModelTextPart,
+    );
+    for (const tp of textParts) {
+      ok(
+        !tp.value.includes('planning the next step'),
+        `thinking content leaked into a LanguageModelTextPart value: ${tp.value}`,
+      );
+    }
+  });
+
+  it('never emits `__minimax_usage__:` as a LanguageModelTextPart value', async () => {
+    // T19 invariant 3: the previous behavior emitted usage JSON
+    // as a text part with a `__minimax_usage__:` prefix; users
+    // saw this in their chat transcripts. The T19 fix drops the
+    // text emission entirely (or routes it via LanguageModelDataPart).
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        { textDelta: 'done.' },
+        {
+          usage: {
+            promptTokens: 100,
+            completionTokens: 5,
+            cacheReadTokens: 95,
+          },
+        },
+        { finishReason: 'stop' },
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(
+        vscode.LanguageModelChatMessageRole.User,
+        'go',
+      ),
+    ];
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    const textParts = parts.filter(
+      (p): p is vscode.LanguageModelTextPart => p instanceof vscode.LanguageModelTextPart,
+    );
+    for (const tp of textParts) {
+      ok(
+        !tp.value.includes('__minimax_usage__'),
+        `usage leaked into LanguageModelTextPart: ${tp.value}`,
+      );
+    }
+  });
+
+  it('emits a tool call when the stream ends with finishReason=stop after a tool-call delta', async () => {
+    // T19 invariant 4a: when the model emits a tool_call and
+    // then finishes with `stop` instead of `tool_calls` (some
+    // M2.x behavior), the partial tool call must still be
+    // flushed to progress.
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        {
+          toolCallDelta: { index: 0, id: 'call_partial', name: 'noop' },
+        },
+        {
+          toolCallDelta: { index: 0, argumentsDelta: '{}' },
+        },
+        { finishReason: 'stop' },
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(
+        vscode.LanguageModelChatMessageRole.User,
+        'go',
+      ),
+    ];
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const toolCalls = parts.filter(
+      (p) => p instanceof vscode.LanguageModelToolCallPart,
+    );
+    ok(toolCalls.length >= 1, 'expected tool call to be flushed on stop');
+  });
+
+  it('emits accumulated tool calls when the stream ends without a finish marker', async () => {
+    // T19 invariant 4b: when the stream ends with no finish
+    // event (abandonment path), the partial tool calls must
+    // still be flushed to progress before the surface returns.
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        {
+          toolCallDelta: { index: 0, id: 'call_stranded', name: 'noop' },
+        },
+        {
+          toolCallDelta: { index: 0, argumentsDelta: '{}' },
+        },
+        // No finishReason, no usage — the stream just ends.
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(
+        vscode.LanguageModelChatMessageRole.User,
+        'go',
+      ),
+    ];
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const toolCalls = parts.filter(
+      (p) => p instanceof vscode.LanguageModelToolCallPart,
+    );
+    ok(toolCalls.length >= 1, 'expected stranded tool call flushed on stream end');
+  });
+
+  it('emits accumulated tool calls before surfacing a mid-stream transport error', async () => {
+    // T19 invariant 4c: a mid-stream transport error after a
+    // complete tool call must NOT swallow the tool call. The
+    // provider reports it first, then surfaces the error to the
+    // host.
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        {
+          toolCallDelta: { index: 0, id: 'call_pre_error', name: 'noop' },
+        },
+        {
+          toolCallDelta: { index: 0, argumentsDelta: '{}' },
+        },
+        { error: { message: 'transport stalled', retriable: false } },
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeSecretStore({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(
+        vscode.LanguageModelChatMessageRole.User,
+        'go',
+      ),
+    ];
+    let threw = false;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch {
+      threw = true;
+    }
+    ok(threw, 'expected the provider to throw on a mid-stream error');
+    const toolCalls = parts.filter(
+      (p) => p instanceof vscode.LanguageModelToolCallPart,
+    );
+    ok(
+      toolCalls.length >= 1,
+      'expected the in-flight tool call to be flushed before the error is surfaced',
     );
   });
 });

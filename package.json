@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -44,6 +44,11 @@
         "command": "mightyMax.manage",
         "title": "Manage Mighty Max (Set API Key)",
         "category": "Mighty Max"
+      },
+      {
+        "command": "mightyMax.configureUtilityModels",
+        "title": "Mighty Max: Configure Utility Models",
+        "category": "Mighty Max"
       }
     ],
     "languageModelChatProviders": [
@@ -76,32 +81,32 @@
         },
         "mightyMax.enableSmartToolFiltering": {
           "type": "boolean",
-          "default": true,
-          "description": "Enable smart tool filtering to work around M3's limitations with large tool sets (80+ tools). When enabled, only the most relevant tools are sent to the model based on your prompt and usage history.",
+          "default": false,
+          "description": "OPT-IN: enable smart tool filtering to work around provider-side tool caps. When enabled, only the most relevant tools (plus a pin list of built-ins and history-referenced tools) are sent to the model. The default is OFF — the full VS Code tool set is forwarded verbatim so agent-mode has every tool the chat UI exposes.",
           "scope": "window"
         },
         "mightyMax.maxTools": {
           "type": "number",
-          "default": 30,
+          "default": 64,
           "minimum": 5,
           "maximum": 100,
-          "description": "Maximum number of tools to send to the model when smart filtering is enabled. M3 works best with 20-40 tools. Set higher if you have a small tool set or want to disable the limit.",
+          "description": "Maximum number of tools to send to the model when smart filtering is enabled. M3 handles 64 cleanly; Copilot Chat's virtual-tool grouper handles larger sets at the chat-UI level, not here. Lower this if your provider enforces a smaller cap.",
           "scope": "window"
         },
         "mightyMax.alwaysIncludeTools": {
           "type": "array",
           "default": [
-            "read_file",
-            "write_file",
-            "edit_file",
-            "bash",
-            "grep",
-            "glob"
+            "copilot_",
+            "run_in_terminal",
+            "apply_patch",
+            "grep_search",
+            "file_search",
+            "semantic_search"
           ],
           "items": {
             "type": "string"
           },
-          "description": "Tool names that should always be included regardless of relevance scoring. Common file and code operations are included by default.",
+          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically.",
           "scope": "window"
         },
         "mightyMax.toolFilterStrategy": {

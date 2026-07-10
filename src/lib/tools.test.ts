@@ -54,16 +54,27 @@ describe('mapToolsToMiniMax', () => {
     equal(mapped[0]?.function.description, 'Reads a file from disk.');
   });
 
-  it('lowers Anthropic-incompatible schema keywords before serializing', () => {
-    // VS Code tool schemas from extensions / MCP servers ship keywords
-    // Anthropic rejects (`const`, tuple `items`, `additionalProperties:
-    // false`, `$ref` siblings). The domain runs every inputSchema
-    // through `sanitizeAnthropicSchema` before serializing so a tool
-    // definition that uses these keywords does not cause a 400 from
-    // the upstream.
+  it('passes tool schemas through verbatim (lowering happens at the Anthropic serializer boundary only)', () => {
+    // T17 split the role: the domain mapper preserves the VS Code-style
+    // schema shape (so the same `MiniMaxToolDefinition` array can be
+    // serialized to either the Anthropic or OpenAI wire), and the
+    // Anthropic serializer (`src/adapters/transport.ts`)
+    // `sanitizeAnthropicSchema`-lowers the schema right before the
+    // Anthropic request is constructed. The OpenAI-compatible endpoint
+    // accepts the lowered shapes too, so cross-dialect calls don't
+    // need a separate schema pass.
+    //
+    // The lowering-specific regression test lives in
+    // `src/adapters/transport.test.ts` under "Anthropic dialect body
+    // shape (regression)". Here we assert that `mapToolsToMiniMax`
+    // does NOT lower — `additionalProperties: false`, `const`,
+    // boolean sub-schemas, etc. all survive verbatim.
     const schema = {
       type: 'object',
-      properties: { path: { type: 'string' } },
+      properties: {
+        path: { type: 'string' },
+        mode: { const: 'strict' },
+      },
       required: ['path'],
       additionalProperties: false,
     };
@@ -72,13 +83,7 @@ describe('mapToolsToMiniMax', () => {
     ];
     const mapped = mapToolsToMiniMax(tools);
     const params = mapped[0]?.function.parameters as Record<string, unknown>;
-    equal(params['type'], 'object');
-    deepStrictEqual(params['required'], ['path']);
-    // `additionalProperties: false` is dropped — Anthropic rejects the
-    // strict form.
-    equal('additionalProperties' in params, false);
-    // Properties round-trip verbatim.
-    deepStrictEqual(params['properties'], { path: { type: 'string' } });
+    deepStrictEqual(params, schema);
   });
 
   it('omits the parameters key when inputSchema is undefined', () => {

@@ -29,32 +29,35 @@ All settings are in the VS Code Settings UI under "Mighty Max" or in `settings.j
 ### `mightyMax.maxTools`
 
 - **Type**: Number
-- **Default**: `30`
+- **Default**: `64`
 - **Range**: 5-100
-- **Description**: Maximum tools to send when filtering is enabled. M3 works best with 20-40 tools.
+- **Description**: Maximum tools to send when filtering is enabled. M3 handles 64 cleanly. Copilot Chat's virtual-tool grouper handles larger sets at the chat-UI level, not here.
 
 ### `mightyMax.alwaysIncludeTools`
 
 - **Type**: Array of strings
-- **Default**: `["read_file", "write_file", "edit_file", "bash", "grep", "glob"]`
-- **Description**: Tool names that are always included regardless of scoring. Common file/code operations included by default.
-
-### `mightyMax.toolFilterStrategy`
-
-- **Type**: Enum
-- **Default**: `"hybrid"`
-- **Options**:
-  - `"relevance"`: Filter based on keyword matching with current prompt
-  - `"usage"`: Filter based on historical call frequency
-  - `"hybrid"`: Combine relevance (60%) and usage (40%) scoring
+- **Default**: `["copilot_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search"]`
+- **Description**: Tools to keep regardless of relevance scoring. Supports three match modes:
+  - **Exact**: `"run_in_terminal"` matches the tool whose `.name === "run_in_terminal"`.
+  - **Prefix**: `"copilot_"` matches any tool whose `.name` STARTS with `"copilot_"`. Captures every Copilot Chat built-in (renames don't rot the pin).
+  - **Substring**: A pin without a trailing `_` matches any tool containing it as a fragment (e.g. `"grep"` matches `grep_search`, `grep_file_contents`).
+- Tools referenced by the current request's `tool_use` / `tool_result` history are pinned automatically and cannot be silently dropped by the cap.
 
 ## How It Works
 
-### 1. Priority Tools (Always Included)
+### 1. Filtering OFF by default
 
-Tools in `alwaysIncludeTools` are sent first, regardless of relevance. This ensures core functionality (file operations, bash) is always available.
+`enableSmartToolFiltering` ships at `false`. The full VS Code tool set is forwarded verbatim so agent-mode has every tool the chat UI exposes. Enable the setting only when your provider enforces a smaller cap than the request needs.
 
-### 2. Relevance Scoring (0-1 scale)
+### 2. Priority Tools (Always Included)
+
+Tools matched by `alwaysIncludeTools` (exact / prefix / substring), PLUS every tool referenced by the current request's `tool_use` / `tool_result` history, are sent first regardless of the cap. The history pin is what stops the filter from silently dropping in-flight tool calls mid agent-loop — the failure mode this feature was rebuilt to prevent.
+
+### 3. Cap enforcement
+
+After pinning, the remaining budget (`maxTools - pinnedCount`) is filled with the first-N tools in the order VS Code passed them in. Order is stable, so the model sees the same tools every turn at the same cap.
+
+
 
 For each remaining tool, score is calculated based on:
 

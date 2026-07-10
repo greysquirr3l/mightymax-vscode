@@ -104,6 +104,35 @@ The API key never lives in settings — it is stored exclusively in
 `context.secrets` (SecretStorage) and entered through the
 `Mighty Max: Manage` command.
 
+## Token plan usage indicator
+
+Once a Subscription Key is stored, Mighty Max adds a status-bar item
+on the right side (the Mighty Max aviator glyph) that mirrors the
+MiniMax console's Token Plan usage bar. The icon stays neutral until
+the first successful fetch, then renders the binding constraint
+across the 5-hour and weekly windows:
+
+- **0–79%** — neutral foreground
+- **80–99%** — warning tint
+- **100%** — error tint (the console also pauses requests at 100%)
+
+Hover for a tooltip with per-window usage bars and reset times; click
+(or run **Mighty Max: Show MiniMax Usage**) to open a compact panel
+with the same data, a refresh button, and a collapsible raw-response
+disclosure that helps diagnose schema drift.
+
+The indicator refreshes every 5 minutes. Switching the API key via
+**Mighty Max: Manage** triggers an out-of-band refresh so the new
+quota shows immediately. Pay-as-you-go keys don't have a Token Plan
+bar — the adapter catches the 4xx and the status bar stays neutral
+with a "click for details" tooltip, never a red icon.
+
+The endpoint is `GET https://www.minimax.io/v1/token_plan/remains`
+and is unauthenticated from MiniMax's published schema standpoint —
+it requires only the Subscription Key as a Bearer token. The same
+endpoint is consumed by the opencode TUI usage display, so the
+schema interpretation is battle-tested in production.
+
 ### Utility model (commit messages, doc generation)
 
 MiniMax models can serve as VS Code's utility model for commit message
@@ -212,13 +241,17 @@ disable sourcemaps.
 ```
 src/
   extension.ts                 # composition root
-  ports/                       # port interfaces (Logger, SecretStore, MiniMaxClient, ModelCatalog)
-  adapters/                    # port implementations (I/O lives here)
+  ports/                       # port interfaces (Logger, SecretStore, MiniMaxClient, ModelCatalog, UsageClient)
+  adapters/                    # port implementations (I/O lives here; StatusBarAdapter + UsageTransportAdapter for the usage panel)
   providers/                   # VS Code LanguageModelChatProvider
+  commands/                    # command handlers (manage, configure-utility-models, show-usage)
   lib/                         # domain layer (no vscode, no HTTP)
-    domain/                    # pure catalog, mapping, capability rules
+    domain/                    # pure catalog, mapping, capability, usage-normalization rules
     *.test.ts                  # unit tests (vanilla mocha, no host)
   test/                        # integration tests (run in the VS Code host)
+assets/
+  fonts/mightymax.woff         # status-bar glyph (PUA codepoint, contributed via `contributes.icons`)
+  img/mightymax-glyph.svg      # source vector for regenerating the .woff
 ```
 
 ## License

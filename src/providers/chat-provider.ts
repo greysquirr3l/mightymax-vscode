@@ -22,19 +22,17 @@ import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
-import { toLanguageModelTextPart, toLanguageModelToolCallPart } from '../ports/message-mapping.js';
+
+import { mapRequestToMiniMax, isMessageMappingError } from '../lib/domain/messages.js';
+import { dialectForModel } from '../lib/domain/dialect.js';
 import {
-  mapRequestToMiniMax,
-  mapStreamDeltaToResponseParts,
-  isMessageMappingError,
-} from '../lib/domain/messages.js';
+  filterTools,
+  type ToolFilterConfig,
+} from '../lib/domain/tool-filter.js';
+import { pumpProviderStream } from './stream-pump.js';
 import {
   mapToolsToMiniMax,
   mapToolModeToChoice,
-  accumulatorSeed,
-  accumulateToolCallDelta,
-  finalizeAccumulator,
-  isToolSchemaError,
 } from '../lib/domain/tools.js';
 import {
   getMaxTokensForModel,
@@ -165,11 +163,10 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Inject cached thinking blocks into assistant messages
     const enrichedMessages = this.enrichWithThinking(domainMessages, model.id);
 
-    // Get model info from catalog to determine thinking style
+    // Get model info from catalog to determine thinking style + dialect
     const modelInfo = await this.catalog.getModel(model.id);
     const thinkingStyle: ThinkingStyle = modelInfo?.thinkingStyle ?? 'openai';
-    // VSCode is deprecating the OpenAI method; always use Anthropic dialect
-    const dialect = 'anthropic';
+    const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
     // Map messages to MiniMax wire format (model first, then messages)
     const mappingResult = mapRequestToMiniMax({ id: model.id, thinkingStyle }, enrichedMessages);
@@ -184,18 +181,27 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Map tools to MiniMax format with smart filtering
     const allTools = options.tools?.map(vscodeToDomainTool) ?? [];
 
-    // Extract user prompt for relevance scoring
-    const userPrompt = messages
-      .filter(m => m.role === vscode.LanguageModelChatMessageRole.User)
-      .map(m => {
-        const content = typeof m.content === 'string' ? m.content :
-          m.content.map(p => p instanceof vscode.LanguageModelTextPart ? p.value : '').join(' ');
-        return content;
-      })
-      .join(' ');
-
-    // Apply smart filtering if configured
-    const tools = this.filterTools(allTools, userPrompt);
+    // Apply smart filtering if configured (T21). The pure
+    // decision lives in `src/lib/domain/tool-filter.ts`; the
+    // provider feeds it: (1) the resolved config, (2) the names
+    // of tools already referenced by this request's tool_use /
+    // tool_result history (so the model's in-flight tool calls
+    // cannot be silently dropped by the cap). The response tells
+    // us which tools to keep; the dropped list is logged with
+    // names only — never schemas — per AGENTS.md redaction rules.
+    const filterConfig = readToolFilterConfig();
+    const historyToolNames = collectHistoryReferencedToolNames(messages);
+    const filterDecision = filterTools(allTools, historyToolNames, filterConfig);
+    const keptTools = filterDecision.kept
+      .map((name) => allTools.find((t) => t.name === name))
+      .filter((t): t is ChatTool => t !== undefined);
+    if (filterDecision.dropped.length > 0) {
+      this.logger.warn('Smart tool filtering dropped tools', {
+        droppedCount: filterDecision.dropped.length,
+        droppedNames: filterDecision.dropped,
+      });
+    }
+    const tools = keptTools;
     const miniMaxTools = tools.length > 0 ? mapToolsToMiniMax(tools) : undefined;
 
     // Convert vscode.LanguageModelChatToolMode to ChatToolMode
@@ -257,122 +263,44 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     });
 
     try {
-      // Set up tool-call accumulator
-      let accumulatorState = accumulatorSeed();
-      // Thinking accumulator for caching
-      let currentThinking: { thinking: string; signature?: string } | undefined;
-      // Text accumulator for cache key generation
-      let currentText = '';
-      // Tool call IDs accumulator for cache key generation
-      const currentToolCallIds: string[] = [];
-
       // Convert CancellationToken to AbortSignal
       const abortController = new AbortController();
       const onCancel = token.onCancellationRequested(() => abortController.abort());
 
+      let pumpResult: Awaited<ReturnType<typeof pumpProviderStream>>;
       try {
-        // Stream the completion
-        for await (const event of this.client.streamCompletion(
-          request,
-          apiKey,
-          abortController.signal,
-          this.logger,
-        )) {
-          if (token.isCancellationRequested) break;
-
-          // Handle tool-call deltas
-          if (event.toolCallDelta !== undefined) {
-            const accumulated = accumulateToolCallDelta(accumulatorState, event.toolCallDelta);
-            if (isToolSchemaError(accumulated)) {
-              this.logger.warn('Tool call accumulation error', { error: accumulated });
-            } else {
-              accumulatorState = accumulated.state;
-            }
-          }
-
-          // Map stream deltas to response parts (thinkingStyle, not model object)
-          const parts = mapStreamDeltaToResponseParts(event, thinkingStyle);
-
-          for (const part of parts) {
-            // Skip MessageMappingError entries
-            if (isMessageMappingError(part)) {
-              this.logger.warn('Stream mapping error', { kind: part.kind, error: part });
-              continue;
-            }
-
-            if (part.type === 'text') {
-              currentText += part.value;
-              this.logger.info('Text delta', { length: part.value.length, preview: part.value.substring(0, 100) });
-              progress.report(toLanguageModelTextPart(part.value));
-            } else if (part.type === 'thinking') {
-              // Accumulate thinking content with signature for caching
-              if (!currentThinking) {
-                const accumulated: { thinking: string; signature?: string } = { thinking: part.value };
-                if (part.signature) accumulated.signature = part.signature;
-                currentThinking = accumulated;
-              } else {
-                currentThinking.thinking += part.value;
-                if (part.signature) currentThinking.signature = part.signature;
-              }
-              this.logger.info('Thinking content', {
-                length: part.value.length,
-                hasSignature: !!part.signature,
-                preview: part.value.substring(0, 100),
-              });
-            } else if (part.type === 'usage') {
-              // Encode usage as a text part with a marker prefix so the host can introspect it
-              const usageJson = JSON.stringify(part.usage);
-              progress.report(toLanguageModelTextPart(`__minimax_usage__:${usageJson}`));
-            }
-          }
-
-          // Handle finish reason
-          if (event.finishReason !== undefined) {
-            this.logger.info('Stream finished', {
-              finishReason: event.finishReason,
-              textLength: currentText.length,
-              thinkingLength: currentThinking?.thinking.length ?? 0,
-              toolCallCount: currentToolCallIds.length,
-            });
-          }
-          if (event.finishReason === 'tool_calls') {
-            // Finalize accumulated tool calls
-            const finalized = finalizeAccumulator(accumulatorState);
-            this.logger.info('Finalizing tool calls', { count: finalized.length });
-            for (const toolCallOrError of finalized) {
-              if (isToolSchemaError(toolCallOrError)) {
-                this.logger.error('Tool call finalization error', toolCallOrError);
-              } else {
-                this.logger.info('Emitting tool call', {
-                  callId: toolCallOrError.callId,
-                  name: toolCallOrError.name,
-                });
-                currentToolCallIds.push(toolCallOrError.callId);
-                progress.report(toLanguageModelToolCallPart(toolCallOrError));
-                // Track tool usage for smart filtering
-                this.recordToolUsage(toolCallOrError.name);
-              }
-            }
-          }
-
-          // Handle stream errors
-          if (event.error !== undefined) {
-            this.logger.error('Stream error event', event.error);
-            throw new Error(`MiniMax stream error: ${event.error.message}`);
-          }
-        }
+        // T19 stream-pump extraction: every terminal-path flush,
+        // thinking-vs-text routing, and usage-not-as-text invariant
+        // lives in `src/providers/stream-pump.ts`. The pump is the
+        // single place these rules are enforced.
+        pumpResult = await pumpProviderStream({
+          events: this.client.streamCompletion(
+            request,
+            apiKey,
+            abortController.signal,
+            this.logger,
+          ),
+          progress,
+          thinkingStyle,
+          logger: this.logger,
+          recordToolUsage: (name) => this.recordToolUsage(name),
+        });
       } finally {
         onCancel.dispose();
       }
 
-      // Cache the thinking block if we captured one, keyed by message content hash
-      if (currentThinking && (currentText || currentToolCallIds.length > 0)) {
-        const cacheKey = this.generateMessageHash(currentText, currentToolCallIds, model.id);
-        this.thinkingCache.set(cacheKey, currentThinking);
+      // Cache the thinking block if we captured one, keyed by message content hash.
+      if (pumpResult.thinking && (pumpResult.text || pumpResult.toolCallIds.length > 0)) {
+        const cacheKey = this.generateMessageHash(
+          pumpResult.text,
+          [...pumpResult.toolCallIds],
+          model.id,
+        );
+        this.thinkingCache.set(cacheKey, pumpResult.thinking);
         this.logger.debug('Cached thinking block', {
           cacheKey,
-          thinkingLength: currentThinking.thinking.length,
-          hasSignature: !!currentThinking.signature,
+          thinkingLength: pumpResult.thinking.thinking.length,
+          hasSignature: !!pumpResult.thinking.signature,
         });
       }
 
@@ -486,158 +414,11 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   }
 
   /**
-   * Score a tool's relevance to the current prompt using keyword matching.
-   * Returns a score between 0 and 1, where higher scores indicate better relevance.
-   */
-  private scoreToolRelevance(prompt: string, tool: ChatTool): number {
-    const promptLower = prompt.toLowerCase();
-    const toolNameLower = tool.name.toLowerCase();
-    const toolDescLower = tool.description.toLowerCase();
-
-    let score = 0;
-
-    // Exact name match (highest weight)
-    if (promptLower.includes(toolNameLower)) {
-      score += 1.0;
-    }
-
-    // Name keyword overlap (partial matches)
-    const toolNameWords = toolNameLower.split(/[_\-\s]+/);
-    for (const word of toolNameWords) {
-      if (word.length > 2 && promptLower.includes(word)) {
-        score += 0.3;
-      }
-    }
-
-    // Description keyword overlap
-    const descWords = toolDescLower.split(/\s+/).filter(w => w.length > 4);
-    const promptWords = new Set(promptLower.split(/\s+/).filter(w => w.length > 4));
-    let descMatches = 0;
-    for (const word of descWords) {
-      if (promptWords.has(word)) {
-        descMatches++;
-      }
-    }
-    if (descWords.length > 0) {
-      score += (descMatches / descWords.length) * 0.5;
-    }
-
-    return Math.min(score, 1.0);
-  }
-
-  /**
-   * Filter tools based on configuration and relevance/usage scoring.
-   * Always includes priority tools from configuration.
-   *
-   * Defensive: when `vscode.workspace` is unavailable (e.g. in the
-   * host-free test harness), returns `allTools` unchanged rather
-   * than throwing. Real VS Code has workspace; the test harness
-   * uses a stub that does not.
-   */
-  private filterTools(
-    allTools: ReadonlyArray<ChatTool>,
-    userPrompt: string,
-  ): ReadonlyArray<ChatTool> {
-    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
-      .workspace;
-    if (ws?.getConfiguration === undefined) {
-      return allTools;
-    }
-    const config = ws.getConfiguration('mightyMax') as {
-      get?: <T>(k: string, d?: T) => T;
-    };
-    const enabled = config.get?.<boolean>('enableSmartToolFiltering', true) ?? true;
-    const maxTools = config.get?.<number>('maxTools', 30) ?? 30;
-    const alwaysInclude = new Set(
-      config.get?.<string[]>('alwaysIncludeTools', [
-        'read_file',
-        'write_file',
-        'edit_file',
-        'bash',
-        'grep',
-        'glob',
-      ]) ?? [],
-    );
-    const strategy =
-      config.get?.<'relevance' | 'usage' | 'hybrid'>('toolFilterStrategy', 'hybrid') ?? 'hybrid';
-
-    // If filtering is disabled or we're under the limit, return all tools
-    if (!enabled || allTools.length <= maxTools) {
-      return allTools;
-    }
-
-    this.logger.info('Smart tool filtering enabled', {
-      totalTools: allTools.length,
-      maxTools,
-      strategy,
-      alwaysIncludeCount: alwaysInclude.size,
-    });
-
-    // Separate priority tools from others
-    const priorityTools: ChatTool[] = [];
-    const otherTools: ChatTool[] = [];
-
-    for (const tool of allTools) {
-      if (alwaysInclude.has(tool.name)) {
-        priorityTools.push(tool);
-      } else {
-        otherTools.push(tool);
-      }
-    }
-
-    // Calculate remaining budget after priority tools
-    const remainingSlots = Math.max(0, maxTools - priorityTools.length);
-
-    if (remainingSlots === 0) {
-      this.logger.info('Tool filtering: using only priority tools', {
-        priorityCount: priorityTools.length,
-      });
-      return priorityTools;
-    }
-
-    // Score and sort other tools
-    const scoredTools = otherTools.map(tool => {
-      let score = 0;
-
-      // Relevance component
-      if (strategy === 'relevance' || strategy === 'hybrid') {
-        const relevanceScore = this.scoreToolRelevance(userPrompt, tool);
-        score += relevanceScore * (strategy === 'hybrid' ? 0.6 : 1.0);
-      }
-
-      // Usage component
-      if (strategy === 'usage' || strategy === 'hybrid') {
-        const usageCount = this.toolUsageStats.get(tool.name) ?? 0;
-        const maxUsage = Math.max(1, ...Array.from(this.toolUsageStats.values()));
-        const usageScore = usageCount / maxUsage;
-        score += usageScore * (strategy === 'hybrid' ? 0.4 : 1.0);
-      }
-
-      return { tool, score };
-    });
-
-    // Sort by score (descending) and take top N
-    scoredTools.sort((a, b) => b.score - a.score);
-    const selectedOthers = scoredTools.slice(0, remainingSlots).map(s => s.tool);
-
-    const filtered = [...priorityTools, ...selectedOthers];
-
-    this.logger.info('Tool filtering complete', {
-      originalCount: allTools.length,
-      filteredCount: filtered.length,
-      priorityCount: priorityTools.length,
-      selectedOthersCount: selectedOthers.length,
-      topScoredTools: scoredTools.slice(0, 5).map(s => ({
-        name: s.tool.name,
-        score: s.score.toFixed(3),
-      })),
-    });
-
-    return filtered;
-  }
-
-  /**
-   * Track tool usage for smart filtering prioritization.
+   * Track tool usage for any downstream consumer that wants to
+   * learn which tools the model selects most often. T21 keeps
+   * the accumulator around even though the active filtering
+   * path no longer reads it directly — the next iteration can
+   * surface a "frequently-used tools" hint without rebuilding.
    */
   private recordToolUsage(toolName: string): void {
     const current = this.toolUsageStats.get(toolName) ?? 0;
@@ -870,4 +651,90 @@ function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string
   }
 
   return textParts.join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T19 stream-loop helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Wrap the upstream `streamCompletion` async iterable so the
+ * for-await in the pump stays pure. The pump drains whatever the
+ * transport yields; the underlying AbortSignal (carried by every
+ * transport fetch) honours the caller's CancellationToken at the
+ * network boundary, so we don't need to thread the token through
+ * this wrapper.
+ */
+function wrapStreamForCancellation<T>(
+  source: AsyncIterable<T>,
+  _token: vscode.CancellationToken,
+): AsyncIterable<T> {
+  return (async function* () {
+    for await (const event of source) yield event;
+  })();
+}
+void wrapStreamForCancellation;
+
+/**
+ * T21: read the smart-tool-filtering config from VS Code
+ * settings with the new honest defaults.
+ */
+function readToolFilterConfig(): ToolFilterConfig {
+  type ConfigReader = {
+    get?: <T>(k: string, d?: T) => T;
+  };
+  const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
+    .workspace;
+  if (ws?.getConfiguration === undefined) {
+    return {
+      enableSmartToolFiltering: false,
+      maxTools: 64,
+      alwaysIncludeTools: [],
+    };
+  }
+  const config = ws.getConfiguration('mightyMax') as ConfigReader;
+  return {
+    enableSmartToolFiltering:
+      config.get?.<boolean>('enableSmartToolFiltering', false) ?? false,
+    maxTools: config.get?.<number>('maxTools', 64) ?? 64,
+    alwaysIncludeTools:
+      config.get?.<string[]>('alwaysIncludeTools', [
+        'copilot_',
+        'run_in_terminal',
+        'apply_patch',
+        'grep_search',
+        'file_search',
+        'semantic_search',
+      ]) ?? [],
+  };
+}
+
+/**
+ * T21: collect the names of tools already referenced by the
+ * request's history. `LanguageModelToolCallPart` carries the
+ * tool name; `LanguageModelToolResultPart` carries the call id
+ * but not the name (the name lives on the prior assistant
+ * turn's `tool_call`). We walk the history and union every
+ * `tool_call` name; tool results are intentionally skipped
+ * here because their name is already in the set via the prior
+ * tool-call entry. A tool that is in flight on the current
+ * turn cannot be silently dropped by the filter — the model
+ * expects to see the result on the next turn.
+ */
+function collectHistoryReferencedToolNames(
+  msgs: ReadonlyArray<vscode.LanguageModelChatRequestMessage>,
+): ReadonlyArray<string> {
+  const names = new Set<string>();
+  for (const m of msgs) {
+    const parts =
+      typeof m.content === 'string'
+        ? [new vscode.LanguageModelTextPart(m.content)]
+        : m.content;
+    for (const p of parts) {
+      if (p instanceof vscode.LanguageModelToolCallPart) {
+        if (p.name.length > 0) names.add(p.name);
+      }
+    }
+  }
+  return Array.from(names);
 }

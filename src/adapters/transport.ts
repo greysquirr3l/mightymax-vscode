@@ -9,6 +9,7 @@ import {
   type MiniMaxWireMessage,
   type MiniMaxWireToolCall,
 } from '../ports/minimax-client.js';
+import { sanitizeAnthropicSchema } from '../lib/domain/anthropic-transform.js';
 
 /**
  * MiniMaxClientAdapter — SSE streaming HTTP client against
@@ -485,37 +486,28 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         if (status === 401 || status === 403) {
           throw new MiniMaxClientError('auth', `MiniMax returned ${status}`, { status });
         }
-        // Log the full request for 400 errors to help diagnose format issues
+        // Read the error body ONCE. AGENTS.md forbids logging the
+        // raw body; we parse it as JSON and emit the structural
+        // fields (envelope type / message / numeric code) below.
+        const errorBodyText = await response.text().catch(() => '');
+        const parsedEnvelope = parseMiniMaxErrorBody(errorBodyText);
+        // T22 (logging hygiene): emit a STRUCTURAL summary — never
+        // the request body, never the raw response body. See
+        // `summarizeRequestForLog` and `summarizeErrorBody`.
         if (status === 400) {
-          const requestBody =
-            dialect === 'anthropic'
-              ? serializeAnthropicRequest(request)
-              : serializeOpenAiRequest(request);
-          logger.error(
-            `MiniMax 400 Bad Request - dialect=${dialect}, model=${request.model}, request=${JSON.stringify(requestBody)}`,
-          );
+          logger.error('MiniMax 400 Bad Request', {
+            ...summarizeRequestForLog(request, dialect),
+            ...summarizeErrorBody(errorBodyText),
+          });
         }
-        // Read error body for debugging (already pre-read in dispatch method)
-        let errorDetail = '';
-        const errorBody = await response.text().catch(() => '');
-        if (errorBody) {
-          errorDetail = `: ${errorBody}`;
-          if (status === 400) {
-            logger.error(`MiniMax 400 Bad Request - Response: ${errorBody}`);
-          }
-        }
+        const errorDetail =
+          parsedEnvelope.message !== undefined ? `: ${parsedEnvelope.message}` : '';
         // Handle 5xx server errors with retry for transient failures
         if (status >= 500 && status < 600) {
-          const requestBody =
-            dialect === 'anthropic'
-              ? serializeAnthropicRequest(request)
-              : serializeOpenAiRequest(request);
-          logger.error(
-            `MiniMax ${status} Server Error - dialect=${dialect}, model=${request.model}, request=${JSON.stringify(requestBody)}`,
-          );
-          if (errorBody) {
-            logger.error(`MiniMax ${status} Server Error - Response: ${errorBody}`);
-          }
+          logger.error(`MiniMax ${status} Server Error`, {
+            ...summarizeRequestForLog(request, dialect),
+            ...summarizeErrorBody(errorBodyText),
+          });
           // Retry transient 5xx errors (500, 502, 503, 504) and 529 (overloaded)
           const isRetriable =
             status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
@@ -640,16 +632,24 @@ interface OpenAiRequest {
   tool_choice?: unknown;
   temperature?: number;
   top_p?: number;
+  top_k?: number;
   max_tokens?: number;
 }
 
 function serializeOpenAiRequest(request: MiniMaxCompletionRequest): OpenAiRequest {
   const out: OpenAiRequest = {
     model: request.model,
-    messages: request.messages.map(serializeOpenAiMessage),
+    messages: serializeOpenAiMessages(request.messages, request.systemPrompt),
     stream: true,
   };
-  if (request.tools !== undefined) out.tools = request.tools;
+  if (request.tools !== undefined) {
+    // Tool schemas are passed through verbatim. The Anthropic-only
+    // `sanitizeAnthropicSchema` lowering happens inside
+    // `serializeAnthropicRequest` so the OpenAI wire body carries the
+    // VS Code-style `additionalProperties`/`const`/boolean schemas
+    // that the OpenAI-compatible endpoint accepts unchanged.
+    out.tools = request.tools as unknown as ReadonlyArray<unknown>;
+  }
   if (request.toolChoice !== undefined) out.tool_choice = request.toolChoice;
   if (request.temperature !== undefined) {
     // MiniMax OpenAI API requires temperature in [0, 2]
@@ -658,13 +658,65 @@ function serializeOpenAiRequest(request: MiniMaxCompletionRequest): OpenAiReques
   if (request.topP !== undefined) {
     out.top_p = Math.max(0, Math.min(1, request.topP));
   }
+  // MiniMax's OpenAI-compatible endpoint accepts `top_k` as a sampling
+  // extension. Verified against the OpenAPI spec; this is the same
+  // value the chat-provider pins per `getTopKForModel`.
+  if (request.topK !== undefined) out.top_k = Math.max(0, request.topK);
   if (request.maxTokens !== undefined) out.max_tokens = request.maxTokens;
+  return out;
+}
+
+/**
+ * Build the OpenAI-compatible `messages` array. The MiniMax OpenAI
+ * endpoint does not have an Anthropic-style top-level `system` field;
+ * the system prompt is injected as the first `{role:'system',...}`
+ * entry. The Anthropic serializer hoists system content out of the
+ * message list into `request.system`; the two dialects must agree on
+ * where the system content lives or it will be emitted twice.
+ */
+function serializeOpenAiMessages(
+  messages: ReadonlyArray<MiniMaxWireMessage>,
+  systemPrompt: string | undefined,
+): unknown[] {
+  const out: unknown[] = [];
+  if (systemPrompt !== undefined && systemPrompt.length > 0) {
+    out.push({ role: 'system', content: systemPrompt });
+  }
+  for (const m of messages) {
+    const message = serializeOpenAiMessage(m);
+    if (message !== undefined) out.push(message);
+  }
   return out;
 }
 
 function serializeOpenAiMessage(message: MiniMaxWireMessage): unknown {
   const out: Record<string, unknown> = { role: message.role };
-  out.content = message.content;
+  if (typeof message.content === 'string') {
+    out.content = message.content;
+  } else if (Array.isArray(message.content)) {
+    // The Anthropic-only `thinking` content part is produced by the
+    // thinking-passback cache (T19). The OpenAI-compatible endpoint
+    // does not accept `{type:'thinking',...}` parts and would 400 on
+    // them. Drop the parts here; the cache is dialect-scoped via the
+    // `enrichWithThinking` filter, so Anthropic requests still see the
+    // thinking block serialized into the right shape.
+    const parts = message.content as ReadonlyArray<MiniMaxWireContentPart>;
+    const filtered: MiniMaxWireContentPart[] = [];
+    for (const part of parts) {
+      if (part.type !== 'thinking') filtered.push(part);
+    }
+    if (filtered.length === 0) {
+      // After dropping thinking parts, the message has no visible
+      // content. Match the Anthropic serializer's empty-content
+      // behavior by passing an empty string — the model receives a
+      // no-op turn that still carries `toolCalls`/`toolCallId`.
+      out.content = '';
+    } else {
+      out.content = filtered;
+    }
+  } else {
+    out.content = '';
+  }
   if (message.toolCallId !== undefined) out.tool_call_id = message.toolCallId;
   if (message.toolCalls !== undefined) out.tool_calls = message.toolCalls;
   return out;
@@ -842,11 +894,20 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
     ];
   }
   if (request.tools !== undefined && request.tools.length > 0) {
-    // Convert OpenAI-format tools to Anthropic format
+    // Convert OpenAI-format tools to Anthropic format. Tool schemas
+    // arrive at the wire boundary in VS Code style (T03 / mapToolsToMiniMax
+    // keeps them verbatim so the same array can be serialized to either
+    // dialect). Anthropic's tool validator rejects `const`,
+    // `additionalProperties: false`, and a few other shapes; lowering
+    // happens here so the OpenAI-compatible endpoint never sees the
+    // mangled schemas.
     out.tools = request.tools.map((t) => ({
       name: t.function.name,
       description: t.function.description,
-      input_schema: t.function.parameters ?? { type: 'object', properties: {} },
+      input_schema:
+        t.function.parameters !== undefined
+          ? (sanitizeAnthropicSchema(t.function.parameters) as Record<string, unknown>)
+          : { type: 'object', properties: {} },
     }));
   }
   if (request.toolChoice !== undefined) {
@@ -1495,9 +1556,127 @@ function normalizeAnthropicStopReason(reason: string): FinishReason {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function defaultDialectFor(_model: string): MiniMaxDialect {
-  // VSCode is deprecating the OpenAI-compatible method; use Anthropic for all models.
-  return 'anthropic';
+/**
+ * Build a STRUCTURAL summary of a `MiniMaxCompletionRequest` for
+ * use in a log call. NEVER returns message content, tool schemas,
+ * or anything resembling a request body — only the keys the
+ * AGENTS.md redaction rule explicitly preserves: counts by role,
+ * presence flags, byte length, and the model + dialect identifier.
+ *
+ * Used by the 400 / 5xx failure paths so the diagnostic line
+ * remains useful without ever leaking prompt or tool content.
+ */
+function summarizeRequestForLog(
+  request: MiniMaxCompletionRequest,
+  dialect: MiniMaxDialect,
+): Record<string, unknown> {
+  const counts: Record<string, number> = {};
+  let totalContentChars = 0;
+  for (const m of request.messages) {
+    counts[m.role] = (counts[m.role] ?? 0) + 1;
+    if (typeof m.content === 'string') {
+      totalContentChars += m.content.length;
+    } else if (Array.isArray(m.content)) {
+      const parts = m.content as ReadonlyArray<MiniMaxWireContentPart>;
+      for (const p of parts) {
+        if (p.type === 'text') totalContentChars += p.text.length;
+      }
+    }
+  }
+  const referencedToolCallIds = new Set<string>();
+  for (const m of request.messages) {
+    if (m.toolCalls) for (const tc of m.toolCalls) referencedToolCallIds.add(tc.id);
+    if (m.toolCallId) referencedToolCallIds.add(m.toolCallId);
+  }
+  // Coarse body length proxy: each text character ~ 1 byte in the
+  // serialized UTF-8 envelope. Not exact (tool schemas / control
+  // fields add bytes) but the diagnostic value is the order of
+  // magnitude, not the precise count.
+  return {
+    dialect,
+    model: request.model,
+    messageCountByRole: counts,
+    toolCount: request.tools?.length ?? 0,
+    referencedToolCallIds: Array.from(referencedToolCallIds),
+    hasSystem: request.systemPrompt !== undefined && request.systemPrompt.length > 0,
+    hasThinking: request.thinking !== undefined,
+    cacheMarkerCount: request.cacheMarkers?.length ?? 0,
+    approxContentChars: totalContentChars,
+  };
+}
+
+/**
+ * Build a STRUCTURAL summary of an error response body for a log
+ * call. Tries to parse the body as JSON; falls back to a
+ * `{ bodyParseFailed: true }` marker so the failure is
+ * diagnosable without exposing HTML / echoed input / etc.
+ */
+function summarizeErrorBody(
+  bodyText: string,
+): {
+  errorType?: string;
+  errorMessage?: string;
+  errorCode?: string | number;
+  bodyParseFailed?: true;
+} {
+  if (bodyText.length === 0) return { bodyParseFailed: true };
+  try {
+    const parsed = JSON.parse(bodyText) as unknown;
+    if (!isObject(parsed)) return { bodyParseFailed: true };
+    const errorBlock = parsed['error'];
+    if (!isObject(errorBlock)) {
+      const topType = parsed['type'];
+      const out: { errorType?: string; errorMessage?: string; errorCode?: string | number } = {};
+      if (typeof topType === 'string') out.errorType = topType;
+      return out;
+    }
+    const out: { errorType?: string; errorMessage?: string; errorCode?: string | number } = {};
+    const typeField = errorBlock['type'];
+    const messageField = errorBlock['message'];
+    const codeField = errorBlock['code'];
+    if (typeof typeField === 'string') out.errorType = typeField;
+    if (typeof messageField === 'string') out.errorMessage = messageField;
+    if (typeof codeField === 'number' || typeof codeField === 'string') {
+      out.errorCode = codeField;
+    }
+    return out;
+  } catch {
+    return { bodyParseFailed: true };
+  }
+}
+
+/**
+ * Parse the MiniMax error envelope shape used by `summarizeErrorBody`
+ * to also produce the user-facing error-message string appended
+ * to `MiniMax returned <status>`. Same parse logic; returns the
+ * `{ message }` field if present.
+ */
+function parseMiniMaxErrorBody(bodyText: string): { message?: string } {
+  if (bodyText.length === 0) return {};
+  try {
+    const parsed = JSON.parse(bodyText) as unknown;
+    if (!isObject(parsed)) return {};
+    const errorBlock = parsed['error'];
+    if (!isObject(errorBlock)) return {};
+    const messageField = errorBlock['message'];
+    if (typeof messageField === 'string') {
+      return { message: messageField };
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function defaultDialectFor(model: string): MiniMaxDialect {
+  // M3 is the only MiniMax M-series model that advertises native
+  // Anthropic-style thinking blocks. Every other model (M2.7, M2.5,
+  // M2, M1, and any unknown future M-series id) routes through the
+  // OpenAI-compatible endpoint. M3-only Anthropic routing is set
+  // explicitly by the chat-provider via `request.dialect` so this
+  // fallback is rarely hit; it exists so a misconfigured caller
+  // still reaches the right endpoint for the most-popular model.
+  return model === 'MiniMax-M3' ? 'anthropic' : 'openai';
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

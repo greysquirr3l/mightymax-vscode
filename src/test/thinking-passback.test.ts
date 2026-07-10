@@ -339,7 +339,7 @@ describe('Thinking pass-back', () => {
 
     // Count user messages with tool_result content
     const userMessages = round2Request.messages.filter(m => m.role === 'user');
-    console.log(`\nUser messages count: ${userMessages.length}`);
+    // Verbose debug helper removed (no-console).
 
     // Find the user message containing tool results
     let toolResultMessage: typeof round2Request.messages[number] | undefined;
@@ -363,7 +363,7 @@ describe('Thinking pass-back', () => {
       part => typeof part === 'object' && part !== null && 'type' in part && part.type === 'tool_result'
     );
 
-    console.log(`\nTool result blocks in single message: ${toolResultBlocks.length}`);
+    // console.log debug helper removed (no-console).
     strictEqual(
       toolResultBlocks.length,
       2,

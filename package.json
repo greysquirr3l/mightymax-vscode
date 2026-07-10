@@ -39,6 +39,15 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "icons": {
+      "mightymax-head": {
+        "description": "Mighty Max aviator glyph (used as the status-bar item icon).",
+        "default": {
+          "fontPath": "assets/fonts/mightymax.woff",
+          "fontCharacter": ""
+        }
+      }
+    },
     "commands": [
       {
         "command": "mightyMax.manage",
@@ -49,6 +58,12 @@
         "command": "mightyMax.configureUtilityModels",
         "title": "Mighty Max: Configure Utility Models",
         "category": "Mighty Max"
+      },
+      {
+        "command": "mightyMax.showUsage",
+        "title": "Mighty Max: Show MiniMax Usage",
+        "category": "Mighty Max",
+        "icon": "$(mightymax-head)"
       }
     ],
     "languageModelChatProviders": [

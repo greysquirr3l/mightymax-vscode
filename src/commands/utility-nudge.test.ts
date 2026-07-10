@@ -33,21 +33,25 @@ function makeCapturingDeps(overrides: {
   byokDefault?: string | undefined;
   utilityModel?: string | undefined;
   dismissed?: boolean;
-  pickChoice?: 'Configure' | "Don't ask again" | undefined;
+  pickChoice?: 'configure' | 'dismiss' | undefined;
   configureFails?: boolean;
 }): {
   deps: UtilityNudgeSettingsReader;
   globalState: Map<string, unknown>;
   loggerCalls: Array<{ level: string; message: string }>;
   configureInvoked: boolean;
+  showCalls: Array<{ message: string; options: { configure: string; dismiss: string } }>;
 } {
   const store = new Map<string, unknown>();
   if (overrides.dismissed === true) {
     store.set(UTILITY_NUDGE_DISMISSED_STATE_KEY, true);
   }
   const loggerCalls: Array<{ level: string; message: string }> = [];
+  const showCalls: Array<{
+    message: string;
+    options: { configure: string; dismiss: string };
+  }> = [];
   let configureInvoked = false;
-  void overrides.pickChoice;
   const deps: UtilityNudgeSettingsReader = {
     getByokDefault: () => overrides.byokDefault,
     getUtilityModel: () => overrides.utilityModel,
@@ -80,17 +84,20 @@ function makeCapturingDeps(overrides: {
       }
       return Promise.resolve();
     },
+    showInformationMessage: async (
+      message: string,
+      options: { configure: string; dismiss: string },
+    ) => {
+      showCalls.push({ message, options });
+      if (overrides.pickChoice === undefined) return undefined;
+      return overrides.pickChoice;
+    },
   };
-  // The showInformationMessage shape is needed for testing but the
-  // transport here mocks it via a global. The `pickChoice`
-  // override is captured above so a future refactor can
-  // re-thread it through the showInformationMessage mock without
-  // changing the surrounding deps shape.
-  void overrides;
   return {
     deps,
     globalState: store,
     loggerCalls,
+    showCalls,
     get configureInvoked() {
       return configureInvoked;
     },
@@ -112,6 +119,7 @@ describe('runUtilityNudge — outcome matrix', () => {
       globalState: mementoFromMap(store),
       logger: noopLogger(),
       runConfigure: () => undefined,
+      showInformationMessage: async () => undefined,
     });
     strictEqual(result, 'skipped');
     ok(!store.has(UTILITY_NUDGE_DISMISSED_STATE_KEY));
@@ -131,6 +139,7 @@ describe('runUtilityNudge — outcome matrix', () => {
       globalState: mementoFromMap(store),
       logger: noopLogger(),
       runConfigure: () => undefined,
+      showInformationMessage: async () => undefined,
     });
     strictEqual(result, 'skipped');
   });
@@ -152,6 +161,78 @@ describe('runUtilityNudge — outcome matrix', () => {
     for (const c of cases) {
       strictEqual(decideUtilityNudge(c.state), c.decision, c.label);
     }
+  });
+});
+
+describe('runUtilityNudge — at-most-once-per-install semantics', () => {
+  it('marks dismissed=true on Configure success (any future activation skips)', async () => {
+    const store = new Map<string, unknown>();
+    const result = await runUtilityNudge({
+      getByokDefault: () => undefined,
+      getUtilityModel: () => undefined,
+      hasApiKey: async () => true,
+      globalState: mementoFromMap(store),
+      logger: noopLogger(),
+      runConfigure: () => Promise.resolve(),
+      showInformationMessage: async () => 'configure',
+    });
+    strictEqual(result, 'configured');
+    strictEqual(store.get(UTILITY_NUDGE_DISMISSED_STATE_KEY), true);
+  });
+
+  it('marks dismissed=true on Dismiss click', async () => {
+    const store = new Map<string, unknown>();
+    const result = await runUtilityNudge({
+      getByokDefault: () => undefined,
+      getUtilityModel: () => undefined,
+      hasApiKey: async () => true,
+      globalState: mementoFromMap(store),
+      logger: noopLogger(),
+      runConfigure: () => undefined,
+      showInformationMessage: async () => 'dismiss',
+    });
+    strictEqual(result, 'dismissed');
+    strictEqual(store.get(UTILITY_NUDGE_DISMISSED_STATE_KEY), true);
+  });
+
+  it('marks dismissed=true on close-without-click (at-most-once contract)', async () => {
+    // The Copilot review caught the previous behavior: closing
+    // the notification without choosing a button left
+    // `dismissed=false`, so the next activation re-prompted.
+    // The "at most once per install" promise in the CHANGELOG
+    // and PR description required a stronger guarantee —
+    // setting the flag on close preserves it.
+    const store = new Map<string, unknown>();
+    const result = await runUtilityNudge({
+      getByokDefault: () => undefined,
+      getUtilityModel: () => undefined,
+      hasApiKey: async () => true,
+      globalState: mementoFromMap(store),
+      logger: noopLogger(),
+      runConfigure: () => undefined,
+      showInformationMessage: async () => undefined,
+    });
+    strictEqual(result, 'shown');
+    strictEqual(store.get(UTILITY_NUDGE_DISMISSED_STATE_KEY), true);
+  });
+
+  it('resets dismissed=false on Configure failure so next activation re-prompts', async () => {
+    // Failure is the one signal worth retrying on. The user
+    // saw the prompt; the configure command errored; we want
+    // to give them another chance before respecting the
+    // dismissal.
+    const store = new Map<string, unknown>();
+    const result = await runUtilityNudge({
+      getByokDefault: () => undefined,
+      getUtilityModel: () => undefined,
+      hasApiKey: async () => true,
+      globalState: mementoFromMap(store),
+      logger: noopLogger(),
+      runConfigure: () => Promise.reject(new Error('configure blew up')),
+      showInformationMessage: async () => 'configure',
+    });
+    strictEqual(result, 'shown');
+    strictEqual(store.get(UTILITY_NUDGE_DISMISSED_STATE_KEY), false);
   });
 });
 

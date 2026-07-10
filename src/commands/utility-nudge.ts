@@ -14,15 +14,13 @@
  * This module owns the UI surface only.
  */
 
-import * as vscode from 'vscode';
+import type * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
 import { decideUtilityNudge } from '../lib/domain/utility-nudge.js';
 
 export const UTILITY_NUDGE_DISMISSED_STATE_KEY =
   'minimax.utilityNudgeDismissed.v1';
-export const UTILITY_NUDGE_PROMPT_KEY =
-  'minimax.utilityNudgeShownCount.v1';
 
 export interface UtilityNudgeSettingsReader {
   /**
@@ -44,6 +42,17 @@ export interface UtilityNudgeSettingsReader {
   logger: Logger;
   /** Resolves the configure-utility-models command. */
   runConfigure: () => Promise<void> | void;
+  /**
+   * Surfaces the prompt. Injectable so tests can drive the
+   * user choice without booting the VS Code UI; production
+   * callers pass `vscode.window.showInformationMessage.bind(...)`.
+   * The first argument is the message; the second is the choice
+   * the user picked (or `undefined` if dismissed via close).
+   */
+  showInformationMessage: (
+    message: string,
+    options: { configure: string; dismiss: string },
+  ) => Promise<'configure' | 'dismiss' | undefined>;
 }
 
 /**
@@ -89,29 +98,35 @@ export async function runUtilityNudge(
   deps.logger.info(
     'Mighty Max: inviting the user to configure utility models for BYOK agent mode',
   );
-  const shownCount =
-    deps.globalState.get<number>(UTILITY_NUDGE_PROMPT_KEY, 0) + 1;
-  await deps.globalState.update(UTILITY_NUDGE_PROMPT_KEY, shownCount);
-  const choice = await vscode.window.showInformationMessage(
+  // Mark dismissed once shown — "at most once per VS Code
+  // install" is the documented promise (CHANGELOG + PR). After
+  // this point the predicate short-circuits on every subsequent
+  // activation regardless of which button the user picked or
+  // whether they closed the notification without picking one.
+  // The failed-configure branch keeps the flag false so the next
+  // activation re-prompts (failure is the only reason to retry).
+  await deps.globalState.update(UTILITY_NUDGE_DISMISSED_STATE_KEY, true);
+  const choice = await deps.showInformationMessage(
     'MiniMax models need a utility model configured for full agent support — fix the “No utility model is configured” Copilot warning?',
-    'Configure',
-    "Don't ask again",
+    { configure: 'Configure', dismiss: "Don't ask again" },
   );
-  if (choice === "Don't ask again") {
-    await deps.globalState.update(UTILITY_NUDGE_DISMISSED_STATE_KEY, true);
+  if (choice === 'dismiss') {
     deps.logger.info('Utility nudge dismissed by user');
     return 'dismissed';
   }
-  if (choice === 'Configure') {
+  if (choice === 'configure') {
     try {
       await deps.runConfigure();
       deps.logger.info('Utility nudge: configure invoked');
       return 'configured';
     } catch (err) {
       deps.logger.error('Utility nudge: configure failed', err);
-      // The flag isn't set, so the next activation re-prompts.
+      // Reset the flag so the next activation re-prompts.
+      await deps.globalState.update(UTILITY_NUDGE_DISMISSED_STATE_KEY, false);
     }
   }
-  // Dismissed implicitly (closed the notification).
+  // Closed without picking a button (or configure failed and
+  // was reset above). The flag is already set; the predicate
+  // will skip on the next activation regardless.
   return 'shown';
 }

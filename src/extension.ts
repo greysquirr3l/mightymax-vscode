@@ -153,16 +153,35 @@ export function activate(context: vscode.ExtensionContext): void {
   // background and never await it from the activation path.
   void runUtilityNudge({
     getByokDefault: () => {
-      const v = vscode.workspace.getConfiguration().get<string>('chat.byokUtilityModelDefault');
+      const v = vscode.workspace
+        .getConfiguration()
+        .get<string>('chat.byokUtilityModelDefault');
       return typeof v === 'string' ? v : undefined;
     },
     getUtilityModel: () => {
-      const v = vscode.workspace.getConfiguration().get<string>('chat.utilityModel');
+      const v = vscode.workspace
+        .getConfiguration()
+        .get<string>('chat.utilityModel');
       return typeof v === 'string' ? v : undefined;
     },
     hasApiKey: async () => secretStore.hasSecret('apiKey'),
     globalState: context.globalState,
     logger,
+    showInformationMessage: async (message, options) => {
+      // Map VS Code's localized label back to our discriminated
+      // union. The vscode API returns the localized button label
+      // (or undefined for dismiss-by-close); we reconstruct the
+      // discriminated union so the utility-nudge module never has
+      // to know about VS Code's button-label API.
+      const picked = await vscode.window.showInformationMessage(
+        message,
+        options.configure,
+        options.dismiss,
+      );
+      if (picked === options.dismiss) return 'dismiss';
+      if (picked === options.configure) return 'configure';
+      return undefined;
+    },
     runConfigure: () => {
       const ui = createVsCodeUi();
       return runConfigureUtilityModelsCommand({

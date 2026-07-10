@@ -166,7 +166,7 @@
     "@types/vscode": "1.104.0",
     "@vscode/test-cli": "0.0.10",
     "@vscode/test-electron": "2.4.1",
-    "esbuild": "0.24.0",
+    "esbuild": "0.28.1",
     "eslint": "9.13.0",
     "mocha": "11.7.6",
     "prettier": "3.3.3",

@@ -683,8 +683,7 @@ function serializeOpenAiMessages(
     out.push({ role: 'system', content: systemPrompt });
   }
   for (const m of messages) {
-    const message = serializeOpenAiMessage(m);
-    if (message !== undefined) out.push(message);
+    out.push(serializeOpenAiMessage(m));
   }
   return out;
 }

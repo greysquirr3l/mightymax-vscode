@@ -658,24 +658,6 @@ function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Wrap the upstream `streamCompletion` async iterable so the
- * for-await in the pump stays pure. The pump drains whatever the
- * transport yields; the underlying AbortSignal (carried by every
- * transport fetch) honours the caller's CancellationToken at the
- * network boundary, so we don't need to thread the token through
- * this wrapper.
- */
-function wrapStreamForCancellation<T>(
-  source: AsyncIterable<T>,
-  _token: vscode.CancellationToken,
-): AsyncIterable<T> {
-  return (async function* () {
-    for await (const event of source) yield event;
-  })();
-}
-void wrapStreamForCancellation;
-
-/**
  * T21: read the smart-tool-filtering config from VS Code
  * settings with the new honest defaults.
  */

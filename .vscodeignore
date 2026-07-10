@@ -9,6 +9,7 @@ src/
 test/
 node_modules/
 out/
+tmp/
 **/*.map
 **/*.ts
 **/*.test.ts

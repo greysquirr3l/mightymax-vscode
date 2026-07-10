@@ -23,8 +23,11 @@ import {
 } from './domain/tool-filter.js';
 
 describe('T21 default tool-filter config', () => {
-  it('enables smart filtering OFF by default (opt-in)', () => {
-    strictEqual(DEFAULT_ENABLE_SMART_TOOL_FILTERING, false);
+  it('enables smart filtering ON by default (off is opt-out)', () => {
+    // T27 perf: flipped from `false` → `true` after the user's
+    // log analysis showed the wire payload dominated first-turn
+    // latency on MiniMax M3 with the typical ~83-tool install.
+    strictEqual(DEFAULT_ENABLE_SMART_TOOL_FILTERING, true);
   });
 
   it('caps at 64 tools by default (M3 handles 64; Copilot handles ~128 via virtual grouping)', () => {

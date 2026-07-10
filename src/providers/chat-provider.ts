@@ -669,7 +669,7 @@ function readToolFilterConfig(): ToolFilterConfig {
     .workspace;
   if (ws?.getConfiguration === undefined) {
     return {
-      enableSmartToolFiltering: false,
+      enableSmartToolFiltering: true,
       maxTools: 64,
       alwaysIncludeTools: [],
     };
@@ -677,7 +677,7 @@ function readToolFilterConfig(): ToolFilterConfig {
   const config = ws.getConfiguration('mightyMax') as ConfigReader;
   return {
     enableSmartToolFiltering:
-      config.get?.<boolean>('enableSmartToolFiltering', false) ?? false,
+      config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
     maxTools: config.get?.<number>('maxTools', 64) ?? 64,
     alwaysIncludeTools:
       config.get?.<string[]>('alwaysIncludeTools', [

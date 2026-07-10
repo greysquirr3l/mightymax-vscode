@@ -19,6 +19,7 @@ import {
   mapMiniMaxUsage,
   mapRequestToMiniMax,
   mapStreamDeltaToResponseParts,
+  truncateToolResults,
   type ChatMessage,
   type ChatResponsePart,
   type MessageMappingError,
@@ -592,6 +593,138 @@ describe('mapRequestToMiniMax — round-trip', () => {
     deepStrictEqual(wireRoles, ['user', 'assistant', 'user']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T27 perf: truncateToolResults
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('truncateToolResults', () => {
+  const longContent = 'x'.repeat(10_000);
+  const toolResult = (content: string): MiniMaxWireMessage => ({
+    role: 'tool',
+    content,
+    toolCallId: 'call_test',
+  });
+
+  it('passes tool results below the cap through untouched', () => {
+    const messages = [toolResult('short content')];
+    const result = truncateToolResults(messages);
+    equal(result.truncatedCount, 0);
+    equal(result.droppedChars, 0);
+    deepStrictEqual(result.messages, messages);
+  });
+
+  it('caps oversized tool results to maxChars and appends the marker', () => {
+    const messages = [toolResult(longContent)];
+    const result = truncateToolResults(messages, { maxChars: 100 });
+    equal(result.truncatedCount, 1, `truncatedCount was ${String(result.truncatedCount)}`);
+    equal(result.droppedChars, 9900, `droppedChars was ${String(result.droppedChars)}`);
+    const head = result.messages[0];
+    ok(head !== undefined, 'head message was undefined');
+    if (head === undefined) return;
+    equal(head.role, 'tool');
+    equal(head.toolCallId, 'call_test');
+    // 100 chars of 'x' (head) plus the default marker at the end.
+    // We don't pin the marker length here — it's tested
+    // independently below and has its own DEFAULT constant the
+    // production wire mapper reads.
+    const content = head.content as string;
+    equal(typeof content, 'string', `content type was ${typeof content}`);
+    ok(content.length > 100, `expected head + marker, got ${String(content.length)}`);
+    ok(content.length < 300, `expected under 300 chars total, got ${String(content.length)}`);
+    ok(content.startsWith('x'.repeat(100)), `head should start with 100 x chars, got: ${JSON.stringify(content.slice(0, 50))}...`);
+    // The default marker contains the literal "[... truncated" prefix.
+    // Using `includes` rather than `endsWith` because the marker is a
+    // full sentence terminating in `output.]`.
+    ok(
+      content.includes('[... truncated'),
+      `should include the truncation marker, got tail: ...${JSON.stringify(content.slice(-50))}`,
+    );
+  });
+
+  it('leaves user and assistant messages untouched (only role:tool is capped)', () => {
+    const messages = [
+      { role: 'user' as const, content: longContent },
+      { role: 'assistant' as const, content: longContent },
+      toolResult(longContent),
+    ];
+    const result = truncateToolResults(messages, { maxChars: 50 });
+    equal(result.truncatedCount, 1);
+    // User/assistant messages pass through verbatim.
+    equal((result.messages[0] as { content: string }).content.length, 10_000);
+    equal((result.messages[1] as { content: string }).content.length, 10_000);
+    // Tool message is truncated.
+    const tool = result.messages[2] as { content: string };
+    ok(tool.content.length < 10_000);
+  });
+
+  it('drops the marker override + uses the supplied marker', () => {
+    const messages = [toolResult(longContent)];
+    const result = truncateToolResults(messages, {
+      maxChars: 20,
+      marker: '\n[CUSTOM-MARKER]',
+    });
+    const head = result.messages[0];
+    ok(head !== undefined);
+    const content = head.content as string;
+    equal(content, 'x'.repeat(20) + '\n[CUSTOM-MARKER]');
+  });
+
+  it('passes through messages with structured tool content (non-string) untouched', () => {
+    // Defensive: the transport always serializes tool results to a
+    // string today, but the type allows ReadonlyArray<part> too.
+    // Truncation must not corrupt the structured path.
+    const messages: MiniMaxWireMessage[] = [
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: longContent }],
+        toolCallId: 'call_structured',
+      },
+    ];
+    const result = truncateToolResults(messages, { maxChars: 100 });
+    deepStrictEqual(result.messages, messages);
+    equal(result.truncatedCount, 0);
+  });
+
+  it('produces wire output mapRequestToMiniMax truncates oversized tool results', () => {
+    // End-to-end: a ChatMessage whose tool_result content is 10K
+    // chars should round-trip through the wire mapper truncated to
+    // the default cap. Verify the wire output and the warning.
+    const huge = 'y'.repeat(10_000);
+    const messages: ChatMessage[] = [
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCall: { callId: 'c1', name: 'run_in_terminal', input: {} } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool-result', toolResult: { callId: 'c1', content: [huge] } }],
+      },
+    ];
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, messages);
+    const toolWire = result.messages.find((m) => m.role === 'tool');
+    ok(toolWire !== undefined, 'expected a tool-role wire message');
+    if (toolWire === undefined) return;
+    const content = toolWire.content as string;
+    // The default cap is 4096; the marker is appended afterwards,
+    // so the final length is cap + marker.size(). We assert on a
+    // generous upper bound to avoid coupling to the marker text.
+    ok(
+      content.length <= DEFAULT_TOOL_RESULT_MAX_CHARS + 200,
+      `truncated content unexpectedly long: ${String(content.length)}`,
+    );
+    ok(content.length < huge.length, 'truncation did not shrink the wire payload');
+    ok(content.includes('[... truncated'), 'tool-result content should include the truncation marker');
+    ok(
+      result.warnings.some(
+        (w) => w.kind === 'unsupported-content' && w.reason.includes('tool-result truncation'),
+      ),
+      'expected a tool-result truncation warning in the mapper result',
+    );
+  });
+});
+
+import { DEFAULT_TOOL_RESULT_MAX_CHARS } from './domain/messages.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Outbound: MiniMax stream deltas -> VS Code response parts

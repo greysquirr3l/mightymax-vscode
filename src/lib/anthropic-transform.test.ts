@@ -316,15 +316,16 @@ describe('applyAnthropicRequestTransform', () => {
     equal(thinking?.signature, 'sig');
   });
 
-  it('returns cache markers for the last two surviving messages (1-indexed)', () => {
+  it('returns cache markers for the last two surviving messages (1-indexed, short history)', () => {
+    // Three messages falls into the "tail" branch (< 4 surviving)
+    // so the last two are marked.
     const messages: MiniMaxWireMessage[] = [
       { role: 'user', content: 'a' },
       { role: 'assistant', content: 'b' },
       { role: 'user', content: 'c' },
-      { role: 'assistant', content: 'd' },
     ];
     const result = applyAnthropicRequestTransform(messages, '');
-    deepStrictEqual(result.cacheMarkers, [3, 4]);
+    deepStrictEqual(result.cacheMarkers, [2, 3]);
   });
 
   it('returns a single cache marker when only one message survives', () => {
@@ -342,6 +343,44 @@ describe('applyAnthropicRequestTransform', () => {
     );
     deepStrictEqual(result.cacheMarkers, []);
     deepStrictEqual(result.messages, []);
+  });
+
+  it('spreads four evenly-spaced cache markers across long histories', () => {
+    // For ≥4 messages, 4 breakpoints at 25/50/75/100% let the
+    // Anthropic prefix cache build incrementally across rounds.
+    // With 103 messages the positions are roughly 26, 52, 77, 103.
+    const messages: MiniMaxWireMessage[] = Array.from({ length: 103 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `m${String(i)}`,
+    }));
+    const result = applyAnthropicRequestTransform(messages, '');
+    deepStrictEqual(result.cacheMarkers, [26, 52, 77, 103]);
+  });
+
+  it('caps cache markers at four (Anthropic hard limit)', () => {
+    // For very long histories the Set dedupes any overlap so the
+    // final list never exceeds 4 entries.
+    const messages: MiniMaxWireMessage[] = Array.from({ length: 8 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `m${String(i)}`,
+    }));
+    const result = applyAnthropicRequestTransform(messages, '');
+    equal(result.cacheMarkers.length, 4);
+  });
+
+  it('emits three distinct positions for the 4-message boundary (dedup works)', () => {
+    // With exactly 4 messages, frac=0.25 → floor(0.75)+1 = 1,
+    // frac=0.5 → floor(1.5)+1 = 2, frac=0.75 → floor(2.25)+1 = 3,
+    // frac=1.0 → floor(3)+1 = 4 — all four positions distinct, no
+    // dedup needed.
+    const messages: MiniMaxWireMessage[] = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' },
+      { role: 'assistant', content: 'd' },
+    ];
+    const result = applyAnthropicRequestTransform(messages, '');
+    deepStrictEqual(result.cacheMarkers, [1, 2, 3, 4]);
   });
 });
 

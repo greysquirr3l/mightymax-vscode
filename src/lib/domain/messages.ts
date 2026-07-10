@@ -437,6 +437,24 @@ export function mapRequestToMiniMax(
   // no matching assistant `tool_use` (error 2013, "invalid params,
   // tool result's tool id not found"). The previous behavior
   // silently dropped the orphan and emitted an
+  // Tool-result truncation (T27 perf): cap each role:'tool'
+  // content to DEFAULT_TOOL_RESULT_MAX_CHARS chars so a long
+  // history can't bloat the wire. Done before the orphan
+  // reconciliation so synthesized tool_use adoptions are never
+  // themselves truncated.
+  const truncation = truncateToolResults(wireMessages);
+  if (truncation.truncatedCount > 0) {
+    warnings.push({
+      kind: 'unsupported-content',
+      reason: `tool-result truncation: ${String(truncation.truncatedCount)} message(s), ${String(truncation.droppedChars)} chars dropped`,
+    });
+  }
+
+  // Reconciliation pass: ADOPT orphan tool-results rather than drop
+  // them. Anthropic rejects a `tool_result` whose `tool_use_id` has
+  // no matching assistant `tool_use` (error 2013, "invalid params,
+  // tool result's tool id not found"). The previous behavior
+  // silently dropped the orphan and emitted an
   // `unsupported-content` warning — which silenced the 400 in some
   // cases but destroyed tool output: the model re-ran the tool,
   // looped, or hallucinated. T18's spec calls for adoption: if a
@@ -446,7 +464,7 @@ export function mapRequestToMiniMax(
   // same id. The wire stays valid and the model still sees the
   // tool output as if the call had happened.
   const reconciled: MiniMaxWireMessage[] = [];
-  for (const m of wireMessages) {
+  for (const m of truncation.messages) {
     if (m.role === 'tool') {
       const callId = m.toolCallId ?? '';
       if (callId.length === 0 || !assistantToolCallIds.has(callId)) {
@@ -516,6 +534,74 @@ function anthropicWarningToMappingError(
     };
   }
   return undefined;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool-result truncation (latency control)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ToolResultTruncationOptions {
+  /**
+   * Maximum characters retained per tool result. Anything longer
+   * is shortened to the head plus a marker; defaults to 4096.
+   * Anthropic's recommended input token ceiling for tool_result
+   * content is roughly 2-4K characters per call; beyond that the
+   * first-turn cache build becomes the dominant cost.
+   */
+  readonly maxChars?: number;
+  /**
+   * Marker appended after the truncated content so the model
+   * knows the result was elided. The default value points the
+   * model at the standard VS Code file-scheme path that the
+   * tool-result mapping already produces for tool outputs.
+   */
+  readonly marker?: string;
+}
+
+export interface ToolResultTruncationResult {
+  readonly messages: ReadonlyArray<MiniMaxWireMessage>;
+  readonly truncatedCount: number;
+  /** Total characters dropped across all tool results. */
+  readonly droppedChars: number;
+}
+
+export const DEFAULT_TOOL_RESULT_MAX_CHARS = 4096;
+export const DEFAULT_TOOL_RESULT_TRUNCATION_MARKER =
+  '\n\n[... truncated — original was longer than the tool-result budget. Rerun with smaller scope or filter the output.]';
+
+/**
+ * Cap each `role: "tool"` wire message's `content` to at most
+ * `options.maxChars` characters. Strings already under the cap
+ * are passed through untouched. Truncated strings get the
+ * `options.marker` appended so the model sees a clear
+ * "this is not the complete result" hint instead of acting on a
+ * silent partial.
+ *
+ * Pure function; safe to call directly from chat-provider tests.
+ * Production wiring: invoked inside `mapRequestToMiniMax` between
+ * the wire-message build and the orphan reconciliation, so
+ * synthesized `tool_use` adoptions are NOT truncated.
+ */
+export function truncateToolResults(
+  messages: ReadonlyArray<MiniMaxWireMessage>,
+  options: ToolResultTruncationOptions = {},
+): ToolResultTruncationResult {
+  const maxChars = options.maxChars ?? DEFAULT_TOOL_RESULT_MAX_CHARS;
+  const marker = options.marker ?? DEFAULT_TOOL_RESULT_TRUNCATION_MARKER;
+  const out: MiniMaxWireMessage[] = [];
+  let truncatedCount = 0;
+  let droppedChars = 0;
+  for (const m of messages) {
+    if (m.role !== 'tool' || typeof m.content !== 'string' || m.content.length <= maxChars) {
+      out.push(m);
+      continue;
+    }
+    const head = m.content.slice(0, maxChars);
+    droppedChars += m.content.length - maxChars;
+    truncatedCount += 1;
+    out.push({ ...m, content: head + marker });
+  }
+  return { messages: out, truncatedCount, droppedChars };
 }
 
 function extractTextFromParts(

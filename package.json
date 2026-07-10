@@ -96,8 +96,8 @@
         },
         "mightyMax.enableSmartToolFiltering": {
           "type": "boolean",
-          "default": false,
-          "description": "OPT-IN: enable smart tool filtering to work around provider-side tool caps. When enabled, only the most relevant tools (plus a pin list of built-ins and history-referenced tools) are sent to the model. The default is OFF — the full VS Code tool set is forwarded verbatim so agent-mode has every tool the chat UI exposes.",
+          "default": true,
+          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 64); history-referenced tools and a pin list of always-on built-ins (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list and history-referenced set are still honored.",
           "scope": "window"
         },
         "mightyMax.maxTools": {

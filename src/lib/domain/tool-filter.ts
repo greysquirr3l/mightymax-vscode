@@ -11,7 +11,10 @@
  * microsoft/vscode. The agent-mode gate (`AGENTS.md`: "Translate the
  * COMPLETE tool set VS Code passes per request, without dropping")
  * is enforced by:
- *  - `enableSmartToolFiltering` defaults to **false** (opt-in).
+ *  - `enableSmartToolFiltering` defaults to **true** as of the T27
+ *    perf pass — opt-OUT (not opt-in) so a fresh install immediately
+ *    benefits from the latency win. The wire payload drops from ~83
+ *    tool schemas to ~64 across rounds.
  *  - The default `alwaysIncludeTools` is the actual Copilot tool
  *    prefix list (`copilot_*`) plus the always-on built-ins. When
  *    enabled, the matcher accepts both prefix match (`copilot_`)
@@ -67,7 +70,7 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   'semantic_search',
 ];
 
-export const DEFAULT_ENABLE_SMART_TOOL_FILTERING = false;
+export const DEFAULT_ENABLE_SMART_TOOL_FILTERING = true;
 export const DEFAULT_MAX_TOOLS = 64;
 
 /**

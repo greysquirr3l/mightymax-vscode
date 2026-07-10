@@ -334,12 +334,15 @@ export interface AnthropicTransformResult {
   /** Messages with empty parts / surrogate-fixed strings. */
   readonly messages: ReadonlyArray<MiniMaxWireMessage>;
   /**
-   * Ids of the last two message positions to receive
-   * `cache_control: { type: 'ephemeral' }` (1-indexed, counting
-   * from the start of `messages`). The transport stamps the block
-   * onto the last text or tool_use block in each of these messages.
-   * System messages are always cached first; these two indices are
-   * the user's-history tail.
+   * Ids of message positions to receive `cache_control: {
+   * type: 'ephemeral' }` (1-indexed, counting from the start of
+   * `messages`). The transport stamps the block onto the last
+   * text or tool_use block in each of these messages. For short
+   * conversations (≤ 3 messages) the last 1-2 tail positions
+   * are marked. For long conversations (≥ 4 messages) 4 evenly-
+   * spaced breakpoints are placed at 25/50/75/100% of the
+   * history. System messages are always cached first (the
+   * transport stamps the system block independently).
    */
   readonly cacheMarkers: ReadonlyArray<number>;
   /** Sanitized / forwarded system string. Empty string when no
@@ -361,10 +364,13 @@ export type AnthropicTransformWarning =
  *  - Strips messages whose content is fully empty after the strip
  *    (Anthropic rejects empty-content messages with HTTP 400).
  *  - Sanitizes surrogate code points in every text payload.
- *  - Returns the indices of the last two surviving messages so the
- *    transport can stamp `cache_control: { type: 'ephemeral' }`
- *    on them (opencode's `applyCaching` pattern, narrowed to
- *    user-history tail).
+ *  - Returns the indices of the surviving messages to mark with
+ *    `cache_control: { type: 'ephemeral' }`. For short histories
+ *    (≤ 3 messages) the tail (last 1-2) is marked. For long
+ *    histories (≥ 4) four evenly-spaced breakpoints are placed
+ *    across the conversation so the prefix cache builds up
+ *    incrementally across turns (opencode's `applyCaching`
+ *    pattern, generalized to Anthropic's 4-breakpoint budget).
  *
  * Pure function; the system string is passed through separately
  * because the Anthropic wire format hoists it out of the messages
@@ -392,12 +398,32 @@ export function applyAnthropicRequestTransform(
 
   const systemSanitized = sanitizeSurrogates(system);
 
-  // The last two messages get cache_control. The transport also
-  // stamps the system block; this list is the user-history tail
-  // only. Filter to 1-indexed positions in the cleaned list.
+  // Cache-marker placement (Anthropic allows up to 4 cache_control
+  // breakpoints per request). For short conversations the tail of
+  // the history is the only thing that changes round-to-round, so
+  // marking just the last 1-2 messages is sufficient and keeps the
+  // first-turn cache-write cost low. For long conversations the
+  // tail-only policy means the prefix before the marker is recreated
+  // from scratch on every turn, so we spread 4 breakpoints at 25%,
+  // 50%, 75%, 100% of the message history — each round hits all 4
+  // cache scopes for the parts that didn't change, and only the
+  // newly-added tail re-caches. Anthropic docs:
+  // https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+  // ("up to 4 cache breakpoints, each must cover at least 2048 tokens
+  // of content for a stable hit").
   const cacheMarkers: number[] = [];
-  for (let i = Math.max(0, cleaned.length - 2); i < cleaned.length; i += 1) {
-    cacheMarkers.push(i + 1);
+  const total = cleaned.length;
+  if (total >= 4) {
+    const positions = new Set<number>();
+    for (const frac of [0.25, 0.5, 0.75, 1.0]) {
+      const idx = Math.max(1, Math.min(total, Math.floor((total - 1) * frac) + 1));
+      positions.add(idx);
+    }
+    cacheMarkers.push(...Array.from(positions).sort((a, b) => a - b));
+  } else if (total > 0) {
+    for (let i = Math.max(0, total - 2); i < total; i += 1) {
+      cacheMarkers.push(i + 1);
+    }
   }
 
   return {

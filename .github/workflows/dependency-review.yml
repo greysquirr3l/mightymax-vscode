@@ -7,15 +7,21 @@ on:
   pull_request:
     branches: [main]
 
+# pull-requests: write is needed for `dependency-review-action` to
+# comment back on the PR with the vulnerabilities summary. Scorecard
+# flags any top-level write scope, so we keep top read-only and grant
+# the write only on the job that requires it.
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout

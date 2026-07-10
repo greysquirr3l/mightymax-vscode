@@ -16,14 +16,21 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# Scorecard flags any top-level write scope, so the GITHUB_TOKEN
+# stays read-only at the workflow level. Only the `release` job
+# needs `contents: write` (it creates the GitHub Release); the
+# `publish` job uses the per-project PAT secrets (VSCE_PAT/OVSX_PAT)
+# for marketplace auth and never touches GITHUB_TOKEN write paths.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   resolve-tag:
     name: Resolve release tag and SHA
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       sha: ${{ steps.tag.outputs.sha }}
@@ -61,6 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve-tag]
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Wait for CI workflow result on tagged commit
@@ -114,6 +123,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve-tag, verify-ci]
     timeout-minutes: 15
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -146,6 +157,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
@@ -163,8 +176,11 @@ jobs:
         with:
           node-version: 20
 
+      # Pinned to match @vscode/vsce in package.json devDependencies so
+      # the lockfile-driven local build and the CI publish install use
+      # the same dependency tree (markdown-it ^14.2.0, xml2js ^0.5.0).
       - name: Install vsce and ovsx
-        run: npm install -g @vscode/vsce ovsx
+        run: npm install -g @vscode/vsce@3.9.2 ovsx@latest
 
       - name: Publish to VS Code Marketplace
         if: ${{ !contains(needs.resolve-tag.outputs.tag, '-') }}
@@ -203,6 +219,8 @@ jobs:
     needs: [resolve-tag, verify-ci, build, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
 
     steps:
       - name: Download VSIX artifact

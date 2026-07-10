@@ -9,16 +9,21 @@ on:
     # Run every Sunday at 02:30 UTC to catch newly-published advisories
     - cron: "30 2 * * 0"
 
+# CodeQL legitimately writes to security-events when uploading SARIF.
+# Scorecard flags any top-level write scope, so the write is set on
+# the analyze job only; the rest of the workflow stays read-only.
 permissions:
   contents: read
-  security-events: write
-  actions: read
 
 jobs:
   analyze:
     name: Analyze TypeScript
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
 
     steps:
       - name: Checkout repository

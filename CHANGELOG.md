@@ -6,6 +6,55 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+T27 — Token Plan usage indicator. Surfaces the MiniMax Token Plan
+quota bar as a right-side status-bar item backed by a typed error
+model, so PAYG keys and network failures stay neutral instead of
+flashing red. Closes the visibility gap between the console and the
+extension: until now, the user had to open
+`platform.minimax.io` in a browser to see how much plan they had
+left.
+
+### Added
+
+- **Status-bar item**: a right-side `$(mightymax-head)` glyph (the
+  aviator packed as a PUA codepoint in `assets/fonts/mightymax.woff`)
+  showing the binding constraint across the 5-hour and weekly
+  Token Plan windows. Neutral at 0–79%, warning tint past 80%,
+  error tint at 100%. Polls `GET https://www.minimax.io/v1/token_plan/remains`
+  every 5 minutes; refreshes out-of-band when the API key changes.
+  Hover shows a markdown tooltip with per-window progress bars.
+- **Show MiniMax Usage command**: a new `mightyMax.showUsage` command
+  (also reachable via the status bar click) opens a compact webview
+  with the same data, a refresh button, and a collapsible raw-response
+  disclosure that helps diagnose MiniMax schema drift.
+- **`UsageClient` port**: new port in `src/ports/usage-client.ts`
+  declaring `fetchUsage(apiKey): Promise<TokenPlanUsage>` plus the
+  shared `API_KEY_NAME = 'apiKey'` constant (the manage command
+  reads the same SecretStorage key).
+- **`UsageUnavailableError`**: typed error with a `kind` discriminant
+  (`'unavailable' | 'network' | 'parse'`) and `retriable` flag,
+  mirroring `MiniMaxClientError`. The status bar renders every `kind`
+  as a neutral icon — never red.
+- **Pure-domain normalizer**: `src/lib/domain/usage-normalization.ts`
+  is import-free from `vscode` and from any I/O boundary; the
+  existing `src/lib/no-vscode.test.ts` static guard already covers
+  it. Fixture tests pin the four core invariants: envelope
+  validation, "general"-preferred entry selection, status-3
+  phantom-bucket skip, remaining→used inversion with [0,100] clamp.
+- **`UsageTransportAdapter`**: new adapter in
+  `src/adapters/usage-transport.ts`. Maps 5xx → unavailable +
+  retriable, 4xx → unavailable + non-retriable, `TypeError` /
+  `fetch` throw → network + retriable, non-JSON body → parse,
+  schema-drift payload → parse. Tests plant an API-key sentinel
+  and assert it never appears in any captured log line, in line
+  with the AGENTS.md redaction rule.
+- **Manifest additions**: `contributes.icons."mightymax-head"`
+  points at the new font; the new `mightyMax.showUsage` command
+  carries the same icon for the Command Palette. `assets/fonts/`
+  is not on the `.vscodeignore` deny list, so `vsce package` ships
+  the font alongside the existing `assets/img/mighty_max_head.png`
+  marketplace icon.
+
 ## [0.2.2] — 2026-07-09
 
 T17–T22 + extraction follow-ups. The T17–T22 sweep closed six

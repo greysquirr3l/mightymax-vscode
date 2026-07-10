@@ -9,6 +9,7 @@ src/
 test/
 node_modules/
 out/
+tmp/
 **/*.map
 **/*.ts
 **/*.test.ts
@@ -29,3 +30,21 @@ error_from_console.txt
 !README.md
 !CHANGELOG.md
 !LICENSE.md
+
+# Internal-only paths that the `*.md` glob (which matches basenames
+# only) leaves through. Each line below excludes every file under the
+# prefix regardless of basename.
+tasks/
+docs/dev/
+
+# Internal CI / scanner configs not meant to ship to the
+# Marketplace.
+.gitleaks.toml
+
+# Stray / untracked logo images not referenced by package.json
+# `icon`, the README, or the CHANGELOG. mighty_max_logo_readme.png
+# is a candidate for cleanup once the README is updated; the head2
+# files are local variants that should never ship.
+assets/img/mightymax_head2.png
+assets/img/mightymax_head2_inv.png
+assets/img/mighty_max_logo_readme.png

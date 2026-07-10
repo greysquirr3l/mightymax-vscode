@@ -19,6 +19,7 @@ dist/
 .DS_Store
 error_from_console.txt
 reference_projects/
+tmp/
 
 # Local-only: API key for one-shot MiniMax context_management probe. Do not commit.
 .mighty-max-probe-key

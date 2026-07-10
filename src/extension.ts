@@ -4,8 +4,11 @@ import { SecretStoreAdapter } from './adapters/secret-store.js';
 import { MiniMaxClientAdapter } from './adapters/transport.js';
 import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
+import { StatusBarAdapter } from './adapters/status-bar.js';
+import { UsageTransportAdapter } from './adapters/usage-transport.js';
 import { runManageCommand, type ManageUi } from './commands/manage-command.js';
 import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
+import { runShowUsageCommand } from './commands/show-usage.js';
 import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
 
@@ -74,6 +77,16 @@ export function activate(context: vscode.ExtensionContext): void {
   const catalog = new CatalogAdapter(logger);
   const chatProvider = new ChatProvider(logger, secretStore, client, catalog);
 
+  // T27 — Token Plan usage indicator. The status bar item polls
+  // every 5 minutes; the same secret-change listener that refreshes
+  // the chat picker also kicks an out-of-band refresh so switching
+  // the API key updates the indicator without waiting for the next
+  // tick. A PAYG key or network failure surfaces as a neutral icon,
+  // never a red one, matching the "click for details" affordance.
+  const usageClient = new UsageTransportAdapter({ logger });
+  const statusBar = new StatusBarAdapter({ logger, secretStore, usageClient });
+  context.subscriptions.push(statusBar);
+
   // T06 — when the user clears (or another extension overwrites) the
   // stored API key, the picker should refresh so the model family
   // disappears. `onDidChange` fires after every store/delete; we don't
@@ -87,8 +100,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     logger.info('Mighty Max: secret storage change detected — refreshing chat information');
     chatProvider.fireChange();
+    void statusBar.refresh();
   });
   context.subscriptions.push(secretsListener);
+  statusBar.start();
 
   context.subscriptions.push(
     vscode.lm.registerLanguageModelChatProvider('minimax', chatProvider),
@@ -123,6 +138,10 @@ export function activate(context: vscode.ExtensionContext): void {
             ),
         }),
       });
+    }),
+    vscode.commands.registerCommand('mightyMax.showUsage', () => {
+      logger.info('Mighty Max show-usage command invoked');
+      return runShowUsageCommand(context, statusBar);
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('mightyMax.logLevel')) {

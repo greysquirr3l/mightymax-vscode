@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -39,6 +39,15 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "icons": {
+      "mightymax-head": {
+        "description": "Mighty Max aviator glyph (used as the status-bar item icon).",
+        "default": {
+          "fontPath": "assets/fonts/mightymax.woff",
+          "fontCharacter": ""
+        }
+      }
+    },
     "commands": [
       {
         "command": "mightyMax.manage",
@@ -49,6 +58,12 @@
         "command": "mightyMax.configureUtilityModels",
         "title": "Mighty Max: Configure Utility Models",
         "category": "Mighty Max"
+      },
+      {
+        "command": "mightyMax.showUsage",
+        "title": "Mighty Max: Show MiniMax Usage",
+        "category": "Mighty Max",
+        "icon": "$(mightymax-head)"
       }
     ],
     "languageModelChatProviders": [

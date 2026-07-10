@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.1.4",
+  "version": "0.2.1",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -118,6 +118,12 @@
             "Combine relevance and usage scoring for balanced filtering"
           ],
           "description": "Strategy for selecting which tools to include when filtering is enabled.",
+          "scope": "window"
+        },
+        "mightyMax.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Optional system prompt sent on every M3 request. When empty, Mighty Max uses a short preamble that nudges M3 to plan before the first tool call. The prompt is sanitized for UTF-16 surrogate code points and sent with `cache_control: ephemeral` so it is reused across requests.",
           "scope": "window"
         }
       }

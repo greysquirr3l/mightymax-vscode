@@ -12,6 +12,8 @@
  * tokenizer (`provideTokenCount`) are filled in by T07.
  */
 
+import { createHash } from 'node:crypto';
+
 import * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
@@ -34,6 +36,12 @@ import {
   finalizeAccumulator,
   isToolSchemaError,
 } from '../lib/domain/tools.js';
+import {
+  getMaxTokensForModel,
+  getModelSampler,
+  getThinkingConfig,
+} from '../lib/domain/anthropic-transform.js';
+import { LruMap } from '../lib/domain/lru.js';
 import type { ChatTool, ChatToolMode } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
 
@@ -41,21 +49,37 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private disposables: vscode.Disposable[] = [];
   /**
-   * Shadow cache of thinking blocks with signatures, keyed by a hash of
-   * the assistant message content that preceded them. This cache bridges
-   * the gap until LanguageModelThinkingPart lands in @types/vscode and
-   * VS Code can persist thinking blocks in its own history. The cache
+   * Shadow cache of thinking blocks with signatures, keyed by a
+   * stable hash of the assistant message that preceded them. This
+   * cache bridges the gap until LanguageModelThinkingPart lands
+   * in @types/vscode and VS Code can persist thinking blocks in
+   * its own history. The cache is bounded (LRU, 128 entries) so a
+   * long-running session cannot grow it without limit. The cache
    * lifetime is the provider's lifetime (cleared on dispose).
    *
-   * Key: hash of (text content + stringified tool calls) from the
-   * assistant message. Value: {thinking, signature?}.
+   * Key: sha256 of (model id + text content + canonicalized tool
+   * call list). Value: {thinking, signature?}.
    */
-  private readonly thinkingCache = new Map<string, { thinking: string; signature?: string }>();
+  private readonly thinkingCache = new LruMap<string, { thinking: string; signature?: string }>(
+    128,
+  );
   /**
    * Tool usage tracking for smart filtering. Maps tool names to call counts.
    * Used to prioritize frequently-used tools when filtering is enabled.
    */
   private readonly toolUsageStats = new Map<string, number>();
+
+  /**
+   * Default system prompt sent on every M3 request. M3 plans more
+   * carefully than M2.x when given a system preamble; the
+   * sentence is tuned for a coding-agent context (use the
+   * available tools, prefer minimal tool calls, summarize
+   * changes). The user can override it via the
+   * `mightyMax.systemPrompt` configuration setting.
+   */
+  private static readonly DEFAULT_SYSTEM_PROMPT =
+    'You are a helpful coding assistant. Use the available tools to complete the task. ' +
+    'Prefer minimal tool calls and return a short summary of any changes you made.';
 
   constructor(
     private readonly logger: Logger,
@@ -139,7 +163,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const domainMessages = messages.map(vscodeToDomainMessage);
 
     // Inject cached thinking blocks into assistant messages
-    const enrichedMessages = this.enrichWithThinking(domainMessages);
+    const enrichedMessages = this.enrichWithThinking(domainMessages, model.id);
 
     // Get model info from catalog to determine thinking style
     const modelInfo = await this.catalog.getModel(model.id);
@@ -184,14 +208,37 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
     const toolChoice = toolMode !== undefined ? mapToolModeToChoice(toolMode) : undefined;
 
-    // Build the request (conditionally include tools/toolChoice)
+    // Per-model sampling parameters (opencode `transform.ts:286-334`).
+    // The M-series is tuned at temp=1.0, topP=0.95, topK=20-40; sending
+    // the upstream default produces noticeably different outputs.
+    const sampler = getModelSampler(model.id);
+    // Clamp max_tokens to 32K (opencode OUTPUT_TOKEN_MAX) so an
+    // agent turn cannot burn the whole context window.
+    const maxTokens = getMaxTokensForModel(model.id);
+    // M3 native thinking: opt the model in to its reasoning block
+    // (Anthropic interface defaults thinking OFF, unlike Chat
+    // Completions). Without this, M3 rushes the first tool call.
+    const thinkingConfig = getThinkingConfig(model.id, thinkingStyle, maxTokens);
+    // User-overridable system prompt.
+    const systemPrompt = this.readSystemPromptOverride();
+
+    // Build the request (conditionally include tools/toolChoice/sampling)
     const request: MiniMaxCompletionRequest = {
       model: model.id,
       messages: mappingResult.messages.filter((m) => m.role !== undefined),
       ...(miniMaxTools !== undefined ? { tools: miniMaxTools } : {}),
       ...(toolChoice !== undefined ? { toolChoice } : {}),
+      temperature: sampler.temperature,
+      topP: sampler.topP,
+      topK: sampler.topK,
+      maxTokens,
       stream: true,
       dialect,
+      ...(thinkingConfig !== undefined ? { thinking: thinkingConfig.thinking } : {}),
+      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+      ...(mappingResult.cacheMarkers.length > 0
+        ? { cacheMarkers: mappingResult.cacheMarkers }
+        : {}),
     };
 
     this.logger.info('Starting streaming request', {
@@ -201,6 +248,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       toolCount: tools.length,
       toolMode,
       tools: tools.map(t => t.name),
+      temperature: sampler.temperature,
+      topP: sampler.topP,
+      topK: sampler.topK,
+      maxTokens,
+      thinkingEnabled: thinkingConfig !== undefined,
+      cacheMarkers: mappingResult.cacheMarkers.length,
     });
 
     try {
@@ -314,7 +367,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
       // Cache the thinking block if we captured one, keyed by message content hash
       if (currentThinking && (currentText || currentToolCallIds.length > 0)) {
-        const cacheKey = this.generateMessageHash(currentText, currentToolCallIds);
+        const cacheKey = this.generateMessageHash(currentText, currentToolCallIds, model.id);
         this.thinkingCache.set(cacheKey, currentThinking);
         this.logger.debug('Cached thinking block', {
           cacheKey,
@@ -357,11 +410,16 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const modelInfo = await this.catalog.getModel(model.id);
     const isAnthropic = modelInfo?.thinkingStyle === 'anthropic';
 
-    // Family-aware heuristic:
-    // - Anthropic-style (M3): ~4 chars per token (more conservative)
-    // - OpenAI-style (M2.x): ~3.5 chars per token
-    // This is a rough estimate; a real tokenizer would be more accurate.
-    const charsPerToken = isAnthropic ? 4.0 : 3.5;
+    // Family-aware heuristic. M3 uses a BPE tokenizer tuned
+    // closer to 3.7 chars/token for code-heavy content; M2.x
+    // (OpenAI-style tokenizer) is closer to 3.5. The 4.0/3.5
+    // split from before over-estimated M3 by ~10-15% and
+    // made the context-window widget drift relative to the
+    // model's actual usage. A real tokenizer (gpt-tokenizer
+    // for M2.x, a cl100k-style BPE for M3) would be more
+    // accurate; the heuristic is the next-best pure-runtime
+    // approximation.
+    const charsPerToken = isAnthropic ? 3.7 : 3.5;
     const estimate = Math.ceil(content.length / charsPerToken);
 
     return Math.max(1, estimate);
@@ -375,14 +433,56 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   }
 
   /**
-   * Generate a stable hash for an assistant message based on tool call IDs.
-   * We use only tool call IDs (not text) because VS Code doesn't preserve
-   * assistant text in message history - it only stores tool calls. So when
-   * the message comes back in the next round, we only have the tool IDs to
-   * match on. Uniqueness comes from tool call IDs being UUIDs.
+   * Read the optional `mightyMax.systemPrompt` setting. When the
+   * setting is missing or empty, the default M3 preamble is used.
+   * The setting accepts a string; whitespace-only values are
+   * treated as "not set" and fall back to the default.
+   *
+   * Defensive: when `vscode.workspace` is unavailable (e.g. in
+   * the host-free test harness), falls back to the default rather
+   * than throwing — the chat-provider must be safe to construct
+   * and exercise in test environments.
    */
-  private generateMessageHash(_text: string, toolCallIds: string[]): string {
-    return toolCallIds.join(',');
+  private readSystemPromptOverride(): string {
+    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
+      .workspace;
+    if (ws?.getConfiguration === undefined) {
+      return ChatProvider.DEFAULT_SYSTEM_PROMPT;
+    }
+    const config = ws.getConfiguration('mightyMax') as { get?: (k: string) => unknown };
+    const raw = config.get?.('systemPrompt');
+    if (typeof raw !== 'string') return ChatProvider.DEFAULT_SYSTEM_PROMPT;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return ChatProvider.DEFAULT_SYSTEM_PROMPT;
+    return raw;
+  }
+
+  /**
+   * Generate a stable sha256 hash for an assistant message. The
+   * VS Code chat host does not persist assistant text across
+   * rounds (only the tool calls survive in the history), so the
+   * cache key is keyed on (model id + tool-call id set) only.
+   * The text is intentionally NOT part of the key so a round 2
+   * lookup with the same tool calls (and empty text) hits the
+   * round 1 entry. The previous implementation joined tool-call
+   * ids with a comma; the same call set with different id ordering
+   * (a `toString()` artifact) would collide. sha256 makes the key
+   * stable across id-order permutations and resistant to the
+   * `[object Object]` class of collision in the previous key.
+   */
+  private generateMessageHash(
+    _text: string,
+    toolCallIds: string[],
+    modelId: string,
+  ): string {
+    const hasher = createHash('sha256');
+    hasher.update(modelId);
+    hasher.update('\u0000');
+    for (const id of toolCallIds) {
+      hasher.update(id);
+      hasher.update('\u0001');
+    }
+    return hasher.digest('hex');
   }
 
   /**
@@ -428,18 +528,38 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   /**
    * Filter tools based on configuration and relevance/usage scoring.
    * Always includes priority tools from configuration.
+   *
+   * Defensive: when `vscode.workspace` is unavailable (e.g. in the
+   * host-free test harness), returns `allTools` unchanged rather
+   * than throwing. Real VS Code has workspace; the test harness
+   * uses a stub that does not.
    */
   private filterTools(
     allTools: ReadonlyArray<ChatTool>,
     userPrompt: string,
   ): ReadonlyArray<ChatTool> {
-    const config = vscode.workspace.getConfiguration('mightyMax');
-    const enabled = config.get<boolean>('enableSmartToolFiltering', true);
-    const maxTools = config.get<number>('maxTools', 30);
-    const alwaysInclude = new Set(config.get<string[]>('alwaysIncludeTools', [
-      'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob'
-    ]));
-    const strategy = config.get<'relevance' | 'usage' | 'hybrid'>('toolFilterStrategy', 'hybrid');
+    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
+      .workspace;
+    if (ws?.getConfiguration === undefined) {
+      return allTools;
+    }
+    const config = ws.getConfiguration('mightyMax') as {
+      get?: <T>(k: string, d?: T) => T;
+    };
+    const enabled = config.get?.<boolean>('enableSmartToolFiltering', true) ?? true;
+    const maxTools = config.get?.<number>('maxTools', 30) ?? 30;
+    const alwaysInclude = new Set(
+      config.get?.<string[]>('alwaysIncludeTools', [
+        'read_file',
+        'write_file',
+        'edit_file',
+        'bash',
+        'grep',
+        'glob',
+      ]) ?? [],
+    );
+    const strategy =
+      config.get?.<'relevance' | 'usage' | 'hybrid'>('toolFilterStrategy', 'hybrid') ?? 'hybrid';
 
     // If filtering is disabled or we're under the limit, return all tools
     if (!enabled || allTools.length <= maxTools) {
@@ -531,9 +651,16 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private getCachedThinking(
     text: string,
     toolCallIds: string[],
+    modelId: string,
   ): { thinking: string; signature?: string } | undefined {
-    const key = this.generateMessageHash(text, toolCallIds);
-    return this.thinkingCache.get(key);
+    const key = this.generateMessageHash(text, toolCallIds, modelId);
+    const value = this.thinkingCache.get(key);
+    if (value !== undefined) {
+      // Promote to most-recently-used on a hit so a hot
+      // thinking block survives long agent loops.
+      this.thinkingCache.touch(key);
+    }
+    return value;
   }
 
   /**
@@ -541,7 +668,10 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
    * This bridges the gap until VS Code can persist thinking blocks
    * in its own history via LanguageModelThinkingPart.
    */
-  private enrichWithThinking(messages: ReadonlyArray<ChatMessage>): ReadonlyArray<ChatMessage> {
+  private enrichWithThinking(
+    messages: ReadonlyArray<ChatMessage>,
+    modelId: string,
+  ): ReadonlyArray<ChatMessage> {
     return messages.map((msg) => {
       if (msg.role !== 'assistant') return msg;
 
@@ -554,7 +684,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       }
 
       // Look up cached thinking
-      const cached = this.getCachedThinking(textParts.join('\n'), toolCallIds);
+      const cached = this.getCachedThinking(textParts.join('\n'), toolCallIds, modelId);
       if (!cached) return msg;
 
       // Prepend thinking part to the message content

@@ -57,6 +57,22 @@ describe('BUILT_IN_CATALOG', () => {
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
 
+  it('M3 advertises a 1M / 128K token budget matching models.dev', () => {
+    // models.dev's "minimax" provider entry for MiniMax-M3 lists
+    //   limit.context = 1_000_000
+    //   limit.output  = 128_000
+    // The static catalog must mirror these so VS Code's
+    // context-window widget and utility-model sizing stay
+    // accurate. The chat-provider still clamps the actual
+    // request's max_tokens to 32K (opencode OUTPUT_TOKEN_MAX);
+    // the catalog value drives the picker UI and the
+    // utility-model budget math, not the request body.
+    const m3 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3');
+    assert.ok(m3, 'M3 entry must exist');
+    assert.equal(m3.maxInputTokens, 1_000_000);
+    assert.equal(m3.maxOutputTokens, 128_000);
+  });
+
   it('M2.x uses OpenAI-style thinking deltas', () => {
     for (const id of ['MiniMax-M2', 'MiniMax-M2.5', 'MiniMax-M2.7']) {
       const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
@@ -201,7 +217,7 @@ describe('mergeCatalog', () => {
     const m3 = merged.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3);
     assert.equal(m3.displayName, 'M3 (MiniMax)');
-    assert.equal(m3.maxInputTokens, 1_040_384);
+    assert.equal(m3.maxInputTokens, 1_000_000);
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
 

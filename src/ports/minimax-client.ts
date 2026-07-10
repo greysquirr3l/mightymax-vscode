@@ -61,6 +61,18 @@ export interface MiniMaxCompletionRequest {
   tools?: ReadonlyArray<MiniMaxToolDefinition>;
   toolChoice?: 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
   temperature?: number;
+  /**
+   * Nucleus sampling. The M-series is tuned at `topP=0.95`; omitting
+   * the field falls back to the upstream default which produces
+   * noticeably different outputs (opencode `transform.ts:314-322`).
+   */
+  topP?: number;
+  /**
+   * Top-K sampling. The M-series is tuned at `topK=20-40`; omitting
+   * the field falls back to the upstream default (opencode
+   * `transform.ts:324-334`).
+   */
+  topK?: number;
   maxTokens?: number;
   stream: true;
   /**
@@ -69,6 +81,32 @@ export interface MiniMaxCompletionRequest {
    * blocks) and `'openai'` for everything else.
    */
   dialect?: MiniMaxDialect;
+  /**
+   * M3 native thinking configuration. The Anthropic-compatible
+   * interface defaults thinking **off** (unlike Chat Completions);
+   * the chat-provider must opt in explicitly with an enabled or
+   * adaptive block. See `getThinkingConfig` in
+   * `src/lib/domain/anthropic-transform.ts`.
+   */
+  thinking?: {
+    type: 'enabled' | 'adaptive' | 'disabled';
+    budgetTokens?: number;
+  };
+  /**
+   * Optional system prompt the chat-provider prepends to the
+   * request. When omitted, no system message is sent (the
+   * Anthropic endpoint accepts requests with empty system).
+   */
+  systemPrompt?: string;
+  /**
+   * 1-indexed positions of messages in `messages` that should
+   * receive `cache_control: { type: 'ephemeral' }` when
+   * serialized for the Anthropic dialect. Computed by
+   * `mapRequestToMiniMax` (the last 1-2 messages in user
+   * history). When omitted, no cache markers are stamped; the
+   * system block is still cached.
+   */
+  cacheMarkers?: ReadonlyArray<number>;
 }
 
 export interface MiniMaxUsageDelta {

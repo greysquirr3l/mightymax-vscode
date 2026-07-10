@@ -189,43 +189,66 @@ describe('mapRequestToMiniMax — image', () => {
 
 describe('mapRequestToMiniMax — tool-result and tool-call', () => {
   it('projects a tool-result part to a role:tool wire message preserving the call id', () => {
-    const msg: ChatMessage = {
-      role: 'user',
-      content: [
-        { type: 'text', value: 'Got the result:' },
-        {
-          type: 'tool-result',
-          toolResult: { callId: 'call_1', content: ['{"status":"ok"}'] },
-        },
-      ],
-    };
-    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [msg]);
+    // A tool-result without a matching assistant tool-call in the
+    // same request is an orphan and is dropped by the reconciler
+    // (Anthropic would 400 with "tool result's tool id not
+    // found"). To exercise the happy-path projection we pair the
+    // result with the assistant tool-call that emitted it.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCall: { callId: 'call_1', name: 'read_file', input: { path: '/a' } },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', value: 'Got the result:' },
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_1', content: ['{"status":"ok"}'] },
+          },
+        ],
+      },
+    ]);
     equal(result.warnings.length, 0);
-    // user message (text) + tool message
-    equal(result.messages.length, 2);
-    const userMsg = result.messages[0] as MiniMaxWireMessage;
-    const toolMsg = result.messages[1] as MiniMaxWireMessage;
-    equal(userMsg.role, 'user');
-    equal(toolMsg.role, 'tool');
+    const toolMsg = result.messages.find((m) => m.role === 'tool') as MiniMaxWireMessage;
+    ok(toolMsg, 'expected a tool wire message');
     equal(toolMsg.toolCallId, 'call_1');
     equal(toolMsg.content, '{"status":"ok"}');
   });
 
   it('emits multiple tool-result parts as multiple role:tool messages', () => {
-    const msg: ChatMessage = {
-      role: 'user',
-      content: [
-        {
-          type: 'tool-result',
-          toolResult: { callId: 'call_a', content: ['a'] },
-        },
-        {
-          type: 'tool-result',
-          toolResult: { callId: 'call_b', content: ['b'] },
-        },
-      ],
-    };
-    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [msg]);
+    // Same shape as the projection test: each tool-result must be
+    // paired with its assistant tool-call to survive the
+    // reconciler. This test exercises two parallel tool calls in
+    // a single assistant turn, each returning its own result.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool-call', toolCall: { callId: 'call_a', name: 'a', input: {} } },
+          { type: 'tool-call', toolCall: { callId: 'call_b', name: 'b', input: {} } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_a', content: ['a'] },
+          },
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_b', content: ['b'] },
+          },
+        ],
+      },
+    ]);
     const toolMessages = result.messages.filter((m) => m.role === 'tool');
     equal(toolMessages.length, 2);
     const ids = toolMessages.map((m) => m.toolCallId);
@@ -346,6 +369,43 @@ describe('mapRequestToMiniMax — tool-result and tool-call', () => {
       (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result'),
     );
     equal(orphanWarnings.length, 1);
+  });
+
+  it('drops every tool-result when no assistant tool_use is in the request', () => {
+    // The reconciler used to be gated on
+    // `assistantToolCallIds.size > 0`, which meant a request that
+    // contained ONLY tool-results (e.g. when VS Code replays a
+    // history mid-tool-execution, or the chat-provider's history
+    // scrubber has just dropped the prior assistant tool_call
+    // part) passed every tool-result through unchecked. Anthropic
+    // then 400s with "invalid params, tool result's tool id not
+    // found (2013)" (the exact failure in
+    // error_from_console.txt). The reconciler must always
+    // validate: a `tool_use_id` without a matching `tool_use`
+    // is always an orphan, regardless of how many assistant
+    // tool-calls the request happens to carry elsewhere.
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      { role: 'user', content: [{ type: 'text', value: 'replay history' }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_alone_1', content: ['one'] },
+          },
+          {
+            type: 'tool-result',
+            toolResult: { callId: 'call_alone_2', content: ['two'] },
+          },
+        ],
+      },
+    ]);
+    const toolMsgs = result.messages.filter((m) => m.role === 'tool');
+    equal(toolMsgs.length, 0, 'every tool-result must be dropped when no assistant tool-call exists');
+    const orphanWarnings = result.warnings.filter(
+      (w) => w.kind === 'unsupported-content' && w.reason.includes('orphan tool-result'),
+    );
+    equal(orphanWarnings.length, 2, 'one warning per dropped orphan');
   });
 
   it('preserves a well-formed tool-result whose assistant tool_use is present', () => {

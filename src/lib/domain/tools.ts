@@ -45,6 +45,7 @@ import type {
   MiniMaxToolDefinition,
   MiniMaxWireMessage,
 } from '../../ports/minimax-client.js';
+import { sanitizeAnthropicSchema } from './anthropic-transform.js';
 
 // Re-export the port types so the test file (and any future
 // consumer) can import everything the domain exports from one
@@ -72,12 +73,15 @@ export type {
  * tool name to dispatch, so reordering would silently break the
  * name-based routing.
  *
- * `inputSchema` is passed through unchanged; the MiniMax wire spec
- * requires a JSON-schema object, and the domain trusts the upstream
- * `vscode.LanguageModelChatTool` to have validated it. When the
- * upstream tool did not provide an `inputSchema`, we emit an empty
- * object — MiniMax requires the key to be present, but accepts
- * `{}` as "no parameters".
+ * `inputSchema` is run through `sanitizeAnthropicSchema` to lower it
+ * to the subset Anthropic's tool validator accepts — VS Code tools
+ * (especially from MCP servers and third-party extensions) routinely
+ * ship schemas that use `const`, `$ref` siblings, tuple `items`, or
+ * `additionalProperties: false` which Anthropic rejects with 400.
+ * The sanitizer preserves the original structure as much as possible
+ * while keeping the wire request valid. When the upstream tool did
+ * not provide an `inputSchema`, we emit an empty object — MiniMax
+ * requires the key to be present, but accepts `{}` as "no parameters".
  */
 export function mapToolsToMiniMax(tools: ReadonlyArray<ChatTool>): MiniMaxToolDefinition[] {
   return tools.map((tool) => {
@@ -93,7 +97,7 @@ export function mapToolsToMiniMax(tools: ReadonlyArray<ChatTool>): MiniMaxToolDe
       function: {
         name: tool.name,
         description: tool.description,
-        parameters: tool.inputSchema ?? {},
+        parameters: tool.inputSchema ? sanitizeAnthropicSchema(tool.inputSchema) : {},
       },
     } satisfies MiniMaxToolDefinition;
   });

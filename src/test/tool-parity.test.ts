@@ -26,12 +26,32 @@ import type { SecretStore } from '../ports/secret-store.js';
 
 const API_KEY = 'sk-test-tool-parity';
 
-function makeRecordingLogger(): Logger {
+function makeRecordingLogger(): Logger & {
+  readonly calls: ReadonlyArray<{
+    level: 'debug' | 'info' | 'warn' | 'error';
+    message: string;
+    context?: Record<string, unknown>;
+  }>;
+} {
+  const calls: Array<{
+    level: 'debug' | 'info' | 'warn' | 'error';
+    message: string;
+    context?: Record<string, unknown>;
+  }> = [];
+  const rec = (level: 'debug' | 'info' | 'warn' | 'error') =>
+    (message: string, context?: Record<string, unknown>): void => {
+      calls.push(
+        context === undefined ? { level, message } : { level, message, context },
+      );
+    };
   return {
-    debug: () => {},
-    info: () => {},
-    warn: () => {},
-    error: () => {},
+    get calls() {
+      return calls;
+    },
+    debug: rec('debug'),
+    info: rec('info'),
+    warn: rec('warn'),
+    error: rec('error'),
   };
 }
 
@@ -464,9 +484,13 @@ describe('Built-in tool and MCP parity', () => {
     ok(round2TextParts.length > 0, 'Round 2 should have text response');
   });
 
-  it('emits usage data throughout the loop for context-window tracking', async () => {
-    // Verify that usage data is emitted in the response stream so the
-    // context-window widget can track token consumption.
+  it('records usage metadata at debug without leaking as visible chat text (T19 invariant)', async () => {
+    // T19 spec change: usage JSON MUST NEVER be emitted as a
+    // `LanguageModelTextPart` (the previous behavior surfaced
+    // `__minimax_usage__:${json}` to the user, where the model
+    // saw its own token counts in chat). Usage is now logged at
+    // `debug` with token counts only; the context-window widget
+    // reads token counts from `provideTokenCount` separately.
     const script: ReadonlyArray<ReadonlyArray<MiniMaxStreamEvent>> = [
       [
         { textDelta: 'Hello' },
@@ -497,19 +521,22 @@ describe('Built-in tool and MCP parity', () => {
       new vscode.CancellationTokenSource().token,
     );
 
-    // Verify usage data is emitted as a text part with marker prefix
-    const usageParts = progressCapture.parts.filter(
-      (p): p is vscode.LanguageModelTextPart =>
-        p instanceof vscode.LanguageModelTextPart && p.value.startsWith('__minimax_usage__:')
+    // Invariant 1: NO LanguageModelTextPart carries the
+    // `__minimax_usage__:` marker (no usage-as-text leak).
+    for (const part of progressCapture.parts) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        ok(
+          !part.value.startsWith('__minimax_usage__:'),
+          `usage leaked into chat text: ${part.value}`,
+        );
+      }
+    }
+    // Invariant 2: token counts reach the logger as metadata.
+    const usageLog = logger.calls.find(
+      (c) =>
+        c.level === 'debug' &&
+        (c.context?.promptTokens === 100 || c.message.includes('100')),
     );
-    ok(usageParts.length > 0, 'Should have at least 1 usage part');
-    const usagePart = usageParts[0];
-    ok(usagePart, 'Usage part should exist');
-
-    // Parse the usage JSON
-    const usageJson = usagePart.value.replace('__minimax_usage__:', '');
-    const usage = JSON.parse(usageJson) as { promptTokens?: number; completionTokens?: number };
-    strictEqual(usage.promptTokens, 100, 'Prompt tokens should match');
-    strictEqual(usage.completionTokens, 5, 'Completion tokens should match');
+    ok(usageLog !== undefined, 'expected a debug-level usage log with promptTokens');
   });
 });

@@ -264,16 +264,48 @@ export function mapRequestToMiniMax(
       }
       if (part.type === 'tool-call') {
         if (msg.role !== 'assistant') {
-          // Tool-call parts must come from assistant history; a
-          // tool-call in user content is almost always the result
-          // of a chat-provider bug that is about to be followed by
-          // an orphan tool-result. Surface a warning, drop the
-          // part, and let the reconciler remove the matching
-          // tool-result below.
+          // T18: HOIST, do not drop. VS Code history can present a
+          // tool-call part inside a user-role message (the
+          // chat-provider's history scrubber does not preserve the
+          // role strictly). The original behavior emitted an
+          // `unsupported-content` warning and skipped the part —
+          // leaving the next user message's tool-result orphaned
+          // (which the reconciler then dropped, silencing the 400
+          // but destroying tool output). We now synthesize a
+          // MINIMAL assistant turn at this position carrying the
+          // tool_use so the matching tool_result on the next user
+          // turn has a valid `tool_use_id` reference.
+          //
+          // The synthesized assistant turn is pushed into the wire
+          // list immediately (alongside the accumulating user-role
+          // wire message being built) so the wire order is:
+          //   [...prior..., user_with_tool_call, *hoisted_assistant*]
+          //
+          // Other user-role parts (text, images, tool-results) on
+          // the same message continue to accumulate on the
+          // user-role wire message — the hoist is purely additive.
           warnings.push({
             kind: 'unsupported-content',
-            reason: 'tool-call in request content (must come from assistant history, not user)',
+            reason:
+              'tool-call in user request content (hoisted into synthesized assistant turn)',
           });
+          const hoistedId = part.toolCall.callId;
+          const hoistedName = part.toolCall.name;
+          wireMessages.push({
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: hoistedId,
+                type: 'function',
+                function: {
+                  name: hoistedName,
+                  arguments: JSON.stringify(part.toolCall.input ?? {}),
+                },
+              },
+            ],
+          });
+          if (hoistedId.length > 0) assistantToolCallIds.add(hoistedId);
           continue;
         }
         // Tool calls from assistant history need to be preserved so that
@@ -400,31 +432,43 @@ export function mapRequestToMiniMax(
     }
   }
 
-  // Reconciliation pass: drop `tool` wire messages whose
-  // `toolCallId` is unknown to the assistant-history set we
-  // accumulated above. Anthropic rejects these with
-  // "invalid params, tool result's tool id not found" (2013);
-  // MiniMax returns the same 400. The check is unconditional:
-  // a `tool_use_id` with no matching `tool_use` is ALWAYS an
-  // orphan, regardless of whether the request happens to
-  // carry other assistant tool-calls elsewhere. Gating the
-  // pass on `assistantToolCallIds.size > 0` (the previous
-  // behavior) let a request with no assistant tool-calls but
-  // multiple tool-results slip every result through unchecked
-  // — the exact failure mode captured in
-  // error_from_console.txt. Surface a warning for each dropped
-  // result so the chat-provider can log it at warn level; the
-  // turn continues with the surviving messages.
+  // Reconciliation pass: ADOPT orphan tool-results rather than drop
+  // them. Anthropic rejects a `tool_result` whose `tool_use_id` has
+  // no matching assistant `tool_use` (error 2013, "invalid params,
+  // tool result's tool id not found"). The previous behavior
+  // silently dropped the orphan and emitted an
+  // `unsupported-content` warning — which silenced the 400 in some
+  // cases but destroyed tool output: the model re-ran the tool,
+  // looped, or hallucinated. T18's spec calls for adoption: if a
+  // `tool_result` arrives without a corresponding `tool_use` in the
+  // assistant history, synthesize a minimal assistant turn
+  // IMMEDIATELY before the orphan with a `tool_use` carrying the
+  // same id. The wire stays valid and the model still sees the
+  // tool output as if the call had happened.
   const reconciled: MiniMaxWireMessage[] = [];
   for (const m of wireMessages) {
     if (m.role === 'tool') {
       const callId = m.toolCallId ?? '';
       if (callId.length === 0 || !assistantToolCallIds.has(callId)) {
-        warnings.push({
-          kind: 'unsupported-content',
-          reason: `orphan tool-result dropped: toolCallId=${callId} has no matching assistant tool_use`,
+        // Adopt: synthesize a minimal assistant `tool_use` carrying
+        // the orphan id, placed immediately before the orphan
+        // `tool_result`. Name falls back to `'unknown_tool'` only
+        // when the chat-provider did not preserve the original
+        // function name; the user-facing assistant turn is empty
+        // (text content '') and `input` is `{}` so the upstream
+        // parser sees a structurally complete `tool_use`.
+        reconciled.push({
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            {
+              id: callId,
+              type: 'function',
+              function: { name: 'unknown_tool', arguments: '{}' },
+            },
+          ],
         });
-        continue;
+        assistantToolCallIds.add(callId);
       }
     }
     reconciled.push(m);

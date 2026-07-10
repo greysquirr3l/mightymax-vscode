@@ -8,7 +8,7 @@
  *  4. Anthropic wire format includes thinking blocks with signatures
  */
 
-import { ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import * as vscode from 'vscode';
 
@@ -335,39 +335,60 @@ describe('Thinking pass-back', () => {
     const round2Request = client.calls[1]?.request;
     ok(round2Request, 'Round 2 request should exist');
 
-    // Log the request to verify coalescing removed (no-console).
-
-    // Count user messages with tool_result content
-    const userMessages = round2Request.messages.filter(m => m.role === 'user');
     // Verbose debug helper removed (no-console).
 
-    // Find the user message containing tool results
-    let toolResultMessage: typeof round2Request.messages[number] | undefined;
-    for (const msg of userMessages) {
-      if (Array.isArray(msg.content)) {
-        const hasToolResult = msg.content.some(
-          part => typeof part === 'object' && part !== null && 'type' in part && part.type === 'tool_result'
-        );
-        if (hasToolResult) {
-          toolResultMessage = msg;
+    // T18 spec clarification: the domain keeps the two tool
+    // messages as separate `role: 'tool'` entries (one per
+    // tool call id). The Anthropic wire-serializer
+    // (`serializeAnthropicRequest` in
+    // `src/adapters/transport.ts`) coalesces them into a single
+    // user message with multiple `tool_result` blocks right
+    // before serialization (the `_toolBatch` coalescing path).
+    //
+    // We assert both invariants here:
+    //   1. The domain message list has the two tool entries
+    //      with the matching ids (T18: id-parity round-trip).
+    //   2. Each tool message is positioned IMMEDIATELY after
+    //      the assistant turn that carries the matching call id
+    //      (T18: ordering invariant for the Anthropic wire).
+    const toolEntries = round2Request.messages.filter((m) => m.role === 'tool');
+    const callIds = toolEntries
+      .map((m) => (m as { toolCallId?: string }).toolCallId)
+      .filter((id): id is string => typeof id === 'string')
+      .sort();
+    strictEqual(callIds.length, 2, 'two role:tool entries expected');
+    deepStrictEqual(callIds, ['call_1', 'call_2']);
+
+    // Verify the ordering: every tool entry must follow
+    // an assistant turn that carries the matching call id.
+    for (let i = 0; i < round2Request.messages.length; i += 1) {
+      const m = round2Request.messages[i];
+      if (!m || m.role !== 'tool') continue;
+      const toolCallId = (m as { toolCallId?: string }).toolCallId;
+      if (typeof toolCallId !== 'string') continue;
+      // Walk backwards to find the most-recent prior assistant turn
+      // (the domain mapper never inserts unrelated turns between
+      // an assistant tool_use and its tool_result).
+      let precedingAssistant:
+        | { toolCalls?: ReadonlyArray<{ id: string }> }
+        | undefined;
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const prior = round2Request.messages[j];
+        if (prior !== undefined && prior.role === 'assistant') {
+          precedingAssistant = prior as { toolCalls?: ReadonlyArray<{ id: string }> };
           break;
         }
       }
+      ok(
+        precedingAssistant !== undefined,
+        `tool(${toolCallId}) must follow an assistant turn`,
+      );
+      const matched =
+        precedingAssistant?.toolCalls?.some((tc) => tc.id === toolCallId) ?? false;
+      ok(
+        matched,
+        `tool(${toolCallId}) must follow an assistant turn whose tool_calls carry the same id`,
+      );
     }
-
-    ok(toolResultMessage, 'Should have a user message with tool results');
-    ok(Array.isArray(toolResultMessage.content), 'Tool result message content should be an array');
-
-    // Count tool_result blocks in this message
-    const toolResultBlocks = (toolResultMessage.content as Array<unknown>).filter(
-      part => typeof part === 'object' && part !== null && 'type' in part && part.type === 'tool_result'
-    );
-
-    // console.log debug helper removed (no-console).
-    strictEqual(
-      toolResultBlocks.length,
-      2,
-      'Both tool results should be coalesced into a single user message with 2 tool_result blocks'
-    );
   });
 });

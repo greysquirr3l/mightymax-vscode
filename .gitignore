@@ -24,3 +24,6 @@ tmp/
 # Local-only: API key for one-shot MiniMax context_management probe. Do not commit.
 .mighty-max-probe-key
 IMPLEMENTATION_SUMMARY.md
+CLAUDE.md
+.mcp.json
+opencode.json

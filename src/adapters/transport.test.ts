@@ -451,3 +451,211 @@ describe('T22 — chat-provider does not log content previews', () => {
     ok(SENTINEL_TOOL_CALL_ID.length > 0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stall watchdogs — first-byte timeout and mid-stream idle timeout
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A fetchImpl that never resolves — the observed 2026-07-13 failure
+ * shape (server accepts the socket, never sends response headers).
+ * Rejects with the abort reason when the attempt signal fires so
+ * the watchdog / caller-abort paths behave like real undici fetch.
+ */
+function hangingFetch(onCall?: () => void): typeof fetch {
+  return (async (_url: unknown, init?: RequestInit) => {
+    onCall?.();
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const reason: unknown = init.signal?.reason;
+        reject(reason instanceof Error ? reason : new Error('aborted'));
+      });
+    });
+  }) as unknown as typeof fetch;
+}
+
+describe('stall watchdogs — first-byte and idle timeouts', () => {
+  it('a server that never sends headers is retried, then surfaces kind:stall', async () => {
+    const logger = makeCapturingLogger();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: hangingFetch(() => {
+        calls += 1;
+      }),
+      firstByteTimeoutMs: 20,
+      maxRetries: 1,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    let thrown: unknown;
+    try {
+      await withTimeout(
+        consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+        5_000,
+        'first-byte watchdog never fired — request hung',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'stall');
+    strictEqual(calls, 2, 'expected one retry before surfacing the stall');
+    ok(
+      logger.calls.some(
+        (c) => c.level === 'warn' && c.message.includes('first-byte timeout'),
+      ),
+      'expected a first-byte-timeout retry warning',
+    );
+  });
+
+  it('a first-byte timeout recovers transparently when the retry succeeds', async () => {
+    const logger = makeCapturingLogger();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+          });
+        }
+        return sseOkResponse();
+      }) as unknown as typeof fetch,
+      firstByteTimeoutMs: 20,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'retry after first-byte timeout never completed',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2);
+  });
+
+  it('a caller abort that races the watchdog still surfaces kind:abort, not stall', async () => {
+    const logger = makeCapturingLogger();
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: hangingFetch(),
+      firstByteTimeoutMs: 5_000,
+      sleep: async () => {},
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('user cancelled')), 10);
+    let thrown: unknown;
+    try {
+      await withTimeout(
+        consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', controller.signal, logger)),
+        5_000,
+        'caller abort never propagated',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'abort');
+  });
+
+  it('mid-stream silence AFTER the first event surfaces kind:stall without re-issuing', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      maxConcurrentRequests: 1,
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      idleTimeoutMs: 40,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const events = adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger);
+    const iter = events[Symbol.asyncIterator]();
+    held.emitText('first');
+    const first = await withTimeout(iter.next(), 2_000, 'first event never arrived');
+    strictEqual(first.done, false);
+
+    // The stream now goes silent; the idle watchdog must cut it.
+    let thrown: unknown;
+    try {
+      await withTimeout(iter.next(), 5_000, 'idle watchdog never fired — stream hung');
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'stall');
+    strictEqual(calls, 1, 'a post-first-event stall must NOT be re-issued');
+
+    // Regression probe: the stall path must release the semaphore
+    // permit (maxConcurrentRequests: 1 deadlocks here otherwise).
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      2_000,
+      'permit leaked by the stalled stream',
+    );
+    ok(eventCount > 0, 'follow-up request should yield events');
+  });
+
+  it('silence BEFORE the first event is retried transparently', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse(); // headers arrive, body never emits
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      idleTimeoutMs: 40,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'before-first-event stall was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2, 'expected exactly one transparent re-issue');
+    ok(
+      logger.calls.some(
+        (c) => c.level === 'warn' && c.message.includes('died before first event'),
+      ),
+      'expected a before-first-event retry warning',
+    );
+  });
+
+  it('a flowing stream is never cut by the idle watchdog, however long it runs', async () => {
+    // Regression pin for the 2026-07-13 observation: 173s requests
+    // with a continuously flowing stream completed successfully.
+    // The watchdog measures byte gaps, not elapsed time — a stream
+    // that keeps trickling events past several idle windows must
+    // complete cleanly.
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => held.response) as unknown as typeof fetch,
+      idleTimeoutMs: 60,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const done = consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger));
+    // Trickle events at half the idle window for several windows.
+    for (let i = 0; i < 6; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      held.emitText(`chunk-${i}`);
+    }
+    held.finish();
+    const eventCount = await withTimeout(done, 5_000, 'flowing stream was cut by the watchdog');
+    ok(eventCount >= 6, 'every trickled event should be delivered');
+  });
+});

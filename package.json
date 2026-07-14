@@ -82,6 +82,22 @@
           "description": "MiniMax API base URL. The API key is never stored here — it lives in SecretStorage.",
           "scope": "application"
         },
+        "mightyMax.firstByteTimeoutMs": {
+          "type": "number",
+          "default": 45000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Watchdog on time-to-first-response, in milliseconds. If MiniMax accepts the connection but sends no response headers within this budget, the attempt is aborted and retried with backoff; exhausted retries surface a 'stall' error instead of hanging until you cancel. Healthy requests return headers in single-digit seconds even on large cached prompts. Changes apply to the next request — no reload needed.",
+          "scope": "window"
+        },
+        "mightyMax.idleTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Watchdog on mid-stream silence, in milliseconds. If an open response stream delivers no bytes for this long, it is cut with a 'stall' error (and retried automatically when nothing had streamed yet). This measures gaps between bytes, not total request time — long responses that keep streaming are never cut. Changes apply to the next request — no reload needed.",
+          "scope": "window"
+        },
         "mightyMax.logLevel": {
           "type": "string",
           "enum": [

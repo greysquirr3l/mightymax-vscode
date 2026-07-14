@@ -76,6 +76,34 @@ export interface MiniMaxClientOptions {
    * limiting; raise it for batched workloads.
    */
   maxConcurrentRequests?: number;
+  /**
+   * Default: 45000ms. Watchdog on time-to-response-headers. A
+   * server that accepts the connection but never sends response
+   * headers throws nothing — `fetch` just stays pending, the retry
+   * loop never engages, and the request hangs until the user
+   * cancels. On expiry the attempt is aborted and retried with
+   * backoff like any transient network failure; exhausting the
+   * retry budget surfaces `MiniMaxClientError({ kind: 'stall' })`.
+   * A callback form is re-read on every request (the `baseUrl`
+   * pattern) so a settings change is honored without restarting
+   * the extension host. Non-finite or non-positive values fall
+   * back to the default.
+   */
+  firstByteTimeoutMs?: number | (() => number);
+  /**
+   * Default: 60000ms. Watchdog on mid-stream byte silence: if no
+   * bytes arrive on an open response body for this long, the
+   * stream is cut with `MiniMaxClientError({ kind: 'stall' })`.
+   * Silence BEFORE the first event is retried transparently (the
+   * consumer saw nothing, so re-issuing is safe); silence after
+   * the first event surfaces as an error (re-issuing would
+   * duplicate content already delivered). Keyed off gaps between
+   * bytes, never total elapsed time — a long request whose stream
+   * keeps flowing is never cut. A callback form is re-read on
+   * every request (the `baseUrl` pattern); non-finite or
+   * non-positive values fall back to the default.
+   */
+  idleTimeoutMs?: number | (() => number);
 }
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -106,6 +134,46 @@ const SLOW_REQUEST_THRESHOLD_MS = 20_000;
  * stream — the chat-provider accepts the partial response.
  */
 const ABANDONMENT_THRESHOLD_MS = 30_000;
+
+/**
+ * Watchdog on time-to-response-headers. Healthy MiniMax requests
+ * return headers in single-digit seconds even on 90K-token cached
+ * prompts; the hangs observed 2026-07-13 sat 80s+ with no headers
+ * at all until manually cancelled. 45s is generous headroom over
+ * the healthy case while still bounding the pathological one.
+ */
+const FIRST_BYTE_TIMEOUT_MS = 45_000;
+
+/**
+ * Watchdog on mid-stream byte silence. Distinct from the slow-
+ * request threshold: total elapsed time is NOT a stall signal
+ * (173s requests with a continuously flowing stream complete
+ * successfully); only a sustained gap between bytes is. 60s
+ * comfortably exceeds inter-token pauses and the Anthropic
+ * dialect's ping cadence.
+ */
+const IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * Normalize a watchdog-timeout option to a validated getter. The
+ * callback form is re-read on every use so a live settings change
+ * is honored without restarting the extension host (the `baseUrl`
+ * pattern); validation runs at read time for the same reason. Any
+ * non-finite or non-positive value falls back to `fallbackMs` —
+ * a user typo in settings must never disable a watchdog or turn
+ * it into a 0ms insta-abort.
+ */
+function timeoutGetter(
+  option: number | (() => number) | undefined,
+  fallbackMs: number,
+): () => number {
+  const read =
+    option === undefined ? () => fallbackMs : typeof option === 'number' ? () => option : option;
+  return () => {
+    const value = read();
+    return Number.isFinite(value) && value > 0 ? value : fallbackMs;
+  };
+}
 
 /**
  * Mutable parse state the SSE parsers update as they consume the
@@ -274,6 +342,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly slowRequestThresholdMs: number;
   private readonly abandonmentThresholdMs: number;
+  private readonly firstByteTimeoutMs: () => number;
+  private readonly idleTimeoutMs: () => number;
   private readonly semaphore: Semaphore;
 
   constructor(options: MiniMaxClientOptions) {
@@ -286,6 +356,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.slowRequestThresholdMs = options.slowRequestThresholdMs ?? SLOW_REQUEST_THRESHOLD_MS;
     this.abandonmentThresholdMs = options.abandonmentThresholdMs ?? ABANDONMENT_THRESHOLD_MS;
+    this.firstByteTimeoutMs = timeoutGetter(options.firstByteTimeoutMs, FIRST_BYTE_TIMEOUT_MS);
+    this.idleTimeoutMs = timeoutGetter(options.idleTimeoutMs, IDLE_TIMEOUT_MS);
     this.semaphore = new Semaphore(options.maxConcurrentRequests ?? DEFAULTS.maxConcurrentRequests);
   }
 
@@ -343,6 +415,67 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     dialect: MiniMaxDialect,
     logger: Logger,
   ): AsyncIterable<MiniMaxStreamEvent> {
+    // Stall-retry driver. A stream that dies BEFORE delivering any
+    // event is invisible to the caller (nothing was yielded), so
+    // re-issuing the whole request is safe. Two failure shapes land
+    // here as retriable errors with `sawAnyEvent === false`:
+    //  - `stall`   — the idle watchdog cut a connection that went
+    //                silent after headers but before the first event
+    //                (the first-byte watchdog inside
+    //                `doRequestWithRetries` handles its own retries).
+    //  - `network` — the response body terminated without ever
+    //                delivering an event.
+    // Anything after the first yielded event is NOT retried here —
+    // re-issuing would duplicate content the consumer already saw.
+    const maxAttempts = 1 + this.maxRetries;
+    for (let attempt = 1; ; attempt += 1) {
+      // Mutable state the parsers update as they consume the stream.
+      // Created out here (not inside the attempt) so the retry
+      // predicate below can consult `sawAnyEvent` after a failure.
+      const parseState: MutableParseState = {
+        sawFinishReason: false,
+        sawAnyEvent: false,
+        lastCacheReadTokens: undefined,
+        lastCacheCreateTokens: undefined,
+        pendingToolUseStarts: new Map(),
+        pendingThinking: undefined,
+      };
+      try {
+        yield* this.runCompletionAttempt(request, apiKey, signal, dialect, logger, parseState);
+        return;
+      } catch (err) {
+        const retriableBeforeFirstEvent =
+          err instanceof MiniMaxClientError &&
+          err.retriable &&
+          (err.kind === 'stall' || err.kind === 'network') &&
+          !parseState.sawAnyEvent &&
+          !signal.aborted &&
+          attempt < maxAttempts;
+        if (!retriableBeforeFirstEvent) throw err;
+        const waitMs = computeBackoff({
+          attempt,
+          initialMs: this.initialBackoffMs,
+          maxMs: this.maxBackoffMs,
+        });
+        logger.warn('MiniMax stream died before first event — retrying', {
+          model: request.model,
+          kind: err.kind,
+          attempt,
+          waitMs,
+        });
+        await this.sleep(waitMs);
+      }
+    }
+  }
+
+  private async *runCompletionAttempt(
+    request: MiniMaxCompletionRequest,
+    apiKey: string,
+    signal: AbortSignal,
+    dialect: MiniMaxDialect,
+    logger: Logger,
+    parseState: MutableParseState,
+  ): AsyncIterable<MiniMaxStreamEvent> {
     const startedAt = Date.now();
     logger.debug('MiniMax request start', {
       dialect,
@@ -354,18 +487,6 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     if (!response.body) {
       throw new MiniMaxClientError('network', 'MiniMax response has no body');
     }
-    // Mutable state the parsers update as they consume the stream.
-    // The transport inspects this after the stream yields to
-    // decide whether the request was abandoned (no terminal
-    // marker ever arrived) — see abandonment detection below.
-    const parseState: MutableParseState = {
-      sawFinishReason: false,
-      sawAnyEvent: false,
-      lastCacheReadTokens: undefined,
-      lastCacheCreateTokens: undefined,
-      pendingToolUseStarts: new Map(),
-      pendingThinking: undefined,
-    };
     // The abandonment check is stashed in this local rather than
     // thrown directly inside the `finally` block: the
     // `no-unsafe-finally` lint rule forbids `throw` in `finally`
@@ -375,7 +496,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     // caller's `for await` loop.
     let abandonmentError: MiniMaxClientError | undefined;
     try {
-      yield* parseStream(response.body, dialect, signal, parseState, logger);
+      yield* parseStream(response.body, dialect, signal, parseState, logger, this.idleTimeoutMs());
     } finally {
       const elapsedMs = Date.now() - startedAt;
       // Slow-request warning: anything over the threshold is
@@ -470,11 +591,27 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       const attemptController = new AbortController();
       const onCallerAbort = (): void => attemptController.abort(signal.reason);
       signal.addEventListener('abort', onCallerAbort, { once: true });
+      // First-byte watchdog: a server that accepts the socket and
+      // then never sends response headers throws nothing — `fetch`
+      // stays pending forever and the retry machinery below never
+      // engages (observed 2026-07-13: two requests hung 80s/53s
+      // with zero response until the user cancelled). The watchdog
+      // aborts the attempt so the hang becomes a visible, retriable
+      // failure. It is cleared as soon as headers arrive — silence
+      // on the open body afterwards is the idle watchdog's job.
+      let firstByteTimedOut = false;
+      let firstByteTimer: ReturnType<typeof setTimeout> | undefined;
+      const firstByteTimeoutMs = this.firstByteTimeoutMs();
       try {
         if (signal.aborted) {
           throw new MiniMaxClientError('abort', 'request aborted', { cause: signal.reason });
         }
+        firstByteTimer = setTimeout(() => {
+          firstByteTimedOut = true;
+          attemptController.abort(new Error(`no response headers after ${firstByteTimeoutMs}ms`));
+        }, firstByteTimeoutMs);
         const response = await this.dispatch(request, apiKey, attemptController.signal, dialect);
+        clearTimeout(firstByteTimer);
         if (response.ok) {
           return response;
         }
@@ -554,6 +691,38 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
           status,
         });
       } catch (err) {
+        // First-byte timeout: the watchdog aborted this attempt, so
+        // `err` is the abort reason we planted, not a real network
+        // failure. Retry with backoff; surface `stall` once the
+        // budget is spent. (`retriable` stays false on the thrown
+        // error — the retries already happened here, so the
+        // before-first-event driver in `runCompletion` must not
+        // spend a second budget on it.) The caller-abort case is
+        // excluded: a user cancel that races the watchdog is still
+        // an abort.
+        if (firstByteTimedOut && !signal.aborted) {
+          if (attempt < maxAttempts) {
+            const waitMs = computeBackoff({
+              attempt,
+              initialMs: this.initialBackoffMs,
+              maxMs: this.maxBackoffMs,
+            });
+            logger.warn('MiniMax first-byte timeout — retrying', {
+              model: request.model,
+              attempt,
+              timeoutMs: firstByteTimeoutMs,
+              waitMs,
+            });
+            await this.sleep(waitMs);
+            lastError = err;
+            continue;
+          }
+          throw new MiniMaxClientError(
+            'stall',
+            `MiniMax sent no response headers within ${firstByteTimeoutMs}ms (${maxAttempts} attempts)`,
+            { cause: err },
+          );
+        }
         if (err instanceof MiniMaxClientError) {
           if (err.kind === 'abort') throw err;
           if (err.kind === 'auth' || err.kind === 'http' || err.kind === 'parse') throw err;
@@ -584,6 +753,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         }
         throw new MiniMaxClientError('network', errorMessage(err), { cause: err });
       } finally {
+        if (firstByteTimer !== undefined) clearTimeout(firstByteTimer);
         signal.removeEventListener('abort', onCallerAbort);
       }
     }
@@ -1046,11 +1216,54 @@ async function* parseStream(
   signal: AbortSignal,
   parseState: MutableParseState,
   logger: Logger,
+  idleTimeoutMs: number,
 ): AsyncIterable<MiniMaxStreamEvent> {
   if (dialect === 'openai') {
-    yield* parseOpenAiStream(body, signal, parseState, logger);
+    yield* parseOpenAiStream(body, signal, parseState, logger, idleTimeoutMs);
   } else {
-    yield* parseAnthropicStream(body, signal, parseState, logger);
+    yield* parseAnthropicStream(body, signal, parseState, logger, idleTimeoutMs);
+  }
+}
+
+/**
+ * `reader.read()` with an idle watchdog. A server that holds the
+ * connection open but stops sending bytes leaves `read()` pending
+ * forever — the abort checks in the parse loops only run when a
+ * chunk arrives, so without this the stream hangs until the user
+ * cancels. On expiry the reader is cancelled (which settles the
+ * pending `read()`, so the caller's `releaseLock()` in its
+ * `finally` stays clean) and a retriable `stall` error is thrown.
+ * Whether a stall is actually retried is decided upstream in
+ * `runCompletion`: only streams that had not yet delivered any
+ * event are re-issued.
+ */
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number,
+): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']>>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new MiniMaxClientError(
+              'stall',
+              `MiniMax stream went silent — no bytes received for ${idleTimeoutMs}ms`,
+              { retriable: true },
+            ),
+          );
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    if (err instanceof MiniMaxClientError && err.kind === 'stall') {
+      await reader.cancel(err.message).catch(() => {});
+    }
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -1120,6 +1333,7 @@ async function* parseOpenAiStream(
   signal: AbortSignal,
   parseState: MutableParseState,
   logger: Logger,
+  idleTimeoutMs: number,
 ): AsyncIterable<MiniMaxStreamEvent> {
   const reader = body.getReader();
   const buffer = { value: '' };
@@ -1128,7 +1342,7 @@ async function* parseOpenAiStream(
       if (signal.aborted) {
         throw new MiniMaxClientError('abort', 'request aborted');
       }
-      const { value, done } = await reader.read();
+      const { value, done } = await readWithIdleTimeout(reader, idleTimeoutMs);
       if (signal.aborted) {
         throw new MiniMaxClientError('abort', 'request aborted');
       }
@@ -1295,6 +1509,7 @@ async function* parseAnthropicStream(
   signal: AbortSignal,
   parseState: MutableParseState,
   logger: Logger,
+  idleTimeoutMs: number,
 ): AsyncIterable<MiniMaxStreamEvent> {
   const reader = body.getReader();
   const buffer = { value: '' };
@@ -1303,7 +1518,7 @@ async function* parseAnthropicStream(
       if (signal.aborted) {
         throw new MiniMaxClientError('abort', 'request aborted');
       }
-      const { value, done } = await reader.read();
+      const { value, done } = await readWithIdleTimeout(reader, idleTimeoutMs);
       if (signal.aborted) {
         throw new MiniMaxClientError('abort', 'request aborted');
       }

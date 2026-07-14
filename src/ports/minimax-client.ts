@@ -215,7 +215,19 @@ export type MiniMaxClientErrorKind =
    * chat error so a turn that returned "I'll build X now" with no
    * follow-up execution is not silently swallowed.
    */
-  | 'abandoned';
+  | 'abandoned'
+  /**
+   * A watchdog cut a connection the server left hanging: either no
+   * response headers arrived within the first-byte budget (after
+   * bounded retries), or an open stream went silent mid-flight for
+   * longer than the idle budget. Distinct from `abandoned` (the
+   * stream ENDED without a finish marker) — a stalled stream never
+   * ended on its own; the client cut it. Stalls that occur before
+   * the first event was delivered are retried transparently by the
+   * transport; only post-first-event stalls and exhausted retry
+   * budgets surface to the chat-provider.
+   */
+  | 'stall';
 
 export class MiniMaxClientError extends Error {
   public readonly kind: MiniMaxClientErrorKind;

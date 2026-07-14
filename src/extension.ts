@@ -73,7 +73,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const logger = new LoggerAdapter(channel, initialLevel);
   const secretStore = new SecretStoreAdapter(context.secrets);
-  const client = new MiniMaxClientAdapter({ baseUrl });
+  // Watchdog timeouts are callbacks (like baseUrl) so settings
+  // changes apply on the next request without an extension-host
+  // restart. Out-of-range values are clamped to the transport's
+  // built-in defaults at read time.
+  const client = new MiniMaxClientAdapter({
+    baseUrl,
+    firstByteTimeoutMs: () =>
+      vscode.workspace.getConfiguration('mightyMax').get<number>('firstByteTimeoutMs') ?? 45_000,
+    idleTimeoutMs: () =>
+      vscode.workspace.getConfiguration('mightyMax').get<number>('idleTimeoutMs') ?? 60_000,
+  });
   const catalog = new CatalogAdapter(logger);
   const chatProvider = new ChatProvider(logger, secretStore, client, catalog);
 

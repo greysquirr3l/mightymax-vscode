@@ -320,6 +320,20 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
               'the model may be hitting a context-window or rate-limit ceiling.',
           );
         }
+        // Stalls get the same treatment: the watchdog cut a
+        // connection the server left hanging (no response headers,
+        // or an open stream that went silent). Silent-before-first-
+        // event stalls were already retried by the transport, so by
+        // the time one reaches here the server is genuinely
+        // unresponsive — telling the user that beats the generic
+        // envelope.
+        if (err.kind === 'stall') {
+          throw new Error(
+            'The MiniMax server stopped responding, so the request was cut off ' +
+              'instead of hanging. Try again — if this keeps happening, the ' +
+              'MiniMax API is likely degraded right now.',
+          );
+        }
         throw new Error(`MiniMax API error (${err.kind}): ${err.message}`);
       }
       throw err;

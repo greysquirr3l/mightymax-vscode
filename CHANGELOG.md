@@ -4,7 +4,48 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.4] — 2026-07-13
+
+Permit-lifecycle fix in `MiniMaxTransportAdapter`. Closes a deadlock
+that surfaced once a session hit `maxConcurrentRequests` (4) in-flight
+completions: every success path leaked a semaphore permit, and every
+queue handoff destroyed another. Simple prompts stayed under the cap
+until the next extension-host restart; complex prompts (anything that
+spun up a tool loop) hit the cap and every later request then sat in
+`acquire()` until it aborted with `"request aborted while waiting for
+semaphore"`. The fix replaces the implicit release with
+`try`/`finally` around an extracted `runCompletion`, mints idempotent
+per-acquire release tokens so a stray double-release can never inflate
+the cap, and treats a waiter handoff as a transfer rather than a
+release. A new permit-lifecycle regression suite in
+`src/adapters/transport.test.ts` pins the three scenarios that used
+to deadlock (sequential completions at capacity 1, queued-waiter
+handoff plus a third request, abort while queued) with explicit
+timeouts so the old code fails the suite instead of hanging.
+
+### Fixed
+
+- **Semaphore permit leak in `MiniMaxTransportAdapter`**: every
+  successful `streamCompletion` leaked one concurrency permit, and
+  every queued-waiter handoff destroyed another. After
+  `maxConcurrentRequests` (4) completions the transport deadlocked;
+  later requests sat in `acquire()` until their signal aborted with
+  `"request aborted while waiting for semaphore"`. Complex prompts
+  hit the cap inside one tool loop; simple prompts stayed under it
+  until the next extension-host restart.
+  - The request body is now extracted to `runCompletion` and wrapped
+    in `try`/`finally`, so the permit is released exactly once on
+    every exit path — including the caller abandoning the generator
+    mid-stream.
+  - Each `acquire()` mints an idempotent release token, so a stray
+    double-release can never inflate the cap.
+  - Direct waiter handoff leaves the permit count untouched — a
+    handoff is a transfer, not a release.
+  - New permit-lifecycle regression suite in
+    `src/adapters/transport.test.ts` pins sequential completions at
+    capacity 1, queued-waiter handoff plus a third request, and
+    abort-while-queued, with explicit timeouts so the old code fails
+    instead of hanging.
 
 ## [0.2.3] — 2026-07-10
 
@@ -85,13 +126,13 @@ shrinks below the 900-line godfile threshold.
 
 - **T19 — Response-part correctness**: the `__minimax_usage__:${json}` chat-text leak is REMOVED; usage now logs as token-count metadata at `debug` only. Thinking parts surface via `progress.report` (using `LanguageModelDataPart` with `application/vnd.minimax.thinking+json` MIME since `LanguageModelThinkingPart` is not in `@types/vscode 1.104` stable typings). Tool-call accumulator flushes on every terminal path — `finishReason === 'tool_calls'`, `finishReason === 'stop' / 'length' / 'content_filter'` after a tool-call delta, stream-end with no finish marker (abandonment), and mid-stream transport errors. Idempotent via the empty-state guard.
 
-- **T21 — Tool filtering defaults**: smart filtering now defaults to **OFF**. `maxTools` raised to 64. `alwaysIncludeTools` switched to the real Copilot tool names with the `copilot_` prefix pin (and `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`). The pure-domain `filterTools` (`src/lib/domain/tool-filter.ts`) replaces the inline `ChatProvider.filterTools` method. History-referenced tools (already used in this request's tool_use history) are pinned automatically and cannot be silently dropped by the cap. The matcher's substring rule does NOT also fire for prefix pins (so `my_copilot_helper` is NOT falsely matched by `copilot_`).
+- **T21 — Tool filtering defaults**: smart filtering now defaults to **OFF**. `maxTools` raised to 64. `alwaysIncludeTools` switched to the real Copilot tool names with the `copilot_` prefix pin (and `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`). The pure-domain `filterTools` (`src/lib/domain/tool-filter.ts`) replaces the inline `ChatProvider.filterTools` method. History-referenced tools (already used in this request's tool*use history) are pinned automatically and cannot be silently dropped by the cap. The matcher's substring rule does NOT also fire for prefix pins (so `my_copilot_helper` is NOT falsely matched by `copilot*`).
 
 - **T22 — Logging hygiene**: `summarizeRequestForLog(request, dialect)` returns only structural keys (dialect, model, message counts by role, tool count, referenced tool-call ids, has-system / has-thinking / cache-marker presence, approximate content char-count). Never message content, never tool schemas. `summarizeErrorBody(bodyText)` parses the MiniMax error envelope as JSON and surfaces `{errorType, errorMessage, errorCode}`; falls back to `{bodyParseFailed: true}` for HTML / non-JSON bodies. All four `JSON.stringify(requestBody)` and raw `errorBody` log sites in the 400/5xx branches were rewritten to use these helpers. The sentinel-based redaction guard test plants `SENTINEL_USER_CONTENT_9f3a` in the user message + system prompt and asserts no captured log line contains message-boundary keys (`"messages":`, `"system":`).
 
 ### Added
 
-- **T20 — Utility-model onboarding**: new command `mightyMax.configureUtilityModels` (and a "Configure utility models" row on the `mightyMax.manage` QuickPick) writes one of three settings with a single click. **Activation nudge** (this release) fires at most once per VS Code install: when the API key is stored AND `chat.byokUtilityModelDefault` is `'none'`/unset AND `chat.utilityModel` is unset AND the user has not previously dismissed the prompt, an information message surfaces with *Configure* / *Don't ask again* buttons. The dismissal flag persists in `globalState` (key `minimax.utilityNudgeDismissed.v1`); the prompt never reappears after either outcome.
+- **T20 — Utility-model onboarding**: new command `mightyMax.configureUtilityModels` (and a "Configure utility models" row on the `mightyMax.manage` QuickPick) writes one of three settings with a single click. **Activation nudge** (this release) fires at most once per VS Code install: when the API key is stored AND `chat.byokUtilityModelDefault` is `'none'`/unset AND `chat.utilityModel` is unset AND the user has not previously dismissed the prompt, an information message surfaces with _Configure_ / _Don't ask again_ buttons. The dismissal flag persists in `globalState` (key `minimax.utilityNudgeDismissed.v1`); the prompt never reappears after either outcome.
 - **Stream-pump extraction**: the per-event `for await` consumer inside `ChatProvider.provideLanguageModelChatResponse` moved to `src/providers/stream-pump.ts` (`pumpProviderStream`). The function consumes a `MiniMaxStreamEvent` iterable, projects it onto `vscode.Progress<vscode.LanguageModelResponsePart>`, accumulates text / thinking / tool-calls, and flushes the tool-call accumulator on every terminal path (mid-stream error, any `finishReason`, stream-end with no finish marker). New tests in `src/providers/stream-pump.test.ts` lock the four T19 invariants (finish/tool_calls, finish/stop after tool-call, stream-end with no marker, mid-stream error). `chat-provider.ts` shrinks to ~720 lines, below the 900-line godfile threshold the T19 spec called out.
 
   Closes the `No utility model is configured for 'copilot-utility-small'` error users hit the moment they select a MiniMax model as the main agent model. The pure `decideUtilityNudge` helper (the 4-condition conjunction, 8-case truth table fully tested) drives the new activation nudge.

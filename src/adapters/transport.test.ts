@@ -12,9 +12,11 @@ import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 
 import { MiniMaxClientAdapter } from './transport.js';
+import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { Logger } from '../ports/logger.js';
 import type {
   MiniMaxCompletionRequest,
+  MiniMaxStreamEvent,
 } from '../ports/minimax-client.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +218,222 @@ describe('T22 — request/response-body redaction under failure paths', () => {
       strictEqual(ctx['errorType'], 'invalid_request_error');
       strictEqual(ctx['errorCode'], 2013);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Concurrency semaphore — permit lifecycle regression tests.
+//
+// The stall this pins: permits were released only on the two
+// dispatch-failure paths, so every SUCCESSFUL stream leaked one
+// permit. After `maxConcurrentRequests` completions the transport
+// deadlocked — each later request sat in `acquire()` until its
+// signal aborted ("request aborted while waiting for semaphore").
+// A second bug destroyed one permit per queue handoff
+// (`permits -= 1` on direct transfer to a waiter).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SSE_OK_BODY = [
+  'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}',
+  '',
+  'data: [DONE]',
+  '',
+  '',
+].join('\n');
+
+const OPENAI_REQUEST: MiniMaxCompletionRequest = {
+  model: 'MiniMax-M3',
+  dialect: 'openai',
+  messages: [{ role: 'user', content: 'hi' }],
+  stream: true,
+};
+
+function sseOkResponse(): Response {
+  return new Response(SSE_OK_BODY, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+/**
+ * A Response whose SSE body is fed manually via the returned
+ * controller handles, so a test can hold a request in-flight
+ * (permit held) for as long as it needs.
+ */
+function heldSseResponse(): {
+  response: Response;
+  emitText: (text: string) => void;
+  finish: () => void;
+} {
+  const encoder = new TextEncoder();
+  let ctrl: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctrl = c;
+    },
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }),
+    emitText: (text: string) => {
+      ctrl.enqueue(
+        encoder.encode(
+          `data: {"choices":[{"delta":{"content":${JSON.stringify(text)}}}]}\n\n`,
+        ),
+      );
+    },
+    finish: () => {
+      ctrl.enqueue(
+        encoder.encode(
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\ndata: [DONE]\n\n',
+        ),
+      );
+      ctrl.close();
+    },
+  };
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`timed out after ${ms}ms: ${label}`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
+async function consumeAll(events: AsyncIterable<MiniMaxStreamEvent>): Promise<number> {
+  let count = 0;
+  for await (const _event of events) {
+    count += 1;
+  }
+  return count;
+}
+
+describe('concurrency semaphore — permit lifecycle', () => {
+  it('releases the permit after a successful stream (no leak per completion)', async () => {
+    // With maxConcurrentRequests: 1, the leak variant hangs on the
+    // SECOND request; run three back-to-back to pin the release.
+    const logger = makeCapturingLogger();
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      maxConcurrentRequests: 1,
+      fetchImpl: (async () => sseOkResponse()) as unknown as typeof fetch,
+    });
+    for (let i = 1; i <= 3; i += 1) {
+      const signal = new AbortController().signal;
+      const eventCount = await withTimeout(
+        consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+        2_000,
+        `request ${i} blocked on the semaphore — permit leaked by a prior completion`,
+      );
+      ok(eventCount > 0, `request ${i} should yield events`);
+    }
+  });
+
+  it('hands the slot to a queued waiter without destroying a permit', async () => {
+    // A holds the single permit mid-stream; B queues; A finishes
+    // and hands off to B; after B completes, C must still find a
+    // permit. The handoff-decrement variant deadlocks on C.
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let call = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      maxConcurrentRequests: 1,
+      fetchImpl: (async () => {
+        call += 1;
+        return call === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+    });
+
+    const signal = new AbortController().signal;
+    const eventsA = adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger);
+    const iterA = eventsA[Symbol.asyncIterator]();
+    held.emitText('first');
+    const firstA = await withTimeout(iterA.next(), 2_000, 'A first event');
+    strictEqual(firstA.done, false);
+
+    // B queues behind A's permit.
+    const doneB = consumeAll(
+      adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger),
+    );
+
+    // Finish A; its permit hands off to B.
+    held.finish();
+    while (!(await iterA.next()).done) {
+      // drain A to completion so its finally releases the permit
+    }
+    const eventCountB = await withTimeout(doneB, 2_000, 'B never received the handoff');
+    ok(eventCountB > 0, 'B should yield events');
+
+    // C is the regression probe: a destroyed permit deadlocks here.
+    const eventCountC = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      2_000,
+      'C blocked — the A→B handoff destroyed a permit',
+    );
+    ok(eventCountC > 0, 'C should yield events');
+  });
+
+  it('a waiter aborted in the queue rejects cleanly and leaves the semaphore usable', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let call = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      maxConcurrentRequests: 1,
+      fetchImpl: (async () => {
+        call += 1;
+        return call === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+    });
+
+    const signalA = new AbortController().signal;
+    const eventsA = adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signalA, logger);
+    const iterA = eventsA[Symbol.asyncIterator]();
+    held.emitText('first');
+    await withTimeout(iterA.next(), 2_000, 'A first event');
+
+    // B queues, then aborts while waiting.
+    const controllerB = new AbortController();
+    const doneB = consumeAll(
+      adapter.streamCompletion(OPENAI_REQUEST, 'test-key', controllerB.signal, logger),
+    );
+    // Let B reach the semaphore queue before aborting.
+    await new Promise((resolve) => setImmediate(resolve));
+    controllerB.abort();
+    try {
+      await withTimeout(doneB, 2_000, 'aborted waiter never rejected');
+      ok(false, 'expected the aborted waiter to reject');
+    } catch (err) {
+      ok(err instanceof MiniMaxClientError, `expected MiniMaxClientError, got ${String(err)}`);
+      strictEqual(err.kind, 'abort');
+    }
+
+    // Finish A and verify a fresh request still gets a permit.
+    held.finish();
+    while (!(await iterA.next()).done) {
+      // drain
+    }
+    const eventCountC = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signalA, logger)),
+      2_000,
+      'semaphore unusable after an aborted waiter',
+    );
+    ok(eventCountC > 0, 'post-abort request should yield events');
   });
 });
 

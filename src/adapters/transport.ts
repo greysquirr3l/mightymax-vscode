@@ -163,7 +163,7 @@ class Semaphore {
     }
     if (this.permits > 0) {
       this.permits -= 1;
-      return { release: this.boundRelease };
+      return this.makeToken();
     }
     return await new Promise<{ release: () => void }>((resolve, reject) => {
       const onAbort = (): void => {
@@ -177,8 +177,9 @@ class Semaphore {
       };
       const onResolve = (): void => {
         signal.removeEventListener('abort', onAbort);
-        // Permits already decremented by the releaser.
-        resolve({ release: this.boundRelease });
+        // The releaser handed its slot directly to this waiter;
+        // the available-permit count is unchanged by a handoff.
+        resolve(this.makeToken());
       };
       this.waiters.push({ resolve: onResolve, reject, onAbort });
       signal.addEventListener('abort', onAbort, { once: true });
@@ -186,32 +187,32 @@ class Semaphore {
   }
 
   /**
-   * Bound version of `release` so callers can stash the
-   * token and use `token.release()` without losing `this`.
+   * Mint a single-use release token. Idempotent: a token that
+   * is released twice (e.g. both an error path and a `finally`
+   * fire) frees its slot exactly once, so double-release can
+   * never inflate the permit count past the configured cap.
    */
-  private readonly boundRelease = (): void => {
-    this.release();
-  };
+  private makeToken(): { release: () => void } {
+    let released = false;
+    return {
+      release: (): void => {
+        if (released) return;
+        released = true;
+        this.release();
+      },
+    };
+  }
 
   private release(): void {
-    if (this.waiters.length > 0) {
-      const next = this.waiters.shift();
-      if (next === undefined) {
-        // Queue was emptied between the length check and the
-        // shift. Restore the permit. This branch is
-        // theoretically reachable under very tight concurrency
-        // if another caller's onAbort fires between the
-        // check and the shift; treat it as a permit back.
-        this.permits += 1;
-        return;
-      }
-      next.onAbort = (): void => {
-        /* replaced by onResolve; no-op on handover */
-      };
-      // Decrement the permit for the head waiter (we hand it
-      // directly to them rather than re-queueing).
-      this.permits -= 1;
-      next.resolve({ release: this.boundRelease });
+    const next = this.waiters.shift();
+    if (next !== undefined) {
+      // Hand the slot directly to the head waiter. The permit
+      // count is untouched: the releaser's slot transfers to the
+      // waiter instead of ever becoming available. (Decrementing
+      // here — as an earlier revision did — permanently destroys
+      // one permit per handoff and eventually deadlocks the
+      // transport.)
+      next.resolve(this.makeToken());
       return;
     }
     this.permits += 1;
@@ -312,8 +313,36 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     // `kind:'abort'` when the caller's signal fires while
     // waiting).
     const permit = await this.semaphore.acquire(signal);
+    try {
+      yield* this.runCompletion(
+        request,
+        apiKey,
+        signal,
+        request.dialect ?? defaultDialectFor(request.model),
+        logger,
+      );
+    } finally {
+      // Exactly-once release on EVERY exit path: dispatch
+      // failure, missing body, stream error, abandonment, clean
+      // completion, and the caller abandoning the generator
+      // (early `break` / `return()` runs this finally too). An
+      // earlier revision released only on the two dispatch
+      // failure paths, which leaked one permit per successful
+      // request and deadlocked the transport after
+      // `maxConcurrentRequests` completions — every later
+      // request sat in `acquire()` until its signal aborted
+      // ("request aborted while waiting for semaphore").
+      permit.release();
+    }
+  }
 
-    const dialect = request.dialect ?? defaultDialectFor(request.model);
+  private async *runCompletion(
+    request: MiniMaxCompletionRequest,
+    apiKey: string,
+    signal: AbortSignal,
+    dialect: MiniMaxDialect,
+    logger: Logger,
+  ): AsyncIterable<MiniMaxStreamEvent> {
     const startedAt = Date.now();
     logger.debug('MiniMax request start', {
       dialect,
@@ -321,18 +350,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       toolCount: request.tools?.length ?? 0,
     });
 
-    let response: Response;
-    try {
-      response = await this.doRequestWithRetries(request, apiKey, signal, dialect, logger);
-    } catch (err) {
-      // Release the permit on any failure to dispatch
-      // (network error, auth, 4xx after retries, abort).
-      // The `finally` below handles the success path.
-      permit.release();
-      throw err;
-    }
+    const response = await this.doRequestWithRetries(request, apiKey, signal, dialect, logger);
     if (!response.body) {
-      permit.release();
       throw new MiniMaxClientError('network', 'MiniMax response has no body');
     }
     // Mutable state the parsers update as they consume the stream.

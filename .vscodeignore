@@ -37,6 +37,9 @@ error_from_console.txt
 tasks/
 docs/dev/
 
+# Local scratch output (untracked); never an extension asset.
+artifacts/
+
 # Internal CI / scanner configs not meant to ship to the
 # Marketplace.
 .gitleaks.toml

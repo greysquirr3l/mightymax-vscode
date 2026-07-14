@@ -4,6 +4,36 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] — 2026-07-14
+
+Stall watchdogs in `MiniMaxClientAdapter`. A MiniMax server that
+accepted the connection but never sent response headers — or held an
+open stream and went silent — previously threw nothing: `fetch` /
+`reader.read()` stayed pending forever, the retry machinery never
+engaged, and the request hung until the user cancelled (observed
+2026-07-13: two requests sat 80s/53s with zero response). Two
+watchdogs close the gap:
+
+- **First-byte timeout** (`mightyMax.firstByteTimeoutMs`, default
+  45s): no response headers within the budget aborts the attempt and
+  retries with backoff; an exhausted budget surfaces a new
+  `MiniMaxClientError` kind, `stall`.
+- **Idle timeout** (`mightyMax.idleTimeoutMs`, default 60s): no bytes
+  on an open stream within the budget cuts the connection with
+  `stall`. Silence *before* the first delivered event is re-issued
+  transparently (the consumer saw nothing); silence after surfaces a
+  user-facing chat error, since re-issuing would duplicate delivered
+  content. The watchdog measures gaps between bytes, never total
+  elapsed time — long requests with a flowing stream are never cut.
+
+The before-first-event retry driver also re-issues streams that
+terminate without delivering any event (previously a dead-end
+`network` error marked retriable but never retried). Both settings
+are read per request, so changes apply without reloading the window.
+A six-test watchdog regression suite pins the behavior, including a
+caller-abort-races-watchdog case and a flowing-stream-is-never-cut
+case.
+
 ## [0.2.4] — 2026-07-13
 
 Permit-lifecycle fix in `MiniMaxTransportAdapter`. Closes a deadlock

@@ -30,6 +30,7 @@ error_from_console.txt
 !README.md
 !CHANGELOG.md
 !LICENSE.md
+!chat/**/*.md
 
 # Internal-only paths that the `*.md` glob (which matches basenames
 # only) leaves through. Each line below excludes every file under the

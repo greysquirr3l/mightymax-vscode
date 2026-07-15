@@ -11,7 +11,7 @@ MiniMax M-series language models for VS Code Chat (BYOK).
 Mighty Max is a Visual Studio Code and VS Code Insiders extension that
 contributes the MiniMax M-series models (M3, M2.7, M2.5, M2, M1) to
 VS Code Chat via the Language Model Chat Provider API (finalized in
-VS Code 1.104). It registers under the `minimax` vendor and works as
+VS Code 1.109). It registers under the `minimax` vendor and works as
 a complete drop-in backend for Ask, Edit, Inline Chat, Agent mode,
 custom and local agents, and utility tasks (commit messages, etc).
 
@@ -30,14 +30,14 @@ billed by MiniMax and does not count against Copilot quotas.
 
 ## Requirements
 
-- VS Code 1.104 or later (Stable or Insiders)
+- VS Code 1.109 or later (Stable or Insiders)
 - A MiniMax API key — set via the `Mighty Max: Manage` command
 
 ## Installation
 
 ### From Marketplace
 
-1. Open VS Code or VS Code Insiders (version 1.104 or later)
+1. Open VS Code or VS Code Insiders (version 1.109 or later)
 2. Go to Extensions (Ctrl+Shift+X / Cmd+Shift+X)
 3. Search for "Mighty Max"
 4. Click Install
@@ -159,7 +159,7 @@ surfaces the warning
 until `chat.byokUtilityModelDefault` (or `chat.utilityModel` +
 `chat.utilitySmallModel`) is set. Mighty Max offers a one-click fix via
 the **Mighty Max: Configure Utility Models** command (also reachable
-from the *Manage Mighty Max* QuickPick). The picker offers three
+from the _Manage Mighty Max_ QuickPick). The picker offers three
 options:
 
 - **Use MiniMax for utility tasks (recommended)** — writes
@@ -172,6 +172,48 @@ options:
 - **Use Copilot's models (uses Copilot quota)** — writes
   `chat.byokUtilityModelDefault = "copilot"`. Utility tasks run on
   Copilot's hosted models.
+
+## Bundled agents & skills
+
+Mighty Max ships with opt-in chat customizations that are surfaced
+alongside your personal agents in the VS Code Chat panel:
+
+- **`max-planner`** — a read-only implementation planner pinned to
+  `M3 (MiniMax)`. It explores the codebase with `search/codebase`,
+  `search/usages`, `read/problems`, and `changes`, then returns a
+  numbered implementation plan (files to change, risks, open
+  questions). It never edits files or runs commands. Use it when you
+  want a second pair of eyes before starting a non-trivial change.
+- **`max-review`** _(upcoming)_ — an M3-pinned maintainer review
+  agent with a fixed `🔴/🟡/✅` output contract, a `≥80%`-confidence
+  rule, and a hard cap of ten findings per run. It dispatches to
+  language- and topic-specific skills (next bullet) instead of trying
+  to encode every language's idioms in the agent body.
+- **12 review skills** _(upcoming)_ — `chat/skills/<name>/SKILL.md`
+  for ten languages (Python, TypeScript, JavaScript, Rust, Go, Java,
+  C#, Ruby, PHP, Swift), GitHub Actions / CI, and OWASP 2025 +
+  OWASP API 2023. `max-review` selects a skill from the dispatch
+  table based on the files under review; each skill carries the
+  language- or domain-specific checklist.
+
+All assets live under `chat/agents/`, `chat/prompts/`, and
+`chat/skills/` in the extension source. The `max-planner` agent is
+the proof shipped with the T23 plumbing; `max-review` and the 12
+skills land in T24 and T25.
+
+Mighty Max deliberately does **not** ship a `chatInstructions`
+contribution. `chatInstructions` injects prompt text into every
+request that uses a model from this provider — that is invisible to
+the user and easy to mis-tune. The agent / prompt / skill system is
+opt-in (you pick `max-planner` from the agent dropdown) and the
+prompt is auditable in the file. If you need a persistent system
+preamble, set `mightyMax.systemPrompt` in settings; it is redacted
+in logs and forwarded verbatim to MiniMax.
+
+On VS Code older than the engine floor (1.109), the bundled agents
+and skills are silently absent — VS Code ignores contribution
+points it does not recognize — but the model provider and every
+other feature keep working.
 
 ## What Mighty Max provides
 

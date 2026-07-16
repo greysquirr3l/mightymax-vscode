@@ -313,3 +313,139 @@ describe('T24 — max-review agent + /review-code prompt', () => {
     );
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T25 — 12 domain review skills
+//
+// Pin the structural contract for the bundled review-skill corpus. The
+// general manifest-consistency block above already proves each file
+// exists and the per-asset validator accepts it; this block pins the
+// shape that makes the corpus actually useful — exact directory count
+// (no orphan dirs sneaking in), "Use when" retrieval-key signal in
+// every description, and the OWASP IDs (A01..A10 / API1..API10) that
+// the cross-link header in `max-review` advertises to the model.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EXPECTED_SKILL_DIRS: ReadonlyArray<string> = [
+  'code-review-dotnet',
+  'code-review-rust',
+  'code-review-go',
+  'code-review-typescript',
+  'code-review-python',
+  'code-review-kotlin',
+  'code-review-swift',
+  'code-review-powershell',
+  'code-review-bash',
+  'code-review-github-actions',
+  'owasp-top-10-2025',
+  'owasp-api-security-2023',
+];
+
+const SKILLS_ROOT = join(root, 'chat', 'skills');
+
+// Re-read the manifest here: the chatSkills array is captured inside the
+// first describe block's closure, so the T25 block — which is declared
+// after it — needs its own local view to assert against.
+const T25_PKG = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as PackageJson;
+const T25_CHAT_SKILLS = T25_PKG.contributes?.chatSkills ?? [];
+
+function listSkillDirs(): string[] {
+  if (!existsSync(SKILLS_ROOT)) return [];
+  return readdirSync(SKILLS_ROOT)
+    .filter((entry) => statSync(join(SKILLS_ROOT, entry)).isDirectory())
+    .sort();
+}
+
+function loadSkill(dirName: string): {
+  fields: Readonly<Record<string, FrontmatterValue>>;
+  body: string;
+} {
+  const md = readFileSync(join(SKILLS_ROOT, dirName, 'SKILL.md'), 'utf8');
+  const parsed = parseFrontmatter(md);
+  assert.equal(parsed.kind, 'success', `${dirName}/SKILL.md: frontmatter must parse cleanly`);
+  if (parsed.kind !== 'success') throw new Error(`unreachable: ${dirName}/SKILL.md did not parse`);
+  return { fields: parsed.fields, body: parsed.body };
+}
+
+describe('T25 — 12 domain review skills', () => {
+  it('chat/skills/ contains exactly the 12 expected skill directories (no orphans, no missing)', () => {
+    const onDisk = listSkillDirs();
+    assert.deepEqual(
+      onDisk,
+      [...EXPECTED_SKILL_DIRS].sort(),
+      `chat/skills/ must contain exactly the 12 frozen skill directories; got ${JSON.stringify(onDisk)}`,
+    );
+  });
+
+  it('every skill file parses cleanly and passes validateSkillFrontmatter', () => {
+    for (const dir of EXPECTED_SKILL_DIRS) {
+      const { fields } = loadSkill(dir);
+      const errors = validateSkillFrontmatter(fields, dir);
+      assert.deepEqual(errors, [], `${dir}/SKILL.md: ${JSON.stringify(errors)}`);
+    }
+  });
+
+  it('every skill description contains the literal substring "Use when" (retrieval-key signal)', () => {
+    for (const dir of EXPECTED_SKILL_DIRS) {
+      const { fields } = loadSkill(dir);
+      const description = stringFieldValue(fields.description);
+      assert.ok(description, `${dir}/SKILL.md: description must be a non-empty string`);
+      assert.ok(
+        description.includes('Use when'),
+        `${dir}/SKILL.md: description must contain "Use when" (loader matches on it) — got: ${description}`,
+      );
+    }
+  });
+
+  it('owasp-top-10-2025 body contains every ID A01..A10 (no false positives on A1)', () => {
+    const { body } = loadSkill('owasp-top-10-2025');
+    for (const id of ['A01', 'A02', 'A03', 'A04', 'A05', 'A06', 'A07', 'A08', 'A09', 'A10']) {
+      assert.ok(
+        body.includes(id),
+        `owasp-top-10-2025/SKILL.md must reference ${id}; the dispatch table advertises it to the model`,
+      );
+    }
+  });
+
+  it('owasp-api-security-2023 body contains every ID API1..API10', () => {
+    const { body } = loadSkill('owasp-api-security-2023');
+    for (const id of [
+      'API1',
+      'API2',
+      'API3',
+      'API4',
+      'API5',
+      'API6',
+      'API7',
+      'API8',
+      'API9',
+      'API10',
+    ]) {
+      assert.ok(
+        body.includes(id),
+        `owasp-api-security-2023/SKILL.md must reference ${id}; the dispatch table advertises it to the model`,
+      );
+    }
+  });
+
+  it('every expected skill is registered in contributes.chatSkills (no missing, no orphan paths)', () => {
+    const contributed = T25_CHAT_SKILLS.map((e: { path: string }) => e.path).sort();
+    const expected = EXPECTED_SKILL_DIRS.map((d) => `./chat/skills/${d}/SKILL.md`).sort();
+    assert.deepEqual(
+      contributed,
+      expected,
+      `contributes.chatSkills must list exactly the 12 expected paths; got ${JSON.stringify(contributed)}`,
+    );
+  });
+});
+
+// `FrontmatterValue` is a string-or-array union; only string values are
+// valid for `description`. Centralize the narrowing so the "Use when"
+// test reads naturally.
+function stringFieldValue(v: FrontmatterValue | undefined): string | undefined {
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  return undefined;
+}

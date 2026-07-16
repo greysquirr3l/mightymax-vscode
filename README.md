@@ -189,17 +189,29 @@ alongside your personal agents in the VS Code Chat panel:
   rule, and a hard cap of ten findings per run. It dispatches to
   language- and topic-specific skills (next bullet) instead of trying
   to encode every language's idioms in the agent body.
-- **12 review skills** _(upcoming)_ — `chat/skills/<name>/SKILL.md`
-  for ten languages (Python, TypeScript, JavaScript, Rust, Go, Java,
-  C#, Ruby, PHP, Swift), GitHub Actions / CI, and OWASP 2025 +
-  OWASP API 2023. `max-review` selects a skill from the dispatch
-  table based on the files under review; each skill carries the
-  language- or domain-specific checklist.
+- **12 review skills** — `chat/skills/<name>/SKILL.md` for ten
+  languages, GitHub Actions / CI, and both OWASP lists. `max-review`
+  selects a skill from its dispatch table based on the files under
+  review; each skill carries the language- or domain-specific
+  checklist. The skills, grouped:
+
+  - **Languages** — `code-review-dotnet` (C# / .NET),
+    `code-review-rust` (Rust), `code-review-go` (Go),
+    `code-review-typescript` (TypeScript / JavaScript),
+    `code-review-python` (Python), `code-review-kotlin` (Kotlin /
+    JVM), `code-review-swift` (Swift / Apple platforms),
+    `code-review-powershell` (PowerShell),
+    `code-review-bash` (Bash / POSIX shell).
+  - **CI** — `code-review-github-actions` (workflow `.yml`, action
+    pinning, script-injection, least-privilege `permissions:`).
+  - **Security** — `owasp-top-10-2025` (A01–A10: access control,
+    injection, supply chain, crypto, logging, exception handling…)
+    and `owasp-api-security-2023` (API1–API10: BOLA, broken auth,
+    mass-assignment, SSRF, BFLA, …).
 
 All assets live under `chat/agents/`, `chat/prompts/`, and
-`chat/skills/` in the extension source. `max-planner` and `max-review`
-/+ `/review-code` ship in the current release; the 12 review skills
-land in T25.
+`chat/skills/` in the extension source. `max-planner`, `max-review`,
+`/review-code`, and all 12 review skills ship in the current release.
 
 Mighty Max deliberately does **not** ship a `chatInstructions`
 contribution. `chatInstructions` injects prompt text into every

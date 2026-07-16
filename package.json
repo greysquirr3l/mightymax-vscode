@@ -86,6 +86,44 @@
         "path": "./chat/prompts/review-code.prompt.md"
       }
     ],
+    "chatSkills": [
+      {
+        "path": "./chat/skills/code-review-dotnet/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-rust/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-go/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-typescript/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-python/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-kotlin/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-swift/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-powershell/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-bash/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-github-actions/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/owasp-top-10-2025/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/owasp-api-security-2023/SKILL.md"
+      }
+    ],
     "configuration": {
       "title": "Mighty Max",
       "properties": {

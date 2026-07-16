@@ -362,9 +362,9 @@ describe('Thinking pass-back', () => {
     // Verify the ordering: every tool entry must follow
     // an assistant turn that carries the matching call id.
     for (let i = 0; i < round2Request.messages.length; i += 1) {
-      const m = round2Request.messages[i];
+      const m: (typeof round2Request.messages)[number] | undefined = round2Request.messages[i];
       if (!m || m.role !== 'tool') continue;
-      const toolCallId = (m as { toolCallId?: string }).toolCallId;
+      const toolCallId: string | undefined = (m as { toolCallId?: string }).toolCallId;
       if (typeof toolCallId !== 'string') continue;
       // Walk backwards to find the most-recent prior assistant turn
       // (the domain mapper never inserts unrelated turns between

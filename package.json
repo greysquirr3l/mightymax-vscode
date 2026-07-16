@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",

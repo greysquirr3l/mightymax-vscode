@@ -4,6 +4,38 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.3] — 2026-07-16
+
+### Fixed
+
+- **Marketplace listing now points at the correct repository.** Three
+  files previously carried the original `mighty-max` repo name in
+  their GitHub URLs while the actual repo lives at
+  `greysquirr3l/mightymax-vscode`. As a result, the Marketplace
+  right-rail **Source / Repository** and **Report an issue** links,
+  the GitHub Releases link from the README, and the private security
+  advisory form all 404'd for users coming from either store:
+
+  - `package.json` → `repository.url` is now
+    `https://github.com/greysquirr3l/mightymax-vscode.git`, so the
+    next published VSIX renders correct repo metadata.
+  - `README.md` GitHub Releases link fixed
+    (`mighty-max/releases` → `mightymax-vscode/releases`).
+  - `SECURITY.md` private advisory reporting link fixed
+    (`mighty-max/security/advisories/new` →
+    `mightymax-vscode/security/advisories/new`).
+
+### Removed
+
+- **Open VSX install references scrubbed from the README.** The
+  Open VSX listing (`open-vsx.org/extension/greysquirr3l/mighty-max`)
+  is not maintained alongside the Marketplace release, so the
+  "or [Open VSX](...)" alternative on the Marketplace install
+  paragraph is removed. The `OVSX_PAT` workflow step in
+  `.github/workflows/release.yml` remains a no-op against the
+  empty secret — re-enabling it later only requires dropping a
+  token into the secret, no workflow change.
+
 ## [0.3.2] — 2026-07-16
 
 ### Fixed

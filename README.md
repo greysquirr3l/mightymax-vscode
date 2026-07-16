@@ -42,13 +42,13 @@ billed by MiniMax and does not count against Copilot quotas.
 3. Search for "Mighty Max"
 4. Click Install
 
-Alternatively, install from [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=greysquirr3l.mighty-max) or [Open VSX](https://open-vsx.org/extension/greysquirr3l/mighty-max).
+Alternatively, install from [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=greysquirr3l.mighty-max).
 
 The extension ships as a single CommonJS bundle with no native dependencies or `node_modules`.
 
 ### From VSIX
 
-Download the `.vsix` file from the [GitHub Releases](https://github.com/greysquirr3l/mighty-max/releases) page, then:
+Download the `.vsix` file from the [GitHub Releases](https://github.com/greysquirr3l/mightymax-vscode/releases) page, then:
 
 ```bash
 code --install-extension mighty-max.vsix

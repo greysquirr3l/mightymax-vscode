@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/greysquirr3l/mighty-max.git"
+    "url": "https://github.com/greysquirr3l/mightymax-vscode.git"
   },
   "categories": [
     "AI",

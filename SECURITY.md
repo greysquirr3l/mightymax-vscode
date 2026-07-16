@@ -11,7 +11,7 @@
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, please report vulnerabilities by emailing the maintainers directly or using GitHub's [private security advisory reporting](https://github.com/greysquirr3l/mighty-max/security/advisories/new).
+Instead, please report vulnerabilities by emailing the maintainers directly or using GitHub's [private security advisory reporting](https://github.com/greysquirr3l/mightymax-vscode/security/advisories/new).
 
 Please include the following information in your report:
 

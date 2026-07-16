@@ -216,7 +216,11 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [resolve-tag, verify-ci, build, publish]
+    # Gated on build (a valid VSIX must exist) but deliberately NOT on
+    # publish: a marketplace-auth failure (e.g. an expired VSCE_PAT
+    # returning 401) must not block the GitHub Release. Publish and
+    # release run in parallel off the same build artifact.
+    needs: [resolve-tag, verify-ci, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

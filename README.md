@@ -184,7 +184,7 @@ alongside your personal agents in the VS Code Chat panel:
   numbered implementation plan (files to change, risks, open
   questions). It never edits files or runs commands. Use it when you
   want a second pair of eyes before starting a non-trivial change.
-- **`max-review`** _(upcoming)_ — an M3-pinned maintainer review
+- **`max-review`** — an M3-pinned maintainer review
   agent with a fixed `🔴/🟡/✅` output contract, a `≥80%`-confidence
   rule, and a hard cap of ten findings per run. It dispatches to
   language- and topic-specific skills (next bullet) instead of trying
@@ -197,9 +197,9 @@ alongside your personal agents in the VS Code Chat panel:
   language- or domain-specific checklist.
 
 All assets live under `chat/agents/`, `chat/prompts/`, and
-`chat/skills/` in the extension source. The `max-planner` agent is
-the proof shipped with the T23 plumbing; `max-review` and the 12
-skills land in T24 and T25.
+`chat/skills/` in the extension source. `max-planner` and `max-review`
+/+ `/review-code` ship in the current release; the 12 review skills
+land in T25.
 
 Mighty Max deliberately does **not** ship a `chatInstructions`
 contribution. `chatInstructions` injects prompt text into every

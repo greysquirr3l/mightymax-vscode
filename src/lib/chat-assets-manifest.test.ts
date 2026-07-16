@@ -23,6 +23,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 
 import { describe, it } from 'node:test';
+import type { FrontmatterValue } from './domain/chat-assets.js';
 
 import {
   parseFrontmatter,
@@ -59,7 +60,11 @@ function* walk(directory: string): Generator<string> {
 }
 
 function toRepoPath(abs: string): string {
-  return relative(root, abs).split(sep).join('/');
+  const rel = relative(root, abs).split(sep).join('/');
+  // Normalize to the `./` prefix that `contributes` paths carry — deep
+  // equality against `package.json` would otherwise see `[chat/agents/x]`
+  // vs `[./chat/agents/x]` and trip every "no orphan" assertion.
+  return rel.startsWith('./') ? rel : `./${rel}`;
 }
 
 function isAgentFile(p: string): boolean {
@@ -154,5 +159,157 @@ describe('chat-asset manifest consistency', () => {
       const errors = validateSkillFrontmatter(parsed.fields, dir);
       assert.deepEqual(errors, [], `${p}: ${JSON.stringify(errors)}`);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T24 — max-review agent + /review-code prompt
+//
+// Behavior-level invariants the agent body MUST hold. The general
+// manifest consistency block above already proves the files exist,
+// frontmatter parses, and validators accept them; this block pins
+// behavior that the validators intentionally do not see — model
+// pinning, read-only tool set, body word-count ceiling, and the
+// verbatim dispatch table referencing every T25 skill by name.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TWELVE_SKILL_NAMES: ReadonlyArray<string> = [
+  'code-review-dotnet',
+  'code-review-rust',
+  'code-review-go',
+  'code-review-typescript',
+  'code-review-python',
+  'code-review-kotlin',
+  'code-review-swift',
+  'code-review-powershell',
+  'code-review-bash',
+  'code-review-github-actions',
+  'owasp-top-10-2025',
+  'owasp-api-security-2023',
+];
+
+// Canonical VS Code agent-file tool ids for the dangerous surfaces. The
+// T23 domain module intentionally does NOT cross-check tool ids (extension
+// and MCP tools are allowed), so this list is the only thing standing
+// between a reviewer that reads and one that silently rewrites code.
+// Source: VS Code 1.111+ agent-file editor canonical names; pinned here
+// because the agent's frontmatter is the single source of truth.
+const FORBIDDEN_EDIT_TOOL_IDS: ReadonlyArray<string> = ['edit', 'applyPatch'];
+const FORBIDDEN_TERMINAL_TOOL_IDS: ReadonlyArray<string> = ['runCommands', 'runInTerminal'];
+
+const MAX_REVIEW_AGENT_PATH = 'chat/agents/max-review.agent.md';
+const REVIEW_CODE_PROMPT_PATH = 'chat/prompts/review-code.prompt.md';
+const MAX_REVIEW_BODY_WORD_CEILING = 2_500;
+
+function countWords(body: string): number {
+  // Plain whitespace split; the body is natural-language prose, so
+  // markdown punctuation and code-fence tokens count as words. That
+  // gives a generous upper bound — the ceiling is generous on purpose.
+  return body.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+function loadAgent(repoPath: string): {
+  fields: Readonly<Record<string, FrontmatterValue>>;
+  body: string;
+} {
+  const md = readFileSync(join(root, repoPath), 'utf8');
+  const parsed = parseFrontmatter(md);
+  assert.equal(parsed.kind, 'success', `${repoPath}: frontmatter must parse cleanly`);
+  if (parsed.kind !== 'success') throw new Error(`unreachable: ${repoPath} did not parse`);
+  return { fields: parsed.fields, body: parsed.body };
+}
+
+function loadPromptFields(repoPath: string): Readonly<Record<string, FrontmatterValue>> {
+  const md = readFileSync(join(root, repoPath), 'utf8');
+  const parsed = parseFrontmatter(md);
+  assert.equal(parsed.kind, 'success', `${repoPath}: frontmatter must parse cleanly`);
+  if (parsed.kind !== 'success') throw new Error(`unreachable: ${repoPath} did not parse`);
+  return parsed.fields;
+}
+
+describe('T24 — max-review agent + /review-code prompt', () => {
+  const maxReview = existsSync(join(root, MAX_REVIEW_AGENT_PATH))
+    ? loadAgent(MAX_REVIEW_AGENT_PATH)
+    : undefined;
+  const reviewCode = existsSync(join(root, REVIEW_CODE_PROMPT_PATH))
+    ? loadPromptFields(REVIEW_CODE_PROMPT_PATH)
+    : undefined;
+
+  it('chat/agents/max-review.agent.md exists and passes validateAgentFrontmatter', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    const errors = validateAgentFrontmatter(maxReview.fields);
+    assert.deepEqual(errors, [], `${MAX_REVIEW_AGENT_PATH}: ${JSON.stringify(errors)}`);
+  });
+
+  it('max-review is model-pinned to M3 (MiniMax) — the catalog display name', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    assert.equal(
+      maxReview.fields.model,
+      'M3 (MiniMax)',
+      'max-review must be pinned to the M3 (MiniMax) catalog display name',
+    );
+  });
+
+  it('max-review.tools is an array', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    assert.ok(Array.isArray(maxReview.fields.tools), 'max-review.tools must be a flow array');
+  });
+
+  it('max-review.tools excludes the forbidden edit tool ids (read-only guarantee)', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    const tools = maxReview.fields.tools;
+    assert.ok(Array.isArray(tools), 'max-review.tools must be a flow array');
+    for (const forbidden of FORBIDDEN_EDIT_TOOL_IDS) {
+      assert.ok(
+        !(tools as ReadonlyArray<string>).includes(forbidden),
+        `max-review.tools must NOT include the edit tool id \`${forbidden}\`; a reviewer that rewrites code mid-review is a footgun`,
+      );
+    }
+  });
+
+  it('max-review.tools excludes the forbidden terminal tool ids (read-only guarantee)', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    const tools = maxReview.fields.tools;
+    assert.ok(Array.isArray(tools), 'max-review.tools must be a flow array');
+    for (const forbidden of FORBIDDEN_TERMINAL_TOOL_IDS) {
+      assert.ok(
+        !(tools as ReadonlyArray<string>).includes(forbidden),
+        `max-review.tools must NOT include the terminal tool id \`${forbidden}\`; a reviewer that runs commands mid-review is a footgun`,
+      );
+    }
+  });
+
+  it(`max-review body word count is <= ${MAX_REVIEW_BODY_WORD_CEILING} (token wire budget)`, () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    const words = countWords(maxReview.body);
+    assert.ok(
+      words <= MAX_REVIEW_BODY_WORD_CEILING,
+      `max-review body has ${words} words; the budget ceiling is ${MAX_REVIEW_BODY_WORD_CEILING}. Depth belongs in skills, not the agent body.`,
+    );
+  });
+
+  it('max-review body names every T25 skill verbatim in the dispatch table', () => {
+    assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
+    for (const skill of TWELVE_SKILL_NAMES) {
+      assert.ok(
+        maxReview.body.includes(skill),
+        `max-review body must reference skill \`${skill}\` verbatim (dispatch table); otherwise the loader cannot trigger it`,
+      );
+    }
+  });
+
+  it('chat/prompts/review-code.prompt.md exists and passes validatePromptFrontmatter', () => {
+    assert.ok(reviewCode, `${REVIEW_CODE_PROMPT_PATH} must exist on disk`);
+    const errors = validatePromptFrontmatter(reviewCode);
+    assert.deepEqual(errors, [], `${REVIEW_CODE_PROMPT_PATH}: ${JSON.stringify(errors)}`);
+  });
+
+  it('/review-code prompt is wired to the max-review agent', () => {
+    assert.ok(reviewCode, `${REVIEW_CODE_PROMPT_PATH} must exist on disk`);
+    assert.equal(
+      reviewCode.agent,
+      'max-review',
+      '/review-code must delegate to the `max-review` agent',
+    );
   });
 });

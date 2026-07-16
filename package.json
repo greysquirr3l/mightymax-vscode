@@ -76,6 +76,14 @@
     "chatAgents": [
       {
         "path": "./chat/agents/max-planner.agent.md"
+      },
+      {
+        "path": "./chat/agents/max-review.agent.md"
+      }
+    ],
+    "chatPromptFiles": [
+      {
+        "path": "./chat/prompts/review-code.prompt.md"
       }
     ],
     "configuration": {

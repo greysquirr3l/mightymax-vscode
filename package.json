@@ -2,12 +2,12 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
   "engines": {
-    "vscode": "^1.104.0",
+    "vscode": "^1.109.0",
     "node": ">=20.0.0"
   },
   "repository": {
@@ -71,6 +71,57 @@
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
         "managementCommand": "mightyMax.manage"
+      }
+    ],
+    "chatAgents": [
+      {
+        "path": "./chat/agents/max-planner.agent.md"
+      },
+      {
+        "path": "./chat/agents/max-review.agent.md"
+      }
+    ],
+    "chatPromptFiles": [
+      {
+        "path": "./chat/prompts/review-code.prompt.md"
+      }
+    ],
+    "chatSkills": [
+      {
+        "path": "./chat/skills/code-review-dotnet/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-rust/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-go/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-typescript/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-python/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-kotlin/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-swift/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-powershell/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-bash/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/code-review-github-actions/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/owasp-top-10-2025/SKILL.md"
+      },
+      {
+        "path": "./chat/skills/owasp-api-security-2023/SKILL.md"
       }
     ],
     "configuration": {
@@ -201,7 +252,7 @@
     "@eslint/js": "9.13.0",
     "@types/mocha": "10.0.10",
     "@types/node": "26.1.1",
-    "@types/vscode": "1.104.0",
+    "@types/vscode": "1.109.0",
     "@vscode/test-cli": "0.0.10",
     "@vscode/test-electron": "2.4.1",
     "@vscode/vsce": "3.9.2",

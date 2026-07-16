@@ -14,7 +14,11 @@ import * as vscode from 'vscode';
 
 import { ChatProvider } from '../providers/chat-provider.js';
 import type { Logger } from '../ports/logger.js';
-import type { MiniMaxClient, MiniMaxCompletionRequest, MiniMaxStreamEvent } from '../ports/minimax-client.js';
+import type {
+  MiniMaxClient,
+  MiniMaxCompletionRequest,
+  MiniMaxStreamEvent,
+} from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
 
@@ -171,15 +175,17 @@ describe('Thinking pass-back', () => {
         { thinkingDelta: THINKING_TEXT, thinkingSignature: THINKING_SIG },
         { textDelta: 'Let me check that.' },
         {
-          toolCallDelta: { index: 0, id: 'call_check', name: 'check_data', argumentsDelta: '{"id":"123"}' },
+          toolCallDelta: {
+            index: 0,
+            id: 'call_check',
+            name: 'check_data',
+            argumentsDelta: '{"id":"123"}',
+          },
         },
         { finishReason: 'tool_calls' },
       ],
       // Round 2: final answer
-      [
-        { textDelta: 'Based on the data, the answer is 42.' },
-        { finishReason: 'stop' },
-      ],
+      [{ textDelta: 'Based on the data, the answer is 42.' }, { finishReason: 'stop' }],
     ];
 
     const logger = makeRecordingLogger();
@@ -193,7 +199,11 @@ describe('Thinking pass-back', () => {
     );
 
     const tools: vscode.LanguageModelChatTool[] = [
-      { name: 'check_data', description: 'Check data', inputSchema: { type: 'object', properties: { id: { type: 'string' } } } },
+      {
+        name: 'check_data',
+        description: 'Check data',
+        inputSchema: { type: 'object', properties: { id: { type: 'string' } } },
+      },
     ];
 
     // Round 1
@@ -210,7 +220,9 @@ describe('Thinking pass-back', () => {
     );
 
     // Verify Round 1 captured the tool call
-    const round1ToolCalls = round1Progress.parts.filter(p => p instanceof vscode.LanguageModelToolCallPart);
+    const round1ToolCalls = round1Progress.parts.filter(
+      (p) => p instanceof vscode.LanguageModelToolCallPart,
+    );
     strictEqual(round1ToolCalls.length, 1, 'Round 1 should have 1 tool call');
 
     // Round 2 - feed back the tool result
@@ -241,7 +253,7 @@ describe('Thinking pass-back', () => {
     // Log the entire request for debugging removed (no-console).
 
     // Find the assistant message with tool calls
-    const assistantMessages = round2Request.messages.filter(m => m.role === 'assistant');
+    const assistantMessages = round2Request.messages.filter((m) => m.role === 'assistant');
     ok(assistantMessages.length > 0, 'Should have at least one assistant message');
 
     // Check if any assistant message has thinking in its content
@@ -249,12 +261,25 @@ describe('Thinking pass-back', () => {
     for (const msg of assistantMessages) {
       if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
-          if (typeof part === 'object' && part !== null && 'type' in part && part.type === 'thinking') {
+          if (
+            typeof part === 'object' &&
+            part !== null &&
+            'type' in part &&
+            part.type === 'thinking'
+          ) {
             foundThinking = true;
             // console.log debug helper removed (no-console).
             // Verify thinking content and signature
-            strictEqual((part as { thinking?: string }).thinking, THINKING_TEXT, 'Thinking content should match');
-            strictEqual((part as { signature?: string }).signature, THINKING_SIG, 'Thinking signature should match');
+            strictEqual(
+              (part as { thinking?: string }).thinking,
+              THINKING_TEXT,
+              'Thinking content should match',
+            );
+            strictEqual(
+              (part as { signature?: string }).signature,
+              THINKING_SIG,
+              'Thinking signature should match',
+            );
           }
         }
       }
@@ -277,10 +302,7 @@ describe('Thinking pass-back', () => {
         { finishReason: 'tool_calls' },
       ],
       // Round 2: final answer
-      [
-        { textDelta: 'Done.' },
-        { finishReason: 'stop' },
-      ],
+      [{ textDelta: 'Done.' }, { finishReason: 'stop' }],
     ];
 
     const logger = makeRecordingLogger();
@@ -319,8 +341,12 @@ describe('Thinking pass-back', () => {
         new vscode.LanguageModelToolCallPart('call_2', 'tool_b', { y: 2 }),
       ]),
       new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, [
-        new vscode.LanguageModelToolResultPart('call_1', [new vscode.LanguageModelTextPart('Result A')]),
-        new vscode.LanguageModelToolResultPart('call_2', [new vscode.LanguageModelTextPart('Result B')]),
+        new vscode.LanguageModelToolResultPart('call_1', [
+          new vscode.LanguageModelTextPart('Result A'),
+        ]),
+        new vscode.LanguageModelToolResultPart('call_2', [
+          new vscode.LanguageModelTextPart('Result B'),
+        ]),
       ]),
     ];
     const round2Progress = makeProgress();
@@ -369,9 +395,7 @@ describe('Thinking pass-back', () => {
       // Walk backwards to find the most-recent prior assistant turn
       // (the domain mapper never inserts unrelated turns between
       // an assistant tool_use and its tool_result).
-      let precedingAssistant:
-        | { toolCalls?: ReadonlyArray<{ id: string }> }
-        | undefined;
+      let precedingAssistant: { toolCalls?: ReadonlyArray<{ id: string }> } | undefined;
       for (let j = i - 1; j >= 0; j -= 1) {
         const prior = round2Request.messages[j];
         if (prior !== undefined && prior.role === 'assistant') {
@@ -379,12 +403,8 @@ describe('Thinking pass-back', () => {
           break;
         }
       }
-      ok(
-        precedingAssistant !== undefined,
-        `tool(${toolCallId}) must follow an assistant turn`,
-      );
-      const matched =
-        precedingAssistant?.toolCalls?.some((tc) => tc.id === toolCallId) ?? false;
+      ok(precedingAssistant !== undefined, `tool(${toolCallId}) must follow an assistant turn`);
+      const matched = precedingAssistant?.toolCalls?.some((tc) => tc.id === toolCallId) ?? false;
       ok(
         matched,
         `tool(${toolCallId}) must follow an assistant turn whose tool_calls carry the same id`,

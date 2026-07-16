@@ -4,6 +4,77 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-07-16
+
+### Bundled chat customizations (Phase 8)
+
+Mighty Max is no longer just a BYOK model provider — it ships its own
+custom agents, slash commands, and Agent Skills inside the `.vsix`.
+VS Code surfaces them in Copilot Chat next to user/workspace ones.
+
+- **Engine floor bumped** to `^1.109.0` (`@types/vscode` bumped in
+  lockstep). On older VS Code the agents are silently absent and the
+  MiniMax models keep working — VS Code ignores unknown contribution
+  points.
+- **Two custom agents**, surfaced in the chat agents dropdown:
+  - **`max-planner`** — read-only implementation planner pinned to
+    MiniMax M3. Plan before the first tool call; never edits files or
+    runs commands. Bundled under `chat/agents/max-planner.agent.md`.
+  - **`max-review`** — maintainer-grade code review pinned to M3.
+    Read-only (`changes` + search/read tools only), `>=80%`-confidence
+    rule, hard cap of 10 findings per review, structured
+    `Critical / Suggestions / Good practices` output with an
+    `APPROVE` / `APPROVE WITH NITS` / `REQUEST CHANGES` verdict line.
+    A skill dispatch table maps file globs to the 12 review skills
+    (next bullet). Bundled under `chat/agents/max-review.agent.md`.
+- **One slash command**: `/review-code` (focus =
+  `security` / `correctness` / `performance` / omitted). Invokes
+  `max-review` against the pending changes, or the file open in the
+  editor if there are no changes. Bundled under
+  `chat/prompts/review-code.prompt.md`.
+- **Twelve review skills**, loaded on demand by `max-review` when the
+  diff's file globs match a skill's `description`. Skills live at
+  `chat/skills/<name>/SKILL.md`; each has a checklist plus tiny
+  `WRONG` -> `RIGHT` examples that match the agent's `>=80%`-confidence
+  bar:
+  - 10 language / platform skills: `code-review-dotnet`,
+    `code-review-rust`, `code-review-go`, `code-review-typescript`,
+    `code-review-python`, `code-review-kotlin`, `code-review-swift`,
+    `code-review-powershell`, `code-review-bash`,
+    `code-review-github-actions`.
+  - 2 security skills: `owasp-top-10-2025` and
+    `owasp-api-security-2023`, each covering all 10 list items by ID.
+- **Deliberately absent**: `chatInstructions`. A model-provider
+  extension silently injecting prompt text into every user's chat
+  requests is intrusive. The agents + prompts + skills system is
+  opt-in (you pick `max-planner` from the dropdown) and every shipped
+  prompt is auditable in the file.
+
+### Plumbing
+
+- New pure-domain module `src/lib/domain/chat-assets.ts` —
+  flat-keyword markdown-frontmatter parser plus per-asset validators
+  (`validateAgentFrontmatter`, `validatePromptFrontmatter`,
+  `validateSkillFrontmatter`) returning typed error lists with
+  discriminated `code` fields (mirrors `CatalogValidationError`).
+  Zero `vscode` / HTTP imports; the `no-vscode` invariant test
+  enforces purity.
+- New unit suite `src/lib/chat-assets.test.ts` — parser round-trips,
+  each validator's per-rule happy + failure paths, including the
+  skill `name === parentDirName` invariant.
+- New manifest consistency test `src/lib/chat-assets-manifest.test.ts`
+  — walks the on-disk `chat/` tree and asserts (a) every contributed
+  path exists, (b) every `*.agent.md` / `*.prompt.md` / `SKILL.md`
+  is contributed (no orphans), (c) every file passes its validator,
+  (d) `max-review`'s dispatch table names all 12 T25 skill
+  directories verbatim, (e) both OWASP skill bodies cover A01-A10 /
+  API1-API10.
+- `.vscodeignore` allow list gains `!chat/**/*.md` so the bundled
+  agent / prompt / skill markdown ships in the `.vsix`.
+- `README.md` gains a "Bundled agents and skills" section
+  documenting every shipped asset and the no-`chatInstructions`
+  decision.
+
 ## [0.2.5] — 2026-07-14
 
 Stall watchdogs in `MiniMaxClientAdapter`. A MiniMax server that
@@ -20,7 +91,7 @@ watchdogs close the gap:
   `MiniMaxClientError` kind, `stall`.
 - **Idle timeout** (`mightyMax.idleTimeoutMs`, default 60s): no bytes
   on an open stream within the budget cuts the connection with
-  `stall`. Silence *before* the first delivered event is re-issued
+  `stall`. Silence _before_ the first delivered event is re-issued
   transparently (the consumer saw nothing); silence after surfaces a
   user-facing chat error, since re-issuing would duplicate delivered
   content. The watchdog measures gaps between bytes, never total

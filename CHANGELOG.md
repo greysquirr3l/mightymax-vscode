@@ -4,6 +4,71 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] — 2026-07-16
+
+### Fixed
+
+- **Server-terminated connections (`TypeError: terminated`) are now
+  retried.** When the MiniMax server closes the socket mid-request —
+  observed 2026-07-16 on a large (352-message) request, surfacing as
+  `MiniMax API error (network): terminated` with zero retries — the
+  failure now engages the transport's existing retry machinery:
+
+  - `isRetriableNetworkError` walks the error's `cause` chain, so
+    undici's `TypeError: terminated` / `fetch failed` wrappers (which
+    carry the socket-level `ECONNRESET` / `UND_ERR_SOCKET` code on
+    `.cause`, never on the thrown error itself) are recognized as
+    transient. Bare `terminated` errors with no cause are matched by
+    message.
+  - The SSE parsers mark mid-stream network failures `retriable`, so
+    a body that errors before delivering any event is re-issued
+    transparently by the before-first-event retry driver — the branch
+    the 0.2.5 watchdog work documented but never actually reached.
+    Post-first-event terminations still surface immediately (a retry
+    would duplicate delivered content).
+  - The chat error for `network` failures now explains that the
+    connection dropped and safe retries were exhausted, instead of
+    the bare `MiniMax API error (network): terminated` envelope.
+
+  Four-test regression suite in `transport.test.ts`
+  ("server-terminated connections").
+
+## [0.3.1] — 2026-07-16
+
+### Fixed
+
+- **Provider manifest no longer uses the deprecated `managementCommand`
+  property.** VS Code 1.109+ flags
+  `contributes.languageModelChatProviders[*].managementCommand` with
+  `"The managementCommand property is deprecated and will be removed in
+a future release. Use the new configuration property instead."` —
+  the picker gear icon now renders against the new
+  `configuration.properties` schema:
+
+  ```jsonc
+  "languageModelChatProviders": [
+    {
+      "vendor": "minimax",
+      "displayName": "Mighty Max (MiniMax)",
+      "configuration": {
+        "properties": {
+          "apiKey": {
+            "type": "string",
+            "secret": true,
+            "description": "MiniMax API key. Stored in SecretStorage by the `Mighty Max: Manage MiniMax` command. Required for the model picker to surface this vendor."
+          }
+        }
+      }
+    }
+  ]
+  ```
+
+  The `mightyMax.manage` command (which writes the key to SecretStorage)
+  remains registered and is still the only authoritative write path;
+  the picker now opens the same surface via the gear icon. The
+  `secret: true` flag tells VS Code to back the value with
+  SecretStorage rather than `settings.json`.
+
 ## [0.3.0] — 2026-07-16
 
 ### Bundled chat customizations (Phase 8)

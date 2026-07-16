@@ -42,7 +42,16 @@ suite('Manifest contract', () => {
     const providers = contributes.languageModelChatProviders as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(providers) && providers.length > 0, 'no languageModelChatProviders');
     assert.equal(providers[0]?.vendor, 'minimax');
-    assert.equal(providers[0]?.managementCommand, 'mightyMax.manage');
+    // 0.3.1 replaced the deprecated `managementCommand` property with
+    // the new `configuration.properties` schema (VS Code 1.109+). Pin
+    // both the removal and the replacement's apiKey secret setting.
+    assert.equal(providers[0]?.managementCommand, undefined);
+    const configuration = providers[0]?.configuration as Record<string, unknown> | undefined;
+    assert.ok(configuration, 'provider configuration block is missing');
+    const properties = configuration.properties as Record<string, Record<string, unknown>>;
+    assert.ok(properties?.apiKey, 'configuration.properties.apiKey is missing');
+    assert.equal(properties.apiKey.type, 'string');
+    assert.equal(properties.apiKey.secret, true);
   });
 
   test('package.json sets engines.vscode >= 1.104.0', async () => {

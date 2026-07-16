@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -70,7 +70,15 @@
       {
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
-        "managementCommand": "mightyMax.manage"
+        "configuration": {
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "description": "MiniMax API key. Stored in SecretStorage by the `Mighty Max: Manage MiniMax` command. Required for the model picker to surface this vendor."
+            }
+          }
+        }
       }
     ],
     "chatAgents": [

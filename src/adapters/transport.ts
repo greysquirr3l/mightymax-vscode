@@ -1384,7 +1384,13 @@ async function* parseOpenAiStream(
     if (isAbortError(err) || signal.aborted) {
       throw new MiniMaxClientError('abort', 'request aborted', { cause: err });
     }
-    throw new MiniMaxClientError('network', errorMessage(err), { cause: err });
+    // Retriable: a body that errors out mid-read (undici's
+    // `TypeError: terminated` when the server closes the socket)
+    // is the same failure class as a body that ends cleanly with
+    // no events. Whether a retry actually happens is gated
+    // upstream in `runCompletion` on `sawAnyEvent` — a stream
+    // that already delivered content is never re-issued.
+    throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
   } finally {
     reader.releaseLock();
   }
@@ -1546,7 +1552,13 @@ async function* parseAnthropicStream(
     if (isAbortError(err) || signal.aborted) {
       throw new MiniMaxClientError('abort', 'request aborted', { cause: err });
     }
-    throw new MiniMaxClientError('network', errorMessage(err), { cause: err });
+    // Retriable: a body that errors out mid-read (undici's
+    // `TypeError: terminated` when the server closes the socket)
+    // is the same failure class as a body that ends cleanly with
+    // no events. Whether a retry actually happens is gated
+    // upstream in `runCompletion` on `sawAnyEvent` — a stream
+    // that already delivered content is never re-issued.
+    throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
   } finally {
     reader.releaseLock();
   }
@@ -1931,18 +1943,45 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
+const RETRIABLE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  // undici (Node's fetch) socket-layer codes. `UND_ERR_SOCKET` is
+  // "other side closed" — the shape behind the observed
+  // `TypeError: terminated` failures on large MiniMax requests.
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+/**
+ * Error messages that mark a transient connection loss even when no
+ * `code` survives the wrapping. undici's `TypeError: terminated`
+ * sometimes carries no cause at all (content-length mismatch, RST
+ * mid-body), so the message is the only discriminator left.
+ */
+const RETRIABLE_NETWORK_MESSAGES = new Set(['terminated', 'other side closed']);
+
 function isRetriableNetworkError(err: unknown): boolean {
-  if (!isObject(err)) return false;
-  const code = (err as { code?: unknown }).code;
-  if (typeof code === 'string') {
-    return (
-      code === 'ECONNRESET' ||
-      code === 'ETIMEDOUT' ||
-      code === 'EAI_AGAIN' ||
-      code === 'ECONNREFUSED' ||
-      code === 'EPIPE' ||
-      code === 'ENOTFOUND'
-    );
+  // Walk the cause chain: undici wraps the real socket failure —
+  // `TypeError: terminated` / `TypeError: fetch failed` carry the
+  // discriminating `code` (ECONNRESET, UND_ERR_SOCKET, …) on
+  // `.cause` (sometimes two levels deep), never on the thrown
+  // error itself. Bounded depth guards against cause cycles.
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && isObject(current); depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && RETRIABLE_NETWORK_CODES.has(code)) return true;
+    const message = (current as { message?: unknown }).message;
+    if (typeof message === 'string' && RETRIABLE_NETWORK_MESSAGES.has(message)) return true;
+    current = (current as { cause?: unknown }).cause;
   }
   return false;
 }

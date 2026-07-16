@@ -264,6 +264,7 @@ function heldSseResponse(): {
   response: Response;
   emitText: (text: string) => void;
   finish: () => void;
+  fail: (err: unknown) => void;
 } {
   const encoder = new TextEncoder();
   let ctrl: ReadableStreamDefaultController<Uint8Array>;
@@ -292,7 +293,23 @@ function heldSseResponse(): {
       );
       ctrl.close();
     },
+    fail: (err: unknown) => {
+      ctrl.error(err);
+    },
   };
+}
+
+/**
+ * undici's failure shape when the server closes the socket mid-
+ * response: `TypeError: terminated` with the socket-level error on
+ * `.cause` (code `UND_ERR_SOCKET`), never on the TypeError itself.
+ * Observed 2026-07-16 on a large (352-message) MiniMax request.
+ */
+function undiciTerminatedError(): TypeError {
+  const socketError = Object.assign(new Error('other side closed'), {
+    code: 'UND_ERR_SOCKET',
+  });
+  return new TypeError('terminated', { cause: socketError });
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -657,5 +674,145 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     held.finish();
     const eventCount = await withTimeout(done, 5_000, 'flowing stream was cut by the watchdog');
     ok(eventCount >= 6, 'every trickled event should be delivered');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-terminated connections — undici `TypeError: terminated`
+//
+// The 2026-07-16 failure shape: the server accepts the request and
+// then closes the socket (before headers, or mid-body). undici
+// surfaces this as `TypeError: terminated` with the socket error on
+// `.cause` — no `code` on the thrown error itself, so the original
+// `isRetriableNetworkError` never matched it and the failure went
+// straight to the user as "MiniMax API error (network): terminated"
+// with zero retries.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('server-terminated connections — retry behavior', () => {
+  it('a fetch that rejects with undici "terminated" is retried transparently', async () => {
+    const logger = makeCapturingLogger();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 1) throw undiciTerminatedError();
+        return sseOkResponse();
+      }) as unknown as typeof fetch,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'terminated fetch was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2, 'expected exactly one transparent re-dispatch');
+    ok(
+      logger.calls.some((c) => c.level === 'warn' && c.message.includes('network error')),
+      'expected a network-error retry warning',
+    );
+  });
+
+  it('a body that errors with "terminated" BEFORE any event is retried transparently', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse(); // headers arrive, body errors before any event
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const done = consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger));
+    held.fail(undiciTerminatedError());
+    const eventCount = await withTimeout(
+      done,
+      5_000,
+      'terminated body before first event was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2, 'expected exactly one transparent re-issue');
+    ok(
+      logger.calls.some(
+        (c) => c.level === 'warn' && c.message.includes('died before first event'),
+      ),
+      'expected a before-first-event retry warning',
+    );
+  });
+
+  it('a body that errors with "terminated" AFTER the first event surfaces kind:network without re-issuing', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      maxConcurrentRequests: 1,
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const events = adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger);
+    const iter = events[Symbol.asyncIterator]();
+    held.emitText('first');
+    const first = await withTimeout(iter.next(), 2_000, 'first event never arrived');
+    strictEqual(first.done, false);
+
+    held.fail(undiciTerminatedError());
+    let thrown: unknown;
+    try {
+      await withTimeout(iter.next(), 5_000, 'terminated body never surfaced');
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'network');
+    strictEqual(calls, 1, 'a post-first-event termination must NOT be re-issued');
+
+    // The failed stream must release its semaphore permit
+    // (maxConcurrentRequests: 1 deadlocks here otherwise).
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      2_000,
+      'permit leaked by the terminated stream',
+    );
+    ok(eventCount > 0, 'follow-up request should yield events');
+  });
+
+  it('a bare "terminated" TypeError with no cause is still recognized as retriable', async () => {
+    // undici omits `.cause` on some termination paths
+    // (content-length mismatch, RST mid-body) — the message is the
+    // only discriminator left.
+    const logger = makeCapturingLogger();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError('terminated');
+        return sseOkResponse();
+      }) as unknown as typeof fetch,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'bare terminated fetch was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2);
   });
 });

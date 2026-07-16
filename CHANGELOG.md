@@ -4,6 +4,35 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Server-terminated connections (`TypeError: terminated`) are now
+  retried.** When the MiniMax server closes the socket mid-request —
+  observed 2026-07-16 on a large (352-message) request, surfacing as
+  `MiniMax API error (network): terminated` with zero retries — the
+  failure now engages the transport's existing retry machinery:
+
+  - `isRetriableNetworkError` walks the error's `cause` chain, so
+    undici's `TypeError: terminated` / `fetch failed` wrappers (which
+    carry the socket-level `ECONNRESET` / `UND_ERR_SOCKET` code on
+    `.cause`, never on the thrown error itself) are recognized as
+    transient. Bare `terminated` errors with no cause are matched by
+    message.
+  - The SSE parsers mark mid-stream network failures `retriable`, so
+    a body that errors before delivering any event is re-issued
+    transparently by the before-first-event retry driver — the branch
+    the 0.2.5 watchdog work documented but never actually reached.
+    Post-first-event terminations still surface immediately (a retry
+    would duplicate delivered content).
+  - The chat error for `network` failures now explains that the
+    connection dropped and safe retries were exhausted, instead of
+    the bare `MiniMax API error (network): terminated` envelope.
+
+  Four-test regression suite in `transport.test.ts`
+  ("server-terminated connections").
+
 ## [0.3.1] — 2026-07-16
 
 ### Fixed

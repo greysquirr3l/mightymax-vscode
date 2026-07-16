@@ -334,6 +334,17 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
               'MiniMax API is likely degraded right now.',
           );
         }
+        // Network errors reaching here already spent the transport's
+        // retry budget (or delivered partial content, where a retry
+        // would duplicate it). The raw undici message ("terminated",
+        // "fetch failed") is too cryptic to stand alone.
+        if (err.kind === 'network') {
+          throw new Error(
+            `The connection to MiniMax dropped before the response completed (${err.message}). ` +
+              'Safe retries were already attempted. Try again — if this keeps ' +
+              'happening, the MiniMax API is likely degraded right now.',
+          );
+        }
         throw new Error(`MiniMax API error (${err.kind}): ${err.message}`);
       }
       throw err;

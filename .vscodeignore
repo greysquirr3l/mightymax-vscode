@@ -45,6 +45,13 @@ artifacts/
 # Marketplace.
 .gitleaks.toml
 
+# Local agent/tool configuration can contain machine-specific paths
+# and server details. VSCE reads `.vscodeignore` instead of
+# `.gitignore`, so exclude these even when Git already ignores them.
+.mcp.json
+opencode.json
+**/.gitkeep
+
 # Logo variants not referenced by package.json `icon`, the README, or
 # the CHANGELOG. `mighty_max_logo.png` (8.9 MB) was the prior hero
 # image; the README now points at the lighter

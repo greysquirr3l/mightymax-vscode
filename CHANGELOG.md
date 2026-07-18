@@ -28,7 +28,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`node:test` suites no longer silently skip under the VS Code
   test harness.** Nearly every test file registers with `node:test`,
-  but `@vscode/test-cli` only awaits *Mocha's* completion before
+  but `@vscode/test-cli` only awaits _Mocha's_ completion before
   tearing down the extension host — so slow `node:test` suites
   raced the teardown and lost: `chat-provider.test.js` and
   `stream-pump.test.js` (unit label) and the entire standalone
@@ -41,6 +41,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   racing globs/labels were removed from `.vscode-test.mjs` with
   in-place rationale; `tool-filtering` keeps its real-host coverage
   via the `integration` label.
+
+- **Local development configuration no longer leaks into manually
+  packaged VSIX files.** VSCE uses `.vscodeignore` instead of Git's
+  ignore rules when both are present, allowing ignored `.mcp.json`
+  and `opencode.json` files—including machine-specific tool paths—to
+  enter local packages. Both files and placeholder `.gitkeep` files
+  are now explicitly excluded from release artifacts.
 
 ## [0.3.3] — 2026-07-16
 

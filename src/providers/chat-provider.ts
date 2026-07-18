@@ -558,6 +558,48 @@ function buildTooltip(entry: ModelInfo): string {
 // -----------------------------------------------------------------------------
 
 /**
+ * MIME types Copilot Chat uses on `LanguageModelDataPart` to carry
+ * provider-directed metadata rather than model-visible content. The
+ * agent stamps prompt-cache breakpoints into message content —
+ * including inside `LanguageModelToolResultPart` content arrays —
+ * as `LanguageModelDataPart(encode("ephemeral"), "cache_control")`.
+ * These must never reach the JSON-encode fallback below: stringifying
+ * a data part serializes its `Uint8Array` as a `{"0":101,...}` byte
+ * map, which lands in the model-visible tool output as
+ * `{"mimeType":"cache_control","data":{...}}` garbage (models read
+ * it as an injection attempt). The set mirrors the special-mime enum
+ * in the built-in Copilot extension (cacheControl / statefulMarker /
+ * thinking / contextManagement / phaseData / usage).
+ */
+const METADATA_DATA_PART_MIMES = new Set([
+  'cache_control',
+  'stateful_marker',
+  'thinking',
+  'context_management',
+  'phase_data',
+  'usage',
+]);
+
+/**
+ * Recognize a `LanguageModelDataPart` structurally rather than via
+ * `instanceof` — hosts and test stubs that predate the class (it
+ * landed in `@types/vscode` 1.99+) and cross-realm instances all
+ * still match on the `{mimeType: string, data: Uint8Array}` shape,
+ * which is the only part of the contract the converter consumes.
+ */
+function asDataPart(c: unknown): { mimeType: string; data: Uint8Array } | undefined {
+  if (
+    typeof c === 'object' &&
+    c !== null &&
+    typeof (c as { mimeType?: unknown }).mimeType === 'string' &&
+    (c as { data?: unknown }).data instanceof Uint8Array
+  ) {
+    return c as { mimeType: string; data: Uint8Array };
+  }
+  return undefined;
+}
+
+/**
  * Convert a VS Code chat message to the domain `ChatMessage` format.
  * This is a thin struct-by-struct copy that mirrors the shapes.
  */
@@ -599,9 +641,38 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
       // itself the diagnostic — it appears in the model's
       // context and on the wire payload if a user wants to find
       // unserializable tool results.
-      const resultContent = part.content.map((c) => {
+      const resultContent: string[] = [];
+      for (const c of part.content) {
         if (c instanceof vscode.LanguageModelTextPart) {
-          return c.value;
+          resultContent.push(c.value);
+          continue;
+        }
+        const dataPart = asDataPart(c);
+        if (dataPart !== undefined) {
+          // Provider-directed metadata (cache breakpoints etc.) is
+          // consumed here, never forwarded: mightymax computes its
+          // own `cacheMarkers` in the domain mapper, so the host's
+          // breakpoint hints are redundant on this wire.
+          if (METADATA_DATA_PART_MIMES.has(dataPart.mimeType)) continue;
+          // Textual payloads (text/*, application/json, *+json) are
+          // real tool output — decode the bytes instead of
+          // stringifying the Uint8Array into a byte map.
+          const mime = dataPart.mimeType.toLowerCase();
+          if (
+            mime.startsWith('text/') ||
+            mime === 'application/json' ||
+            mime.endsWith('+json')
+          ) {
+            resultContent.push(new TextDecoder().decode(dataPart.data));
+            continue;
+          }
+          // Binary payloads (images etc.) cannot ride the
+          // string-only tool-result wire; a short marker keeps the
+          // omission visible without dumping bytes into context.
+          resultContent.push(
+            `[tool result data omitted: ${dataPart.mimeType}, ${dataPart.data.byteLength} bytes]`,
+          );
+          continue;
         }
         // Other content types would be handled here. We
         // JSON-encode the payload so the model sees a primitive
@@ -614,7 +685,7 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
         // `JSON.stringify` in the message mapper boundary at
         // `src/lib/domain/messages.ts:mapRequestToMiniMax`.
         try {
-          return JSON.stringify(c);
+          resultContent.push(JSON.stringify(c));
         } catch {
           // Circular reference or BigInt or similar
           // unserializable value. Fall back to a marker the
@@ -623,9 +694,9 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
           // name (e.g. "Object", "Map") so a user inspecting
           // the wire payload can identify the offending type.
           const ctor = (c as { constructor?: { name?: string } })?.constructor?.name ?? typeof c;
-          return `[unserializable tool result content: ${ctor}]`;
+          resultContent.push(`[unserializable tool result content: ${ctor}]`);
         }
-      });
+      }
       content.push({
         type: 'tool-result',
         toolResult: {

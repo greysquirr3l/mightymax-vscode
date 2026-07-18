@@ -10,11 +10,11 @@ test/
 node_modules/
 out/
 tmp/
+scripts/
 **/*.map
 **/*.ts
 **/*.test.ts
 .vscode-test.mjs
-.tmp-test/
 features.json
 mighty-max-plan.toml
 tsconfig.json

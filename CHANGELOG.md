@@ -4,6 +4,44 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.4] — 2026-07-17
+
+### Fixed
+
+- **Copilot cache-breakpoint metadata no longer leaks into
+  model-visible tool output.** VS Code's built-in Copilot extension
+  stamps prompt-cache breakpoints into provider messages as
+  `LanguageModelDataPart(encode("ephemeral"), "cache_control")` —
+  including inside tool-result content arrays. The chat-provider's
+  tool-result normalization JSON-stringified every non-text piece,
+  so those breakpoints surfaced to the model as
+  `{"mimeType":"cache_control","data":{"0":101,...}}` byte-map
+  text, which models read as a prompt-injection attempt.
+  `vscodeToDomainMessage` now intercepts data-part-shaped pieces
+  before the stringify fallback: provider-directed metadata mimes
+  (`cache_control`, `stateful_marker`, `thinking`,
+  `context_management`, `phase_data`, `usage`) are dropped (Mighty
+  Max computes its own cache markers), textual payloads (`text/*`,
+  JSON) are decoded to real text, and binary payloads collapse to a
+  short `[tool result data omitted: <mime>, N bytes]` marker.
+  Three regression tests cover the new paths.
+
+- **`node:test` suites no longer silently skip under the VS Code
+  test harness.** Nearly every test file registers with `node:test`,
+  but `@vscode/test-cli` only awaits *Mocha's* completion before
+  tearing down the extension host — so slow `node:test` suites
+  raced the teardown and lost: `chat-provider.test.js` and
+  `stream-pump.test.js` (unit label) and the entire standalone
+  `tool-filtering` label reported `0 passing`, exit 0, without
+  executing a single test — in CI too. Those files now run to
+  completion under plain Node via a checked-in `vscode` stub
+  (`scripts/vscode-stub.cjs` + `scripts/run-vscode-stub-tests.cjs`),
+  wired into `npm test` ahead of the host-based labels, and a
+  deliberately broken assertion is proven to fail the build. The
+  racing globs/labels were removed from `.vscode-test.mjs` with
+  in-place rationale; `tool-filtering` keeps its real-host coverage
+  via the `integration` label.
+
 ## [0.3.3] — 2026-07-16
 
 ### Fixed

@@ -13,6 +13,11 @@
  *   - Mid-stream transport error flushes BEFORE rethrowing.
  *
  * Plus the "no `__minimax_usage__:` text leak" invariant from T22.
+ *
+ * `stream-pump.ts` imports `vscode` transitively, so — like
+ * `chat-provider.test.ts` — this file is not run by the `unit`
+ * @vscode/test-cli profile; it runs via
+ * `scripts/run-vscode-stub-tests.cjs` (see `npm run test:unit`).
  */
 
 import { describe, it } from 'node:test';

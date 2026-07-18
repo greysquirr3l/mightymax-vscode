@@ -22,9 +22,15 @@
  *     other M-series go through OpenAI.
  *
  * The chat-provider imports `vscode` directly (it's the host-side
- * adapter glue). To run without the VS Code host we mock the
- * `vscode` namespace using a hand-rolled stub injected via the
- * existing `vscode-stub.cjs` (see `.tmp-test/run-all.cjs`).
+ * adapter glue). This file (like `stream-pump.test.ts`) is not run by
+ * the `unit` @vscode/test-cli profile — see the comment on that
+ * profile in `.vscode-test.mjs` for why. It runs instead via
+ * `npm run test:unit`, which invokes
+ * `scripts/run-vscode-stub-tests.cjs`: a hand-rolled `vscode`
+ * namespace stub (`scripts/vscode-stub.cjs`) injected via a
+ * `Module._resolveFilename` hook, requiring this compiled test file
+ * directly under plain Node — no VS Code host needed for these
+ * host-glue-but-otherwise-pure tests.
  */
 
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -707,12 +713,19 @@ describe('ChatProvider change emitter', () => {
 // vscodeToDomainMessage — tool-result content normalization
 //
 // Regression for the `[object Object]` rendering bug. A non-text
-// tool-result content part (e.g. a `LanguageModelDataPart` or any
-// future content kind) must land in the domain message as a
-// JSON-encoded string, NOT the literal `[object Object]` that
-// `String(payload)` produces. Mirrors the defensive
-// `JSON.stringify` in the message mapper at
+// tool-result content part with no recognizable shape must land in
+// the domain message as a JSON-encoded string, NOT the literal
+// `[object Object]` that `String(payload)` produces. Mirrors the
+// defensive `JSON.stringify` in the message mapper at
 // `src/lib/domain/messages.ts:mapRequestToMiniMax`.
+//
+// `LanguageModelDataPart`-shaped pieces are handled BEFORE that
+// fallback: Copilot stamps prompt-cache breakpoints into tool-result
+// content as data parts with mime `cache_control`, and stringifying
+// those leaks `{"mimeType":"cache_control","data":{...}}` byte-map
+// garbage into the model-visible tool output (models read it as an
+// injection attempt). Metadata mimes are dropped, textual payloads
+// are decoded, binary payloads collapse to a short marker.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('vscodeToDomainMessage — tool-result content normalization', () => {
@@ -801,6 +814,86 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       serialized.includes('Object'),
       `marker should include the constructor name 'Object'; got: ${serialized}`,
     );
+  });
+
+  // Build a `LanguageModelDataPart`-shaped piece. The real value
+  // class exists on VS Code 1.99+ hosts; the converter also
+  // duck-types on `{mimeType, data}` so stubs and cross-realm
+  // instances behave identically — the plain-object form is what
+  // these tests exercise.
+  const makeDataPart = (mimeType: string, payload: string) => ({
+    mimeType,
+    data: new TextEncoder().encode(payload),
+  });
+
+  it('drops cache_control (and other metadata-mime) data parts from tool-result content', () => {
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_cc', [
+          new vscode.LanguageModelTextPart('127.0.0.1 localhost'),
+          // Copilot's cache breakpoint, exactly as the built-in
+          // extension constructs it: encode("ephemeral") under
+          // mime "cache_control".
+          makeDataPart('cache_control', 'ephemeral') as unknown as vscode.LanguageModelTextPart,
+          makeDataPart('stateful_marker', 'x') as unknown as vscode.LanguageModelTextPart,
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    const part = domain.content[0]!;
+    strictEqual(part.type, 'tool-result');
+    if (part.type !== 'tool-result') return;
+    deepStrictEqual(part.toolResult.content, ['127.0.0.1 localhost']);
+    ok(
+      !JSON.stringify(part.toolResult.content).includes('cache_control'),
+      'cache_control must never appear in model-visible tool result content',
+    );
+  });
+
+  it('decodes textual data parts (application/json, text/*) instead of byte-mapping them', () => {
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_json', [
+          makeDataPart('application/json', '{"rows":3}') as unknown as vscode.LanguageModelTextPart,
+          makeDataPart('text/plain', 'plain text') as unknown as vscode.LanguageModelTextPart,
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    const part = domain.content[0]!;
+    if (part.type !== 'tool-result') {
+      ok(false, 'expected a tool-result part');
+      return;
+    }
+    deepStrictEqual(part.toolResult.content, ['{"rows":3}', 'plain text']);
+  });
+
+  it('collapses binary data parts to a short marker instead of a Uint8Array byte map', () => {
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_png', [
+          {
+            mimeType: 'image/png',
+            data: new Uint8Array([137, 80, 78, 71]),
+          } as unknown as vscode.LanguageModelTextPart,
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    const part = domain.content[0]!;
+    if (part.type !== 'tool-result') {
+      ok(false, 'expected a tool-result part');
+      return;
+    }
+    deepStrictEqual(part.toolResult.content, [
+      '[tool result data omitted: image/png, 4 bytes]',
+    ]);
   });
 });
 

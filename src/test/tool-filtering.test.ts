@@ -7,6 +7,14 @@
  *  3. Tool count limit is respected
  *  4. Filtering is disabled when under the limit
  *  5. Different strategies produce expected results
+ *
+ * There is no dedicated `tool-filtering` @vscode/test-cli profile for
+ * this file (there used to be — see the comment where it was removed
+ * in `.vscode-test.mjs`). It runs via `scripts/run-vscode-stub-tests.cjs`
+ * (see `npm run test:unit`), under plain Node with a checked-in
+ * `vscode` stub, and — as real-host coverage of the same
+ * `vscode.workspace.getConfiguration` round-trip — as part of the
+ * `integration` profile's `out/test/**` glob.
  */
 
 import { ok } from 'node:assert/strict';

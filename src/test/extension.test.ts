@@ -11,8 +11,8 @@ const EXPECTED_MODEL_IDS = [
   'MiniMax-M3',
 ];
 
-suite('Extension smoke', () => {
-  test('activates without throwing', async () => {
+describe('Extension smoke', () => {
+  it('activates without throwing', async () => {
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, `extension ${EXTENSION_ID} is not registered`);
 
@@ -22,20 +22,20 @@ suite('Extension smoke', () => {
     assert.ok(extension.isActive, 'extension failed to activate');
   });
 
-  test('exposes the management command', async () => {
+  it('exposes the management command', async () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes('mightyMax.manage'), 'mightyMax.manage command is not registered');
   });
 
-  test('exposes the configured settings', () => {
+  it('exposes the configured settings', () => {
     const config = vscode.workspace.getConfiguration('mightyMax');
     assert.ok(config.has('baseUrl'), 'mightyMax.baseUrl setting is missing');
     assert.ok(config.has('logLevel'), 'mightyMax.logLevel setting is missing');
   });
 });
 
-suite('Manifest contract', () => {
-  test('package.json declares languageModelChatProviders under vendor "minimax"', async () => {
+describe('Manifest contract', () => {
+  it('package.json declares languageModelChatProviders under vendor "minimax"', async () => {
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, 'extension not found');
     const contributes = extension.packageJSON.contributes as Record<string, unknown>;
@@ -54,7 +54,7 @@ suite('Manifest contract', () => {
     assert.equal(properties.apiKey.secret, true);
   });
 
-  test('package.json sets engines.vscode >= 1.104.0', async () => {
+  it('package.json sets engines.vscode >= 1.104.0', async () => {
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, 'extension not found');
     const engines = extension.packageJSON.engines as Record<string, string>;
@@ -71,7 +71,7 @@ suite('Manifest contract', () => {
     );
   });
 
-  test('package.json declares capabilities.untrustedWorkspaces (limited)', async () => {
+  it('package.json declares capabilities.untrustedWorkspaces (limited)', async () => {
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, 'extension not found');
     const capabilities = extension.packageJSON.capabilities as Record<string, unknown>;
@@ -81,15 +81,15 @@ suite('Manifest contract', () => {
   });
 });
 
-suite('Language model catalog (T02)', () => {
-  test('VS Code can select the minimax vendor', async () => {
+describe('Language model catalog (T02)', () => {
+  it('VS Code can select the minimax vendor', async () => {
     const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
     assert.ok(Array.isArray(models), 'selectChatModels must return an array');
     // Security design: empty list when no API key configured (silent mode)
     // This is expected behavior in CI and first-run scenarios
   });
 
-  test('every expected M-series model id is present (when API key configured)', async () => {
+  it('every expected M-series model id is present (when API key configured)', async () => {
     const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
     if (models.length === 0) {
       // No API key configured - security by design, skip model-specific assertions
@@ -101,7 +101,7 @@ suite('Language model catalog (T02)', () => {
     }
   });
 
-  test('every catalog entry has the minimax family and a non-empty display name', async () => {
+  it('every catalog entry has the minimax family and a non-empty display name', async () => {
     const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
     if (models.length === 0) {
       // No API key configured - security by design
@@ -114,7 +114,7 @@ suite('Language model catalog (T02)', () => {
     }
   });
 
-  test('every entry has a positive maxInputTokens budget', async () => {
+  it('every entry has a positive maxInputTokens budget', async () => {
     const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
     if (models.length === 0) {
       // No API key configured - security by design
@@ -125,7 +125,7 @@ suite('Language model catalog (T02)', () => {
     }
   });
 
-  test('M3 has the largest input budget (1M+ ctx) and is a distinct id from M2.x', async () => {
+  it('M3 has the largest input budget (1M+ ctx) and is a distinct id from M2.x', async () => {
     const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
     if (models.length === 0) {
       // No API key configured - security by design
@@ -141,13 +141,13 @@ suite('Language model catalog (T02)', () => {
   });
 });
 
-suite('API key lifecycle (T06)', () => {
-  test('mightyMax.manage command is registered and discoverable', async () => {
+describe('API key lifecycle (T06)', () => {
+  it('mightyMax.manage command is registered and discoverable', async () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes('mightyMax.manage'), 'mightyMax.manage must be registered');
   });
 
-  test.skip('mightyMax.manage runs without throwing (UI is user-driven)', async () => {
+  it.skip('mightyMax.manage runs without throwing (UI is user-driven)', async () => {
     // SKIP: In the test host, vscode.window.showQuickPick does NOT return
     // immediately when there's no input source - it hangs waiting for user
     // interaction, causing this test to timeout in CI. The command is

@@ -4,9 +4,9 @@
 /**
  * Host-free runner for the `vscode`-importing unit test files.
  *
- * Why this exists: `out/providers/chat-provider.test.js`,
- * `out/providers/stream-pump.test.js`, and `out/test/tool-filtering.test.js`
- * use `import { describe, it } from 'node:test'` like every other test
+ * Why this exists: the files required at the bottom (the provider
+ * tests, tool-filtering, and the messages domain tests) use
+ * `import { describe, it } from 'node:test'` like every other test
  * file in this repo, but they (transitively, via the modules under
  * test) `require('vscode')`. Running them through @vscode/test-cli's
  * `unit` profile (or, for tool-filtering, a dedicated single-file
@@ -54,6 +54,14 @@
  */
 
 require('./vscode-stub.cjs').install();
+
+// Domain files that transitively require('vscode') via
+// ports/message-mapping.js (the LanguageModel*Part value classes).
+// They only need the stub's value classes, not the real host, and
+// they never touch the stub's config store — safe ahead of the
+// provider files.
+require('../out/lib/messages.test.js');
+require('../out/lib/messages-id-fidelity.test.js');
 
 require('../out/providers/stream-pump.test.js');
 require('../out/providers/chat-provider.test.js');

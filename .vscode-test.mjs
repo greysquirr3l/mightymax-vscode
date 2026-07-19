@@ -2,42 +2,44 @@ import { defineConfig } from '@vscode/test-cli';
 
 /**
  * @vscode/test-cli profiles:
- *  - `unit`: Mocha on compiled domain/adapter/command tests, run inside
- *    a real (but otherwise idle) VS Code host — see the `files` comment
- *    below for why `out/providers/**` is deliberately NOT in this list.
+ *  - `unit`: Mocha on the single genuinely-Mocha test file
+ *    (`no-vscode.test.js`), run inside a real (but otherwise idle)
+ *    VS Code host — see the `files` comment below for why nothing
+ *    else is in this list.
  *  - `integration`: full VS Code host with the extension loaded from
  *    `dist/extension.cjs` (esbuild output). Uses stable VS Code for
  *    reliability in CI (insiders download fails intermittently on Windows).
  *  - `agent-harness`: multi-round agent conversation tests in VS Code host.
  *
- * Some `node:test`-based files that touch `vscode` (chat-provider,
- * stream-pump, tool-filtering) don't have a profile here at all — see
- * `scripts/run-vscode-stub-tests.cjs` for why and where they run
- * instead.
+ * The `node:test`-based unit files don't have a profile here at all:
+ * pure ones run via `scripts/run-node-tests.cjs`, `vscode`-importing
+ * ones via `scripts/run-vscode-stub-tests.cjs` — see those scripts
+ * for why.
  */
 export default defineConfig([
   {
     label: 'unit',
-    // Pure-domain tests live under out/lib/; adapter tests (HTTP, secret
-    // store, transport) live under out/adapters/; command-glue tests
-    // live under out/commands/. The src/lib/no-vscode.test.ts static
-    // guard enforces that the domain layer stays framework-free;
-    // adapter tests intentionally import HTTP modules.
-    //
-    // `out/providers/**` (chat-provider.test.js, stream-pump.test.js)
-    // is NOT included here on purpose. Every file in this repo uses
-    // `import { describe, it } from 'node:test'` rather than Mocha's
-    // own globals (only `no-vscode.test.ts` uses the latter), so
-    // Mocha's own suite tree here is effectively just those 12
-    // static-purity checks — node:test runs everything else via its
-    // own independent, self-scheduled runner. @vscode/test-cli tears
-    // down the extension host as soon as MOCHA's (tiny) suite
-    // finishes, which loses the race against node:test's suites for
-    // slower/later-registered files with no error and exit 0. The two
-    // provider files run instead via `scripts/run-vscode-stub-tests.cjs`
-    // (see `npm run test:unit`), under plain Node with a checked-in
-    // `vscode` stub — they don't need the real host.
-    files: ['out/lib/**/*.test.js', 'out/adapters/**/*.test.js', 'out/commands/**/*.test.js'],
+    // ONLY `no-vscode.test.js` — the one file in the repo that uses
+    // Mocha's own BDD globals. Every other test file uses
+    // `import { describe, it } from 'node:test'`, which registers
+    // with node:test's own independent, self-scheduled runner — NOT
+    // Mocha's suite tree. @vscode/test-cli tears down the extension
+    // host as soon as MOCHA's suite finishes, which loses the race
+    // against node:test's suites for slower/later-registered files
+    // with no error and exit 0. This profile used to glob
+    // `out/lib/**`, `out/adapters/**`, and `out/commands/**`, and
+    // that race was observed live on 2026-07-18: `transport.test.js`
+    // was cut after its first suite, so the stall-watchdog and
+    // server-terminated regression suites were silently not running
+    // under this label. Those node:test files now run
+    // deterministically outside the host instead:
+    //  - pure files → `scripts/run-node-tests.cjs` (plain
+    //    `node --test`, per-file process isolation);
+    //  - `vscode`-importing files (messages*.test.js, the provider
+    //    files, tool-filtering) → `scripts/run-vscode-stub-tests.cjs`
+    //    with the checked-in `vscode` stub.
+    // Both are chained ahead of this profile in `npm run test:unit`.
+    files: ['out/lib/no-vscode.test.js'],
     mocha: {
       // BDD: the test files use `describe`/`it`/`beforeEach`/`afterEach`,
       // which only register with mocha under the BDD interface. The TDD
@@ -53,7 +55,17 @@ export default defineConfig([
     version: 'stable',
     launchArgs: ['--disable-extensions', '--disable-updates'],
     mocha: {
-      ui: 'tdd',
+      // BDD everywhere in src/test: every file uses Mocha's
+      // `describe`/`it` globals (extension.test.ts was converted
+      // from tdd `suite`/`test` on 2026-07-19 so this glob could
+      // switch). This matters: under the old tdd interface, only
+      // extension.test.js registered with Mocha — every other file
+      // in the glob imported `describe`/`it` from `node:test` and
+      // ran on node:test's independent scheduler, racing the
+      // extension-host teardown that fires when Mocha's own suite
+      // finishes (silent cut, exit 0). With bdd + Mocha globals in
+      // every file, Mocha owns the full suite tree and awaits it.
+      ui: 'bdd',
       timeout: 30_000,
     },
   },
@@ -86,21 +98,14 @@ export default defineConfig([
   // There used to be a dedicated `tool-filtering` profile here
   // (`files: 'out/test/tool-filtering.test.js'`, same shape as
   // `agent-harness`/`thinking-passback` above). It's gone on purpose:
-  // as a SINGLE-file, `ui: 'bdd'` profile whose one file uses
-  // `node:test`'s own `describe`/`it` (not Mocha's globals), Mocha's
-  // own suite tree for that profile was EMPTY — 0 tests, so its
-  // `run()` callback fired almost instantly, and @vscode/test-cli tore
-  // down the extension host before `tool-filtering.test.js`'s
-  // node:test suite ever got to run (the same race documented on the
-  // `unit` profile above, just with the odds turned all the way
-  // against it). It silently reported `0 passing`, exit 0, and its
-  // three assertions never actually ran under this label.
+  // at the time, that file registered with `node:test` rather than
+  // Mocha, so the profile's Mocha suite was EMPTY and the host was
+  // torn down before its tests ever ran (silent `0 passing`, exit 0).
   // `tool-filtering.test.js` now runs two places instead: via
   // `scripts/run-vscode-stub-tests.cjs` (see `npm run test:unit`),
   // deterministically, under plain Node with the checked-in `vscode`
-  // stub; and — unchanged, still working, kept as real-host coverage
-  // of the same `vscode.workspace.getConfiguration` round-trip — as
-  // part of the `integration` profile's `out/test/**/*.test.js` glob
-  // above, where Mocha's own (real, non-empty) suite reliably outlasts
-  // it.
+  // stub (where its dual-runner shim falls back to node:test); and as
+  // part of the `integration` profile's glob above, where the same
+  // shim picks up Mocha's BDD globals and registers with Mocha's own
+  // suite tree — no teardown race either way.
 ]);

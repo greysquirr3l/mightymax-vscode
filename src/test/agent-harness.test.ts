@@ -13,7 +13,11 @@
  */
 
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
-import { describe, it } from 'node:test';
+// describe/it are Mocha's BDD globals (typed via tsconfig "types"): files run
+// under @vscode/test-cli profiles MUST register with Mocha's suite tree.
+// Importing describe/it from 'node:test' instead puts the file in a race
+// with the extension-host teardown that silently skips suites — see the
+// profile comments in .vscode-test.mjs.
 import * as vscode from 'vscode';
 
 import { ChatProvider } from '../providers/chat-provider.js';

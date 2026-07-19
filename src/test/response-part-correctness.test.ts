@@ -15,8 +15,12 @@
  * red-line README for T19 behavior.
  */
 
-import { describe, it } from 'node:test';
 import { ok, strictEqual, deepStrictEqual } from 'node:assert/strict';
+// describe/it are Mocha's BDD globals (typed via tsconfig "types"): files run
+// under @vscode/test-cli profiles MUST register with Mocha's suite tree.
+// Importing describe/it from 'node:test' instead puts the file in a race
+// with the extension-host teardown that silently skips suites — see the
+// profile comments in .vscode-test.mjs.
 
 import type { MiniMaxStreamEvent } from '../ports/minimax-client.js';
 

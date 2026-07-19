@@ -15,6 +15,7 @@ import { deepStrictEqual, equal, fail, ok } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  countMessageMappingErrors,
   isMessageMappingError,
   mapMiniMaxUsage,
   mapRequestToMiniMax,
@@ -1107,5 +1108,59 @@ describe('isMessageMappingError', () => {
   it('returns false for an object whose `kind` is not a string', () => {
     ok(!isMessageMappingError({ kind: 1 }));
     ok(!isMessageMappingError({ kind: null }));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// countMessageMappingErrors — warning deduplication
+//
+// A long chat history re-maps in full on every request, so one
+// structural quirk repeats per historical message (observed: ~100
+// identical "empty assistant text part dropped" warnings per
+// request). The chat-provider logs one line per distinct warning
+// with a count instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('countMessageMappingErrors', () => {
+  it('collapses identical warnings into one entry with a count', () => {
+    const w: MessageMappingError = {
+      kind: 'unsupported-content',
+      reason: 'anthropic: empty assistant text part dropped',
+    };
+    const out = countMessageMappingErrors([w, { ...w }, { ...w }]);
+    deepStrictEqual(out, [{ error: w, count: 3 }]);
+  });
+
+  it('keeps distinct warnings separate, preserving first-seen order', () => {
+    const a: MessageMappingError = { kind: 'unsupported-content', reason: 'reason A' };
+    const b: MessageMappingError = { kind: 'unsupported-content', reason: 'reason B' };
+    const c: MessageMappingError = { kind: 'missing-role' };
+    const out = countMessageMappingErrors([a, b, a, c, a]);
+    deepStrictEqual(out, [
+      { error: a, count: 3 },
+      { error: b, count: 1 },
+      { error: c, count: 1 },
+    ]);
+  });
+
+  it('skips entries that are not mapping errors', () => {
+    const w: MessageMappingError = { kind: 'empty-message', role: 'user' };
+    const out = countMessageMappingErrors([null, 'noise', 42, { type: 'text' }, w]);
+    deepStrictEqual(out, [{ error: w, count: 1 }]);
+  });
+
+  it('returns an empty list for an empty or error-free input', () => {
+    deepStrictEqual(countMessageMappingErrors([]), []);
+    deepStrictEqual(countMessageMappingErrors([{ type: 'text', value: 'hi' }]), []);
+  });
+
+  it('does not merge warnings whose kinds match but payloads differ', () => {
+    const a: MessageMappingError = { kind: 'unknown-message-role', rawRole: 'alpha' };
+    const b: MessageMappingError = { kind: 'unknown-message-role', rawRole: 'beta' };
+    const out = countMessageMappingErrors([a, b]);
+    deepStrictEqual(out, [
+      { error: a, count: 1 },
+      { error: b, count: 1 },
+    ]);
   });
 });

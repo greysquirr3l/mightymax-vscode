@@ -263,7 +263,16 @@ function sseOkResponse(): Response {
 function heldSseResponse(): {
   response: Response;
   emitText: (text: string) => void;
+  /**
+   * Enqueue a raw SSE record body (the `data: ` prefix and record
+   * terminator are added). Used to plant keep-alive-shaped records
+   * that parse as objects but yield no consumer events — e.g.
+   * `{"id":"..."}` with no `choices`/`usage`.
+   */
+  emitRaw: (json: string) => void;
   finish: () => void;
+  /** Close the body WITHOUT a finish record (no finish_reason, no [DONE]). */
+  end: () => void;
   fail: (err: unknown) => void;
 } {
   const encoder = new TextEncoder();
@@ -284,6 +293,12 @@ function heldSseResponse(): {
           `data: {"choices":[{"delta":{"content":${JSON.stringify(text)}}}]}\n\n`,
         ),
       );
+    },
+    emitRaw: (json: string) => {
+      ctrl.enqueue(encoder.encode(`data: ${json}\n\n`));
+    },
+    end: () => {
+      ctrl.close();
     },
     finish: () => {
       ctrl.enqueue(
@@ -674,6 +689,180 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     held.finish();
     const eventCount = await withTimeout(done, 5_000, 'flowing stream was cut by the watchdog');
     ok(eventCount >= 6, 'every trickled event should be delivered');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mid-stream retry gate — delivered vs merely-parsed events
+//
+// The 2026-07-18 refinement: `sawAnyEvent` flips on ANY parsed SSE
+// record, including keep-alive shapes (`ping`, `message_start`,
+// records with no choices) that yield nothing to the consumer. A
+// stream that died after only such records is invisible to the
+// consumer and safe to re-issue — the retry driver gates on
+// `deliveredAnyEvent` (set at the actual yield site) instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mid-stream retry gate — delivered vs parsed events', () => {
+  it('a stall after only non-yielding keep-alive records is retried transparently', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      idleTimeoutMs: 40,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    // Parses as an object (sets sawAnyEvent) but has no
+    // choices/usage, so nothing is yielded to the consumer.
+    held.emitRaw('{"id":"keepalive-only"}');
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'keep-alive-only stall was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2, 'expected exactly one transparent re-issue');
+    ok(
+      logger.calls.some(
+        (c) => c.level === 'warn' && c.message.includes('died before first event'),
+      ),
+      'expected a before-first-event retry warning',
+    );
+  });
+
+  it('a clean end after only keep-alive records is retried as an empty stream', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    held.emitRaw('{"id":"keepalive-only"}');
+    held.end(); // clean close: no finish record, nothing delivered
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'keep-alive-only clean end was never retried',
+    );
+    ok(eventCount > 0, 'the retried request should yield events');
+    strictEqual(calls, 2, 'expected exactly one transparent re-issue');
+  });
+
+  it('a stall after a delivered event is still never re-issued', async () => {
+    // Pin the other side of the gate: delivery of even one
+    // consumer-visible event makes the request non-re-issuable.
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    let calls = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? held.response : sseOkResponse();
+      }) as unknown as typeof fetch,
+      idleTimeoutMs: 40,
+      maxRetries: 2,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    held.emitRaw('{"id":"keepalive"}');
+    held.emitText('real content');
+    let thrown: unknown;
+    try {
+      await withTimeout(
+        consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+        5_000,
+        'idle watchdog never fired — stream hung',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'stall');
+    strictEqual(calls, 1, 'a post-delivery stall must NOT be re-issued');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Outcome logging — "request complete" only on completed streams
+//
+// An earlier revision logged "MiniMax request complete" from the
+// attempt's `finally` unconditionally, so a stalled request logged
+// slow-warning + "complete" + error back to back. The complete line
+// doubles as a diagnostic ("no complete line means the request
+// died"), so failures must emit their own line instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('outcome logging — complete vs did-not-complete', () => {
+  it('a successful stream logs "request complete" and no failure line', async () => {
+    const logger = makeCapturingLogger();
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => sseOkResponse()) as unknown as typeof fetch,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+      5_000,
+      'successful stream never completed',
+    );
+    ok(
+      logger.calls.some((c) => c.level === 'info' && c.message === 'MiniMax request complete'),
+      'expected the request-complete info line',
+    );
+    ok(
+      !logger.calls.some((c) => c.message === 'MiniMax request did not complete'),
+      'a successful stream must not log the failure line',
+    );
+  });
+
+  it('a mid-stream stall logs "did not complete" — never "request complete"', async () => {
+    const logger = makeCapturingLogger();
+    const held = heldSseResponse();
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: (async () => held.response) as unknown as typeof fetch,
+      idleTimeoutMs: 40,
+      sleep: async () => {},
+    });
+    const signal = new AbortController().signal;
+    held.emitText('first');
+    let thrown: unknown;
+    try {
+      await withTimeout(
+        consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger)),
+        5_000,
+        'idle watchdog never fired — stream hung',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError && thrown.kind === 'stall');
+    ok(
+      !logger.calls.some((c) => c.message === 'MiniMax request complete'),
+      'a stalled request must not log "request complete"',
+    );
+    const failureLine = logger.calls.find(
+      (c) => c.level === 'info' && c.message === 'MiniMax request did not complete',
+    );
+    ok(failureLine !== undefined, 'expected the did-not-complete line');
+    strictEqual(failureLine.context?.deliveredAnyEvent, true);
+    strictEqual(failureLine.context?.sawAnyEvent, true);
   });
 });
 

@@ -290,8 +290,23 @@ class Semaphore {
 interface MutableParseState {
   /** Set to true when any yielded event carries a `finishReason`. */
   sawFinishReason: boolean;
-  /** Set to true on the first yielded event of any kind. */
+  /**
+   * Set to true when any SSE record parses into an object — the
+   * server said *something*, even if it was a keep-alive (`ping`,
+   * `message_start`) that produced no consumer-visible event.
+   * Diagnostic only (slow-request / outcome logs); retry gating
+   * uses `deliveredAnyEvent`.
+   */
   sawAnyEvent: boolean;
+  /**
+   * Set to true the moment an event is handed to the transport's
+   * consumer. This — not `sawAnyEvent` — is the retry gate: a
+   * stream that died after only non-yielding keep-alive records
+   * is invisible to the consumer and safe to re-issue, while a
+   * stream that delivered even one event must never be re-issued
+   * (the consumer already rendered its content).
+   */
+  deliveredAnyEvent: boolean;
   /**
    * Most recent `cache_read_input_tokens` value from the
    * stream's `usage` block, if any. Used by the transport to
@@ -418,15 +433,19 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     // Stall-retry driver. A stream that dies BEFORE delivering any
     // event is invisible to the caller (nothing was yielded), so
     // re-issuing the whole request is safe. Two failure shapes land
-    // here as retriable errors with `sawAnyEvent === false`:
+    // here as retriable errors with `deliveredAnyEvent === false`:
     //  - `stall`   — the idle watchdog cut a connection that went
     //                silent after headers but before the first event
     //                (the first-byte watchdog inside
     //                `doRequestWithRetries` handles its own retries).
     //  - `network` — the response body terminated without ever
     //                delivering an event.
-    // Anything after the first yielded event is NOT retried here —
-    // re-issuing would duplicate content the consumer already saw.
+    // The gate is delivery to the consumer, not bytes on the wire:
+    // records that parse but yield nothing (`ping`,
+    // `message_start`) set `sawAnyEvent` yet leave the request
+    // safely re-issuable. Anything after the first yielded event is
+    // NOT retried here — re-issuing would duplicate content the
+    // consumer already saw.
     const maxAttempts = 1 + this.maxRetries;
     for (let attempt = 1; ; attempt += 1) {
       // Mutable state the parsers update as they consume the stream.
@@ -435,6 +454,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       const parseState: MutableParseState = {
         sawFinishReason: false,
         sawAnyEvent: false,
+        deliveredAnyEvent: false,
         lastCacheReadTokens: undefined,
         lastCacheCreateTokens: undefined,
         pendingToolUseStarts: new Map(),
@@ -448,7 +468,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
           err instanceof MiniMaxClientError &&
           err.retriable &&
           (err.kind === 'stall' || err.kind === 'network') &&
-          !parseState.sawAnyEvent &&
+          !parseState.deliveredAnyEvent &&
           !signal.aborted &&
           attempt < maxAttempts;
         if (!retriableBeforeFirstEvent) throw err;
@@ -495,10 +515,53 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     // stashed error and throw it once, which propagates to the
     // caller's `for await` loop.
     let abandonmentError: MiniMaxClientError | undefined;
+    let streamEndedCleanly = false;
     try {
-      yield* parseStream(response.body, dialect, signal, parseState, logger, this.idleTimeoutMs());
+      for await (const event of parseStream(
+        response.body,
+        dialect,
+        signal,
+        parseState,
+        logger,
+        this.idleTimeoutMs(),
+      )) {
+        // Mark delivery BEFORE handing the event over: from this
+        // point the consumer may have rendered it, so the retry
+        // driver must never re-issue this request.
+        parseState.deliveredAnyEvent = true;
+        yield event;
+      }
+      streamEndedCleanly = true;
     } finally {
       const elapsedMs = Date.now() - startedAt;
+      // Abandonment detection: the stream ended without a finish
+      // marker. If nothing was ever delivered to the consumer,
+      // treat as a network failure (an early-terminated or
+      // keep-alive-only response body) — retriable, and safely
+      // re-issued by the driver above since the consumer saw
+      // nothing. If events were delivered but no finish arrived
+      // and the request outlived the abandonment threshold, the
+      // model's tool loop was likely interrupted mid-flight —
+      // surface a typed `abandoned` error so the chat-provider
+      // can emit a user-visible chat error instead of letting
+      // the turn end silently. Computed only when the parse loop
+      // ended cleanly: if it threw, that error is already
+      // propagating and must not be masked.
+      if (streamEndedCleanly && !parseState.sawFinishReason) {
+        if (!parseState.deliveredAnyEvent) {
+          abandonmentError = new MiniMaxClientError(
+            'network',
+            'MiniMax stream ended without delivering any events',
+            { retriable: true },
+          );
+        } else if (elapsedMs >= this.abandonmentThresholdMs) {
+          abandonmentError = new MiniMaxClientError(
+            'abandoned',
+            `MiniMax stream ended after ${elapsedMs}ms without a finish marker — the model's tool loop was likely interrupted`,
+            { retriable: true },
+          );
+        }
+      }
       // Slow-request warning: anything over the threshold is
       // anomalous. M3 tool-calling requests are typically 5-15s;
       // longer requests are either context-window-bound,
@@ -527,45 +590,38 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
           }),
         });
       }
-      logger.info('MiniMax request complete', {
+      // Outcome line. "MiniMax request complete" is reserved for
+      // genuinely completed streams — an earlier revision emitted
+      // it unconditionally from this `finally`, so a stalled
+      // request logged slow-warning + "complete" + error back to
+      // back, which read as contradictory and broke "no complete
+      // line means the request died" as a diagnostic. Failures get
+      // their own line with the same fields; the error itself is
+      // logged by the caller when it surfaces.
+      const outcomeContext = {
         dialect,
         model: request.model,
         elapsedMs,
-        // Same cache info on the always-emitted completion line
-        // so non-slow requests are also observable. A gradual
-        // rise in `cacheReadTokens` across a session indicates
-        // the model is reusing prior context — useful
-        // operational signal.
+        // Same cache info on both outcome lines so non-slow
+        // requests are also observable. A gradual rise in
+        // `cacheReadTokens` across a session indicates the model
+        // is reusing prior context — useful operational signal.
         ...(parseState.lastCacheReadTokens !== undefined && {
           cacheReadTokens: parseState.lastCacheReadTokens,
         }),
         ...(parseState.lastCacheCreateTokens !== undefined && {
           cacheCreateTokens: parseState.lastCacheCreateTokens,
         }),
-      });
-      // Abandonment detection: the stream ended without a finish
-      // marker. If we also have no events at all, treat as a
-      // network failure (likely an early-terminated response
-      // body). If we have events but no finish, and the request
-      // took longer than the abandonment threshold, the model's
-      // tool loop was likely interrupted mid-flight — surface
-      // a typed `abandoned` error so the chat-provider can emit
-      // a user-visible chat error instead of letting the turn
-      // end silently.
-      if (!parseState.sawFinishReason) {
-        if (!parseState.sawAnyEvent) {
-          abandonmentError = new MiniMaxClientError(
-            'network',
-            'MiniMax stream ended without delivering any events',
-            { retriable: true },
-          );
-        } else if (elapsedMs >= this.abandonmentThresholdMs) {
-          abandonmentError = new MiniMaxClientError(
-            'abandoned',
-            `MiniMax stream ended after ${elapsedMs}ms without a finish marker — the model's tool loop was likely interrupted`,
-            { retriable: true },
-          );
-        }
+      };
+      if (streamEndedCleanly && abandonmentError === undefined) {
+        logger.info('MiniMax request complete', outcomeContext);
+      } else {
+        logger.info('MiniMax request did not complete', {
+          ...outcomeContext,
+          sawAnyEvent: parseState.sawAnyEvent,
+          deliveredAnyEvent: parseState.deliveredAnyEvent,
+          aborted: signal.aborted,
+        });
       }
     }
     if (abandonmentError !== undefined) {
@@ -1388,8 +1444,8 @@ async function* parseOpenAiStream(
     // `TypeError: terminated` when the server closes the socket)
     // is the same failure class as a body that ends cleanly with
     // no events. Whether a retry actually happens is gated
-    // upstream in `runCompletion` on `sawAnyEvent` — a stream
-    // that already delivered content is never re-issued.
+    // upstream in `runCompletion` on `deliveredAnyEvent` — a
+    // stream that already delivered content is never re-issued.
     throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
   } finally {
     reader.releaseLock();
@@ -1556,8 +1612,8 @@ async function* parseAnthropicStream(
     // `TypeError: terminated` when the server closes the socket)
     // is the same failure class as a body that ends cleanly with
     // no events. Whether a retry actually happens is gated
-    // upstream in `runCompletion` on `sawAnyEvent` — a stream
-    // that already delivered content is never re-issued.
+    // upstream in `runCompletion` on `deliveredAnyEvent` — a
+    // stream that already delivered content is never re-issued.
     throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
   } finally {
     reader.releaseLock();

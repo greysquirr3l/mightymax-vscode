@@ -175,6 +175,43 @@ export function isMessageMappingError(x: unknown): x is MessageMappingError {
 }
 
 /**
+ * Collapse a mapping-warning list into one entry per distinct
+ * warning with an occurrence count, preserving first-seen order.
+ * A large chat history re-maps in full on every request, so the
+ * same warning (e.g. the Anthropic pre-flight's "empty assistant
+ * text part dropped") can repeat once per historical message —
+ * hundreds of identical log lines per request. Consumers log one
+ * line per distinct warning instead. Non-warning entries are
+ * skipped via `isMessageMappingError`.
+ */
+export function countMessageMappingErrors(
+  warnings: ReadonlyArray<unknown>,
+): ReadonlyArray<{ readonly error: MessageMappingError; readonly count: number }> {
+  const byKey = new Map<string, { error: MessageMappingError; count: number }>();
+  for (const w of warnings) {
+    if (!isMessageMappingError(w)) continue;
+    // The variants are flat records of JSON-safe primitives
+    // (`rawRole: unknown` is the one hole — a circular value makes
+    // stringify throw), so the serialized form is a stable
+    // identity key. Unserializable warnings are kept distinct:
+    // never merge what cannot be compared.
+    let key: string;
+    try {
+      key = JSON.stringify(w);
+    } catch {
+      key = `unserializable:${byKey.size}:${w.kind}`;
+    }
+    const entry = byKey.get(key);
+    if (entry !== undefined) {
+      entry.count += 1;
+    } else {
+      byKey.set(key, { error: w, count: 1 });
+    }
+  }
+  return [...byKey.values()];
+}
+
+/**
  * Convenience: build a `vscode.LanguageModelTextPart` from a
  * domain `ChatResponsePart.text` (or `.thinking`, until the
  * LanguageModelThinkingPart API lands in @types/vscode). The

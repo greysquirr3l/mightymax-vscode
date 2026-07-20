@@ -35,7 +35,7 @@ import type {
   ChatUsageData,
   MessageMappingError,
 } from '../../ports/message-mapping.js';
-import { isMessageMappingError } from '../../ports/message-mapping.js';
+import { isMessageMappingError, countMessageMappingErrors } from '../../ports/message-mapping.js';
 import type {
   MiniMaxStreamEvent,
   MiniMaxWireContentPart,
@@ -62,7 +62,7 @@ export type {
   ChatUsageData,
   MessageMappingError,
 } from '../../ports/message-mapping.js';
-export { isMessageMappingError };
+export { isMessageMappingError, countMessageMappingErrors };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Image encoding

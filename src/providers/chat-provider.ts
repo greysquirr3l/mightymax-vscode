@@ -23,7 +23,7 @@ import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 
-import { mapRequestToMiniMax, isMessageMappingError } from '../lib/domain/messages.js';
+import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
 import {
   filterTools,
@@ -171,11 +171,13 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Map messages to MiniMax wire format (model first, then messages)
     const mappingResult = mapRequestToMiniMax({ id: model.id, thinkingStyle }, enrichedMessages);
 
-    // Log any mapping warnings
-    for (const warning of mappingResult.warnings) {
-      if (isMessageMappingError(warning)) {
-        this.logger.warn('Message mapping warning', { kind: warning.kind, warning });
-      }
+    // Log any mapping warnings, deduplicated. A long history
+    // re-maps in full every request, so one structural quirk can
+    // repeat per historical message (observed: ~100 identical
+    // "empty assistant text part dropped" lines per request);
+    // collapse identical warnings into a single line with a count.
+    for (const { error, count } of countMessageMappingErrors(mappingResult.warnings)) {
+      this.logger.warn('Message mapping warning', { kind: error.kind, count, warning: error });
     }
 
     // Map tools to MiniMax format with smart filtering

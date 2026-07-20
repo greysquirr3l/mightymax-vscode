@@ -4,6 +4,107 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-07-20
+
+### Changed (breaking)
+
+- **`engines.vscode` is now `^1.125.0` (was `^1.109.0`).** VS Code
+  1.109, 1.110, 1.111, 1.112, 1.113, 1.114, 1.115, 1.116, 1.117,
+  1.118, 1.119, 1.120, 1.121, 1.122, 1.123, and 1.124 are no longer
+  supported (the 15 stable releases between 1.109.0 on 2026-02-04
+  and 1.125.0 on 2026-06-17). VS Code's extension-host gate enforces
+  this strictly — once this VSIX ships, users on those versions
+  will see a "this extension is not compatible with your VS Code"
+  notice until they update. Recommended release-note line: "VS Code
+  1.125 is now the minimum supported version."
+
+- **`@types/vscode` is now `1.125.0` (was `1.109.0`).** Lifted to
+  match the engine floor so the project compiles against the current
+  VS Code API surface. No source changes were needed — the 16 minor
+  versions of API additions between 1.109 and 1.125 do not touch any
+  VS Code surface area Mighty Max uses (`LanguageModelChatProvider`,
+  `workspace`, `window`, `commands`, `secrets`, `env`,
+  `LogOutputChannel`).
+
+### Changed
+
+- **`typescript-eslint` is now `8.64.0` (was `8.12.2`).** Seven
+  months of rule improvements, plus the lint findings the new rule
+  set surfaces:
+
+  - `LoggerAdapter.error()` now renders unknown thrown values
+    through a typed `toStringifiableError(value)` helper that
+    surfaces `Error.message`, passes primitives through `String(...)`,
+    and JSON-stringifies structured payloads. The previous
+    `error instanceof Error ? error : String(error)` form would
+    render plain-object payloads as `'[object Object]'`. The same
+    escape is applied in the API-key-leak assertion in the
+    log-redaction test so the substring check still flattens the
+    buffer to text without losing structured detail.
+  - 65 redundant `as` casts across the catalog, domain helpers,
+    provider tests, and the transport test harness were removed
+    via `eslint --fix`. None were load-bearing — the surrounding
+    type already widened or the receiver signature already accepted
+    the original type.
+
+- **CI now runs on `actions/checkout@7.0.0` and
+  `actions/setup-node@7.0.0`** (were 6.0.3 and 6.4.0). `setup-node`
+  v7 migrates the action itself to ESM, adds `cache-primary-key`
+  and `cache-matched-key` outputs, and removes the dummy
+  `NODE_AUTH_TOKEN` export.
+
+- **Developer tooling updated:** `@vscode/test-cli` 0.0.10 → 0.0.15,
+  `prettier` 3.3.3 → 3.9.5, `rimraf` 6.0.1 → 6.1.3. None of these
+  ship to end users; they keep the dev environment on current majors.
+
+### Fixed
+
+- **Mid-stream stalls no longer drop otherwise-successful requests.**
+  The Anthropic transport's retry gate tracked bytes (`sawAnyEvent`)
+  rather than delivered records, so SSE keep-alives (ping /
+  `message_start` / no-choices records that yield nothing to the
+  consumer) were indistinguishable from a truly empty stream — and
+  a perfectly safe retry would never fire. A new `deliveredAnyEvent`
+  flag is set at the actual yield site; the retry driver and the
+  empty-stream abandonment branch both gate on it. Keep-alive-only
+  stalls and clean ends now re-issue transparently; anything after a
+  delivered event still surfaces as before.
+
+- **Failed attempts no longer log "request complete" in their
+  `finally`.** A stalled request used to emit slow-warning →
+  "complete" → error back to back, which made the `complete` line
+  useless as a diagnostic. Failed attempts now log "MiniMax request
+  did not complete" with `sawAnyEvent` / `deliveredAnyEvent` /
+  `aborted` flags, so the `complete` line is again a reliable
+  success indicator.
+
+- **Message-mapping warnings are deduplicated in the chat-provider
+  log channel.** A long history re-maps in full every request, so
+  one structural quirk could repeat per historical message
+  (observed: ~100 identical "empty assistant text part dropped"
+  lines per request on a 300-message chat). A new
+  `countMessageMappingErrors` collapses identical warnings into a
+  single line with a count. The original warning payload is
+  preserved verbatim in the structured log.
+
+- **`node:test` suites no longer silently skip under the VS Code
+  test harness.** Nearly every test file registered with
+  `node:test`, but `@vscode/test-cli` only awaits _Mocha's_
+  completion before tearing down the extension host — so slow
+  `node:test` suites raced the teardown and lost: `chat-provider`,
+  `stream-pump`, and the standalone `tool-filtering` label reported
+  `0 passing`, exit 0, without executing a single test — in CI
+  too. Test files now use Mocha BDD globals so Mocha owns the
+  full suite tree; pure node:test files (no `vscode` import) run
+  via a new `scripts/run-node-tests.cjs` with per-file process
+  isolation, and vscode-importing files run via a stub. Three
+  new `npm run test:unit:node` / `test:unit:vscode-stub` /
+  `test-cli --label` profiles chain ahead of the host-based
+  label in `npm test` and `npm run test:unit`. Full suite:
+  4 (agent-harness) + 2 (thinking-passback) + 36 + 1 pending
+  (integration) + 292 (node-tests) + 110 (vscode-stub) — all
+  passing.
+
 ## [0.3.4] — 2026-07-17
 
 ### Fixed

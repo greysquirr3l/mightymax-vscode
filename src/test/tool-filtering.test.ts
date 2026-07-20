@@ -18,8 +18,24 @@
  */
 
 import { ok } from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import * as nodeTest from 'node:test';
 import * as vscode from 'vscode';
+
+// Dual-runner registration. This file runs in two environments:
+//  - the @vscode/test-cli `integration` profile (real host), where
+//    Mocha's BDD globals are present and MUST be used — a node:test
+//    registration would race the extension-host teardown and get
+//    silently cut (see the profile comments in .vscode-test.mjs);
+//  - `scripts/run-vscode-stub-tests.cjs` (plain Node + vscode stub),
+//    where there is no Mocha, so node:test's own runner is the
+//    fallback.
+// The two `describe`/`it` signatures agree on the (name, fn) shape
+// used below; the narrow local types keep both callers honest.
+type SuiteFn = (name: string, fn: () => void) => void;
+type TestFn = (name: string, fn: () => void | Promise<void>) => void;
+const mochaGlobals = globalThis as { describe?: SuiteFn; it?: TestFn };
+const describe: SuiteFn = mochaGlobals.describe ?? (nodeTest.describe);
+const it: TestFn = mochaGlobals.it ?? (nodeTest.it as TestFn);
 
 import { ChatProvider } from '../providers/chat-provider.js';
 import type { Logger } from '../ports/logger.js';

@@ -710,10 +710,10 @@ describe('mid-stream retry gate — delivered vs parsed events', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       idleTimeoutMs: 40,
       maxRetries: 2,
       sleep: async () => {},
@@ -743,10 +743,10 @@ describe('mid-stream retry gate — delivered vs parsed events', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       maxRetries: 2,
       sleep: async () => {},
     });
@@ -770,10 +770,10 @@ describe('mid-stream retry gate — delivered vs parsed events', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       idleTimeoutMs: 40,
       maxRetries: 2,
       sleep: async () => {},
@@ -812,7 +812,7 @@ describe('outcome logging — complete vs did-not-complete', () => {
     const logger = makeCapturingLogger();
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => sseOkResponse()) as unknown as typeof fetch,
+      fetchImpl: async () => sseOkResponse(),
       sleep: async () => {},
     });
     const signal = new AbortController().signal;
@@ -836,7 +836,7 @@ describe('outcome logging — complete vs did-not-complete', () => {
     const held = heldSseResponse();
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => held.response) as unknown as typeof fetch,
+      fetchImpl: async () => held.response,
       idleTimeoutMs: 40,
       sleep: async () => {},
     });

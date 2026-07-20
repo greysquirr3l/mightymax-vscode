@@ -34,7 +34,7 @@ import * as vscode from 'vscode';
 type SuiteFn = (name: string, fn: () => void) => void;
 type TestFn = (name: string, fn: () => void | Promise<void>) => void;
 const mochaGlobals = globalThis as { describe?: SuiteFn; it?: TestFn };
-const describe: SuiteFn = mochaGlobals.describe ?? (nodeTest.describe as SuiteFn);
+const describe: SuiteFn = mochaGlobals.describe ?? (nodeTest.describe);
 const it: TestFn = mochaGlobals.it ?? (nodeTest.it as TestFn);
 
 import { ChatProvider } from '../providers/chat-provider.js';

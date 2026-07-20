@@ -57,7 +57,7 @@ describe('validateApiKey', () => {
     const result: ValidationResult = await validateApiKey(
       'sk-test-1234567890',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, true);
     if (result.ok) {
@@ -71,7 +71,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, true);
     if (result.ok) {
@@ -85,7 +85,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, true);
     if (result.ok) {
@@ -99,7 +99,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-bad-key',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, false);
     if (!result.ok) {
@@ -114,7 +114,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-bad-key',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, false);
     if (!result.ok) {
@@ -131,7 +131,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetchImpl as unknown as typeof fetch,
+      fetchImpl,
     );
     equal(result.ok, false);
     if (!result.ok) {
@@ -145,7 +145,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, false);
     if (!result.ok) {
@@ -159,7 +159,7 @@ describe('validateApiKey', () => {
     const result = await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     equal(result.ok, false);
     if (!result.ok) {
@@ -171,7 +171,7 @@ describe('validateApiKey', () => {
   it('strips a trailing slash from the base URL', async () => {
     const fetch_ = createMockFetch();
     fetch_.setResponse(200, { data: [] });
-    await validateApiKey('sk-test', 'https://api.minimax.io/', fetch_ as unknown as typeof fetch);
+    await validateApiKey('sk-test', 'https://api.minimax.io/', fetch_);
     equal(fetch_.calls.length, 1);
     equal(fetch_.calls[0]?.url, 'https://api.minimax.io/v1/models');
   });
@@ -182,7 +182,7 @@ describe('validateApiKey', () => {
     await validateApiKey(
       'sk-test-1234567890',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
     );
     const call = fetch_.calls[0];
     ok(call, 'expected fetch to be called once');
@@ -192,21 +192,21 @@ describe('validateApiKey', () => {
 
   it('rejects if the API key is empty', async () => {
     await rejects(
-      validateApiKey('', 'https://api.minimax.io', createMockFetch() as unknown as typeof fetch),
+      validateApiKey('', 'https://api.minimax.io', createMockFetch()),
       /empty/i,
     );
   });
 
   it('rejects if the API key is whitespace-only', async () => {
     await rejects(
-      validateApiKey('   ', 'https://api.minimax.io', createMockFetch() as unknown as typeof fetch),
+      validateApiKey('   ', 'https://api.minimax.io', createMockFetch()),
       /empty/i,
     );
   });
 
   it('rejects if the base URL is empty', async () => {
     await rejects(
-      validateApiKey('sk-test', '', createMockFetch() as unknown as typeof fetch),
+      validateApiKey('sk-test', '', createMockFetch()),
       /base ?url/i,
     );
   });
@@ -218,7 +218,7 @@ describe('validateApiKey', () => {
     await validateApiKey(
       'sk-test',
       'https://api.minimax.io',
-      fetch_ as unknown as typeof fetch,
+      fetch_,
       ac.signal,
     );
     const call = fetch_.calls[0];
@@ -234,7 +234,7 @@ describe('validateApiKey', () => {
       result = await validateApiKey(
         'sk-test',
         'https://api.minimax.io',
-        fetch_ as unknown as typeof fetch,
+        fetch_,
       );
     } catch (err) {
       fail(`validateApiKey should not throw: ${String(err)}`);

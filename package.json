@@ -271,6 +271,6 @@
     "prettier": "3.3.3",
     "rimraf": "6.0.1",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.12.2"
+    "typescript-eslint": "8.64.0"
   }
 }

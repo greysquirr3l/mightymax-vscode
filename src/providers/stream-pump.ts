@@ -23,13 +23,8 @@
 import * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
-import type {
-  MiniMaxStreamEvent,
-} from '../ports/minimax-client.js';
-import {
-  mapStreamDeltaToResponseParts,
-  isMessageMappingError,
-} from '../lib/domain/messages.js';
+import type { MiniMaxStreamEvent } from '../ports/minimax-client.js';
+import { mapStreamDeltaToResponseParts, isMessageMappingError } from '../lib/domain/messages.js';
 import {
   accumulatorSeed,
   accumulateToolCallDelta,
@@ -37,12 +32,8 @@ import {
   isToolSchemaError,
   type ToolCallAccumulatorState,
 } from '../lib/domain/tools.js';
-import {
-  toLanguageModelTextPart,
-  toLanguageModelToolCallPart,
-} from '../ports/tool-schema.js';
+import { toLanguageModelTextPart, toLanguageModelToolCallPart } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
-import type { ChatResponsePart } from '../ports/message-mapping.js';
 
 export interface StreamPumpResult {
   /** Concatenated visible text the model emitted (T19: NO usage or thinking mixed in). */
@@ -88,13 +79,9 @@ export interface StreamPumpDeps {
  * the inner loop further obscures the order of operations that
  * the T19 spec pins.
  */
-export async function pumpProviderStream(
-  deps: StreamPumpDeps,
-): Promise<StreamPumpResult> {
+export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPumpResult> {
   let accumulatorState = accumulatorSeed();
-  let currentThinking:
-    | { thinking: string; signature?: string }
-    | undefined;
+  let currentThinking: { thinking: string; signature?: string } | undefined;
   let currentText = '';
   const currentToolCallIds: string[] = [];
 
@@ -102,10 +89,7 @@ export async function pumpProviderStream(
     for await (const event of deps.events) {
       // Handle tool-call deltas first (every event may carry one).
       if (event.toolCallDelta !== undefined) {
-        const accumulated = accumulateToolCallDelta(
-          accumulatorState,
-          event.toolCallDelta,
-        );
+        const accumulated = accumulateToolCallDelta(accumulatorState, event.toolCallDelta);
         if (isToolSchemaError(accumulated)) {
           deps.logger.warn('Tool call accumulation error', { error: accumulated });
         } else {
@@ -123,7 +107,7 @@ export async function pumpProviderStream(
           deps.logger.warn('Stream mapping error', { kind: part.kind, error: part });
           continue;
         }
-        const typed = part as ChatResponsePart;
+        const typed = part;
         if (typed.type === 'text') {
           currentText += typed.value;
           deps.logger.debug('Text delta', { length: typed.value.length });
@@ -216,8 +200,7 @@ function reportThinkingPart(
   logger: Logger,
 ): void {
   type DataCtor = new (data: Uint8Array, mime: string) => unknown;
-  const ctor = (vscode as unknown as { LanguageModelDataPart?: DataCtor })
-    .LanguageModelDataPart;
+  const ctor = (vscode as unknown as { LanguageModelDataPart?: DataCtor }).LanguageModelDataPart;
   const payload = part.signature
     ? { thinking: part.value, signature: part.signature }
     : { thinking: part.value };
@@ -225,10 +208,7 @@ function reportThinkingPart(
     try {
       const json = new TextEncoder().encode(JSON.stringify(payload));
       progress.report(
-        new ctor(
-          json,
-          'application/vnd.minimax.thinking+json',
-        ) as vscode.LanguageModelResponsePart,
+        new ctor(json, 'application/vnd.minimax.thinking+json') as vscode.LanguageModelResponsePart,
       );
       return;
     } catch (err) {

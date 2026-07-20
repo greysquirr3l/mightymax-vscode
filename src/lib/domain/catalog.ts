@@ -137,7 +137,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       imageInput: true,
       thinking: true,
     }),
-    thinkingStyle: 'anthropic' as ThinkingStyle,
+    thinkingStyle: 'anthropic',
     detail: '1M ctx · 128K out · image + tools + thinking',
   }),
   Object.freeze({
@@ -152,7 +152,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       imageInput: true,
       thinking: true,
     }),
-    thinkingStyle: 'openai' as ThinkingStyle,
+    thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning',
   }),
   Object.freeze({
@@ -167,7 +167,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       imageInput: true,
       thinking: true,
     }),
-    thinkingStyle: 'openai' as ThinkingStyle,
+    thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning',
   }),
   Object.freeze({
@@ -182,7 +182,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       imageInput: true,
       thinking: true,
     }),
-    thinkingStyle: 'openai' as ThinkingStyle,
+    thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning · structured outputs',
   }),
   Object.freeze({
@@ -197,7 +197,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       imageInput: false,
       thinking: false,
     }),
-    thinkingStyle: 'none' as ThinkingStyle,
+    thinkingStyle: 'none',
     detail: '32K ctx · 4K out · tools',
   }),
 ]);

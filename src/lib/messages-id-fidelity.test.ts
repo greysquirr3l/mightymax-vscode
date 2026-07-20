@@ -69,7 +69,7 @@ describe('T18 — orphan tool-result adoption', () => {
       },
     ];
     const result = mapRequestToMiniMax(MODEL, messages);
-    const wireMessages = asWire(result.messages as unknown[]);
+    const wireMessages = asWire(result.messages);
     const assistantIdx = wireMessages.findIndex(
       (m) =>
         m.role === 'assistant' &&
@@ -151,7 +151,7 @@ describe('T18 — tool-call part hoist from user role', () => {
       },
     ];
     const result = mapRequestToMiniMax(MODEL, messages);
-    const wireMessages = asWire(result.messages as unknown[]);
+    const wireMessages = asWire(result.messages);
     const hoisted = wireMessages.find(
       (m) =>
         m.role === 'assistant' &&
@@ -181,7 +181,7 @@ describe('T18 — tool-call part hoist from user role', () => {
       },
     ];
     const result = mapRequestToMiniMax(MODEL, messages);
-    const wireMessages = asWire(result.messages as unknown[]);
+    const wireMessages = asWire(result.messages);
     const hoisted = wireMessages.find(
       (m) =>
         m.role === 'assistant' &&
@@ -230,7 +230,7 @@ describe('T18 — ID round-trip (byte-identical)', () => {
         },
       ];
       const result = mapRequestToMiniMax(MODEL, messages);
-      const wireMessages = asWire(result.messages as unknown[]);
+      const wireMessages = asWire(result.messages);
       const allToolCalls: Array<{ id: string }> = [];
       for (const m of wireMessages) {
         const toolCalls = m.toolCalls;
@@ -282,7 +282,7 @@ describe('T18 — empty-text assistant with toolCalls survives the mapper', () =
       },
     ];
     const result = mapRequestToMiniMax(MODEL, messages);
-    const wireMessages = asWire(result.messages as unknown[]);
+    const wireMessages = asWire(result.messages);
     const assistantIdx = wireMessages.findIndex(
       (m) =>
         m.role === 'assistant' &&

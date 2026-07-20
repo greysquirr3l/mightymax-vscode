@@ -745,7 +745,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
         new vscode.LanguageModelToolResultPart('call_e1', [
           // A non-LanguageModelTextPart content item. The chat-provider
           // branch we just fixed is the fallback path for these.
-          structuredPayload as unknown as vscode.LanguageModelTextPart,
+          structuredPayload,
         ]),
       ],
     };
@@ -789,7 +789,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       name: undefined,
       content: [
         new vscode.LanguageModelToolResultPart('call_circ', [
-          circular as unknown as vscode.LanguageModelTextPart,
+          circular,
         ]),
       ],
     };
@@ -836,8 +836,8 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
           // Copilot's cache breakpoint, exactly as the built-in
           // extension constructs it: encode("ephemeral") under
           // mime "cache_control".
-          makeDataPart('cache_control', 'ephemeral') as unknown as vscode.LanguageModelTextPart,
-          makeDataPart('stateful_marker', 'x') as unknown as vscode.LanguageModelTextPart,
+          makeDataPart('cache_control', 'ephemeral'),
+          makeDataPart('stateful_marker', 'x'),
         ]),
       ],
     };
@@ -858,8 +858,8 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       name: undefined,
       content: [
         new vscode.LanguageModelToolResultPart('call_json', [
-          makeDataPart('application/json', '{"rows":3}') as unknown as vscode.LanguageModelTextPart,
-          makeDataPart('text/plain', 'plain text') as unknown as vscode.LanguageModelTextPart,
+          makeDataPart('application/json', '{"rows":3}'),
+          makeDataPart('text/plain', 'plain text'),
         ]),
       ],
     };
@@ -881,7 +881,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
           {
             mimeType: 'image/png',
             data: new Uint8Array([137, 80, 78, 71]),
-          } as unknown as vscode.LanguageModelTextPart,
+          },
         ]),
       ],
     };

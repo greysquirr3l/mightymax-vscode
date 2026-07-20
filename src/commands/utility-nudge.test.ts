@@ -58,8 +58,8 @@ function makeCapturingDeps(overrides: {
     hasApiKey: async () => overrides.hasApiKey ?? true,
     globalState: {
       get: (key: string, def?: unknown): unknown => {
-        if (store.has(key)) return store.get(key) as never;
-        return def as never;
+        if (store.has(key)) return store.get(key);
+        return def;
       },
       update: async (key: string, value: unknown): Promise<void> => {
         store.set(key, value);
@@ -101,7 +101,7 @@ function makeCapturingDeps(overrides: {
     get configureInvoked() {
       return configureInvoked;
     },
-  } as never;
+  };
 }
 
 void makeCapturingDeps;
@@ -239,7 +239,7 @@ describe('runUtilityNudge — at-most-once-per-install semantics', () => {
 function mementoFromMap(store: Map<string, unknown>): never {
   return {
     get: (key: string, def?: unknown): unknown =>
-      store.has(key) ? (store.get(key) as never) : (def as never),
+      store.has(key) ? (store.get(key)) : (def),
     update: async (key: string, value: unknown): Promise<void> => {
       store.set(key, value);
       return;

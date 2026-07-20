@@ -347,7 +347,7 @@ describe('concurrency semaphore — permit lifecycle', () => {
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
       maxConcurrentRequests: 1,
-      fetchImpl: (async () => sseOkResponse()) as unknown as typeof fetch,
+      fetchImpl: async () => sseOkResponse(),
     });
     for (let i = 1; i <= 3; i += 1) {
       const signal = new AbortController().signal;
@@ -370,10 +370,10 @@ describe('concurrency semaphore — permit lifecycle', () => {
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
       maxConcurrentRequests: 1,
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         call += 1;
         return call === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
     });
 
     const signal = new AbortController().signal;
@@ -412,10 +412,10 @@ describe('concurrency semaphore — permit lifecycle', () => {
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
       maxConcurrentRequests: 1,
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         call += 1;
         return call === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
     });
 
     const signalA = new AbortController().signal;
@@ -480,7 +480,7 @@ describe('T22 — chat-provider does not log content previews', () => {
  * the watchdog / caller-abort paths behave like real undici fetch.
  */
 function hangingFetch(onCall?: () => void): typeof fetch {
-  return (async (_url: unknown, init?: RequestInit) => {
+  return async (_url: unknown, init?: RequestInit) => {
     onCall?.();
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => {
@@ -488,7 +488,7 @@ function hangingFetch(onCall?: () => void): typeof fetch {
         reject(reason instanceof Error ? reason : new Error('aborted'));
       });
     });
-  }) as unknown as typeof fetch;
+  };
 }
 
 describe('stall watchdogs — first-byte and idle timeouts', () => {
@@ -531,7 +531,7 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      fetchImpl: async (_url: unknown, init?: RequestInit) => {
         calls += 1;
         if (calls === 1) {
           return new Promise<Response>((_resolve, reject) => {
@@ -539,7 +539,7 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
           });
         }
         return sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       firstByteTimeoutMs: 20,
       maxRetries: 2,
       sleep: async () => {},
@@ -585,10 +585,10 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
       maxConcurrentRequests: 1,
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       idleTimeoutMs: 40,
       sleep: async () => {},
     });
@@ -626,10 +626,10 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       idleTimeoutMs: 40,
       maxRetries: 2,
       sleep: async () => {},
@@ -660,7 +660,7 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     const held = heldSseResponse();
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => held.response) as unknown as typeof fetch,
+      fetchImpl: async () => held.response,
       idleTimeoutMs: 60,
       sleep: async () => {},
     });
@@ -695,11 +695,11 @@ describe('server-terminated connections — retry behavior', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         if (calls === 1) throw undiciTerminatedError();
         return sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       maxRetries: 2,
       sleep: async () => {},
     });
@@ -723,10 +723,10 @@ describe('server-terminated connections — retry behavior', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       maxRetries: 2,
       sleep: async () => {},
     });
@@ -755,10 +755,10 @@ describe('server-terminated connections — retry behavior', () => {
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
       maxConcurrentRequests: 1,
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         return calls === 1 ? held.response : sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       maxRetries: 2,
       sleep: async () => {},
     });
@@ -798,11 +798,11 @@ describe('server-terminated connections — retry behavior', () => {
     let calls = 0;
     const adapter = new MiniMaxClientAdapter({
       baseUrl: () => 'https://api.minimax.io',
-      fetchImpl: (async () => {
+      fetchImpl: async () => {
         calls += 1;
         if (calls === 1) throw new TypeError('terminated');
         return sseOkResponse();
-      }) as unknown as typeof fetch,
+      },
       maxRetries: 2,
       sleep: async () => {},
     });

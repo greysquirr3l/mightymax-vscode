@@ -162,7 +162,7 @@ describe('mapToolModeToChoice', () => {
   });
 
   it('returns undefined for an unknown mode so the transport can omit the field', () => {
-    equal(mapToolModeToChoice('bogus' as 'auto'), undefined);
+    equal(mapToolModeToChoice('bogus'), undefined);
   });
 });
 

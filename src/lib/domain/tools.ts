@@ -568,7 +568,7 @@ export function isToolSchemaError(x: unknown): x is ToolSchemaError {
     typeof x === 'object' &&
     x !== null &&
     'kind' in x &&
-    typeof (x as { kind: unknown }).kind === 'string'
+    typeof (x).kind === 'string'
   );
 }
 

@@ -140,18 +140,18 @@ function makeDeps(overrides: {
 
 /** Minimal fetch stub that returns a successful /v1/models response. */
 function okFetch(modelIds: string[] = ['MiniMax-M3', 'MiniMax-M2']): typeof fetch {
-  return (async () =>
+  return async () =>
     new Response(JSON.stringify({ data: modelIds.map((id) => ({ id })) }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })) as unknown as typeof fetch;
+    });
 }
 
 function unauthorizedFetch(): typeof fetch {
-  return (async () =>
+  return async () =>
     new Response(JSON.stringify({ error: 'invalid api key' }), {
       status: 401,
-    })) as unknown as typeof fetch;
+    });
 }
 
 describe('runManageCommand — show-only flow', () => {
@@ -375,7 +375,19 @@ describe('runManageCommand — cancellation and safety', () => {
     const allLogs = logger.lines.flatMap((l) => [
       l.msg,
       JSON.stringify(l.ctx ?? {}),
-      l.err === undefined ? '' : String(l.err),
+      l.err === undefined
+        ? ''
+        : l.err instanceof Error
+          ? l.err.message
+          : typeof l.err === 'string'
+            ? l.err
+            : (() => {
+                try {
+                  return JSON.stringify(l.err);
+                } catch {
+                  return '[unserializable]';
+                }
+              })(),
     ]);
     const joined = allLogs.join('\n');
     ok(

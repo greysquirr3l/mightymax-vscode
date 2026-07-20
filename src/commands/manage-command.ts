@@ -256,7 +256,7 @@ async function handleConfigureUtilityModels(deps: ManageDeps): Promise<void> {
   deps.logger.info('Manage command: routing to configure-utility-models');
   await runConfigureUtilityModelsCommand({
     logger: deps.logger,
-    ui: deps.ui as unknown as Parameters<typeof runConfigureUtilityModelsCommand>[0]['ui'],
+    ui: deps.ui,
     getConfig: () => ({
       update: async (key, value) => {
         if (!deps.getConfig) {

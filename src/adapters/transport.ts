@@ -837,7 +837,7 @@ function serializeOpenAiRequest(request: MiniMaxCompletionRequest): OpenAiReques
     // `serializeAnthropicRequest` so the OpenAI wire body carries the
     // VS Code-style `additionalProperties`/`const`/boolean schemas
     // that the OpenAI-compatible endpoint accepts unchanged.
-    out.tools = request.tools as unknown as ReadonlyArray<unknown>;
+    out.tools = request.tools;
   }
   if (request.toolChoice !== undefined) out.tool_choice = request.toolChoice;
   if (request.temperature !== undefined) {
@@ -948,7 +948,7 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
         role: 'user',
         content: '',
         toolCallId: '__batch__',
-        _toolBatch: toolResults as unknown as ReadonlyArray<MiniMaxWireMessage>,
+        _toolBatch: toolResults,
       } as MiniMaxWireMessage & { _toolBatch: ReadonlyArray<MiniMaxWireMessage> });
     } else {
       coalescedMessages.push(m);

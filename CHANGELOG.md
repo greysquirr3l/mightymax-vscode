@@ -89,7 +89,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`node:test` suites no longer silently skip under the VS Code
   test harness.** Nearly every test file registered with
-  `node:test`, but `@vscode/test-cli` only awaits *Mocha's*
+  `node:test`, but `@vscode/test-cli` only awaits _Mocha's_
   completion before tearing down the extension host — so slow
   `node:test` suites raced the teardown and lost: `chat-provider`,
   `stream-pump`, and the standalone `tool-filtering` label reported

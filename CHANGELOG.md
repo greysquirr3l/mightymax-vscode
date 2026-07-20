@@ -57,6 +57,54 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `prettier` 3.3.3 → 3.9.5, `rimraf` 6.0.1 → 6.1.3. None of these
   ship to end users; they keep the dev environment on current majors.
 
+### Fixed
+
+- **Mid-stream stalls no longer drop otherwise-successful requests.**
+  The Anthropic transport's retry gate tracked bytes (`sawAnyEvent`)
+  rather than delivered records, so SSE keep-alives (ping /
+  `message_start` / no-choices records that yield nothing to the
+  consumer) were indistinguishable from a truly empty stream — and
+  a perfectly safe retry would never fire. A new `deliveredAnyEvent`
+  flag is set at the actual yield site; the retry driver and the
+  empty-stream abandonment branch both gate on it. Keep-alive-only
+  stalls and clean ends now re-issue transparently; anything after a
+  delivered event still surfaces as before.
+
+- **Failed attempts no longer log "request complete" in their
+  `finally`.** A stalled request used to emit slow-warning →
+  "complete" → error back to back, which made the `complete` line
+  useless as a diagnostic. Failed attempts now log "MiniMax request
+  did not complete" with `sawAnyEvent` / `deliveredAnyEvent` /
+  `aborted` flags, so the `complete` line is again a reliable
+  success indicator.
+
+- **Message-mapping warnings are deduplicated in the chat-provider
+  log channel.** A long history re-maps in full every request, so
+  one structural quirk could repeat per historical message
+  (observed: ~100 identical "empty assistant text part dropped"
+  lines per request on a 300-message chat). A new
+  `countMessageMappingErrors` collapses identical warnings into a
+  single line with a count. The original warning payload is
+  preserved verbatim in the structured log.
+
+- **`node:test` suites no longer silently skip under the VS Code
+  test harness.** Nearly every test file registered with
+  `node:test`, but `@vscode/test-cli` only awaits *Mocha's*
+  completion before tearing down the extension host — so slow
+  `node:test` suites raced the teardown and lost: `chat-provider`,
+  `stream-pump`, and the standalone `tool-filtering` label reported
+  `0 passing`, exit 0, without executing a single test — in CI
+  too. Test files now use Mocha BDD globals so Mocha owns the
+  full suite tree; pure node:test files (no `vscode` import) run
+  via a new `scripts/run-node-tests.cjs` with per-file process
+  isolation, and vscode-importing files run via a stub. Three
+  new `npm run test:unit:node` / `test:unit:vscode-stub` /
+  `test-cli --label` profiles chain ahead of the host-based
+  label in `npm test` and `npm run test:unit`. Full suite:
+  4 (agent-harness) + 2 (thinking-passback) + 36 + 1 pending
+  (integration) + 292 (node-tests) + 110 (vscode-stub) — all
+  passing.
+
 ## [0.3.4] — 2026-07-17
 
 ### Fixed

@@ -139,7 +139,7 @@ describe('Tool filtering', () => {
       },
       messages,
       { tools, toolMode: vscode.LanguageModelChatToolMode.Auto },
-      progress as vscode.Progress<vscode.LanguageModelResponsePart>,
+      progress,
       new vscode.CancellationTokenSource().token,
     );
 
@@ -189,7 +189,7 @@ describe('Tool filtering', () => {
       },
       messages,
       { tools, toolMode: vscode.LanguageModelChatToolMode.Auto },
-      progress as vscode.Progress<vscode.LanguageModelResponsePart>,
+      progress,
       new vscode.CancellationTokenSource().token,
     );
 
@@ -240,7 +240,7 @@ describe('Tool filtering', () => {
       },
       messages,
       { tools, toolMode: vscode.LanguageModelChatToolMode.Auto },
-      progress as vscode.Progress<vscode.LanguageModelResponsePart>,
+      progress,
       new vscode.CancellationTokenSource().token,
     );
 

@@ -119,7 +119,7 @@ describe('BUILT_IN_CATALOG', () => {
 
 describe('validateCatalog', () => {
   it('rejects entries missing the id field', () => {
-    const errors = validateCatalog([makeEntry({ id: '' as unknown as CatalogEntry['id'] })]);
+    const errors = validateCatalog([makeEntry({ id: '' })]);
     assert.equal(errors.length, 1);
     assert.equal(errors[0]?.code, 'missing-required-field');
   });
@@ -257,7 +257,7 @@ describe('mergeCatalog', () => {
 
   it('drops unusable live entries with missing ids or non-positive token budgets', () => {
     const merged = mergeCatalog(BUILT_IN_CATALOG, [
-      makeEntry({ id: '' as unknown as CatalogEntry['id'] }),
+      makeEntry({ id: '' }),
       makeEntry({ id: 'MiniMax-bad-budget', maxOutputTokens: 0 }),
     ]);
     assert.equal(merged.length, BUILT_IN_CATALOG.length);

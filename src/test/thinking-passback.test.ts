@@ -399,7 +399,7 @@ describe('Thinking pass-back', () => {
       for (let j = i - 1; j >= 0; j -= 1) {
         const prior = round2Request.messages[j];
         if (prior !== undefined && prior.role === 'assistant') {
-          precedingAssistant = prior as { toolCalls?: ReadonlyArray<{ id: string }> };
+          precedingAssistant = prior;
           break;
         }
       }

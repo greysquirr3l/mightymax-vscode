@@ -60,11 +60,11 @@ const FIXTURE_BODY = JSON.stringify({
 });
 
 function fetchJsonOk(): typeof fetch {
-  return (async () =>
+  return async () =>
     new Response(FIXTURE_BODY, {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })) as unknown as typeof fetch;
+    });
 }
 
 describe('UsageTransportAdapter — happy path', () => {

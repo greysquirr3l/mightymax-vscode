@@ -93,7 +93,7 @@ export function parseModelRemains(payload: unknown): readonly TokenPlanRemainsEn
   }
   const remains = payload['model_remains'];
   if (!Array.isArray(remains)) throw new Error('Token plan payload has no model_remains array');
-  return remains.filter(isRecord) as readonly TokenPlanRemainsEntry[];
+  return remains.filter(isRecord);
 }
 
 /**

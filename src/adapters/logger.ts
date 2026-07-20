@@ -43,7 +43,10 @@ export class LoggerAdapter implements Logger {
 
   error(message: string, error?: unknown, context?: Record<string, unknown>): void {
     // Always allow error; the filter is a minimum, not a maximum.
-    const detail = error instanceof Error ? error : error !== undefined ? String(error) : undefined;
+    // Avoid the implicit `String(...)` path on plain objects (would render
+    // as `'[object Object]'`); pull out `.message` for `Error` and JSON-
+    // stringify anything else so structured context stays inspectable.
+    const detail = toStringifiableError(error);
     if (detail) {
       this.channel.error(message, detail);
     } else {
@@ -53,5 +56,27 @@ export class LoggerAdapter implements Logger {
 
   private allows(level: LogLevel): boolean {
     return LEVEL_RANK[level] >= LEVEL_RANK[this.minLevel];
+  }
+}
+
+/**
+ * Render an unknown thrown value into something safe to feed to
+ * `LogOutputChannel.error()` without falling through to `Object.prototype.toString`
+ * (which would emit the unhelpful `'[object Object]'`). Errors surface their
+ * `.message`; strings, numbers, booleans, and bigints go through `String(...)`;
+ * plain objects and other unserializable shapes go through `JSON.stringify` so
+ * structured context stays inspectable in the log stream.
+ */
+export function toStringifiableError(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (value instanceof Error) return value.message;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '[unserializable]';
   }
 }

@@ -4,6 +4,59 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-07-20
+
+### Changed (breaking)
+
+- **`engines.vscode` is now `^1.125.0` (was `^1.109.0`).** VS Code
+  1.109, 1.110, 1.111, 1.112, 1.113, 1.114, 1.115, 1.116, 1.117,
+  1.118, 1.119, 1.120, 1.121, 1.122, 1.123, and 1.124 are no longer
+  supported (the 15 stable releases between 1.109.0 on 2026-02-04
+  and 1.125.0 on 2026-06-17). VS Code's extension-host gate enforces
+  this strictly — once this VSIX ships, users on those versions
+  will see a "this extension is not compatible with your VS Code"
+  notice until they update. Recommended release-note line: "VS Code
+  1.125 is now the minimum supported version."
+
+- **`@types/vscode` is now `1.125.0` (was `1.109.0`).** Lifted to
+  match the engine floor so the project compiles against the current
+  VS Code API surface. No source changes were needed — the 16 minor
+  versions of API additions between 1.109 and 1.125 do not touch any
+  VS Code surface area Mighty Max uses (`LanguageModelChatProvider`,
+  `workspace`, `window`, `commands`, `secrets`, `env`,
+  `LogOutputChannel`).
+
+### Changed
+
+- **`typescript-eslint` is now `8.64.0` (was `8.12.2`).** Seven
+  months of rule improvements, plus the lint findings the new rule
+  set surfaces:
+
+  - `LoggerAdapter.error()` now renders unknown thrown values
+    through a typed `toStringifiableError(value)` helper that
+    surfaces `Error.message`, passes primitives through `String(...)`,
+    and JSON-stringifies structured payloads. The previous
+    `error instanceof Error ? error : String(error)` form would
+    render plain-object payloads as `'[object Object]'`. The same
+    escape is applied in the API-key-leak assertion in the
+    log-redaction test so the substring check still flattens the
+    buffer to text without losing structured detail.
+  - 65 redundant `as` casts across the catalog, domain helpers,
+    provider tests, and the transport test harness were removed
+    via `eslint --fix`. None were load-bearing — the surrounding
+    type already widened or the receiver signature already accepted
+    the original type.
+
+- **CI now runs on `actions/checkout@7.0.0` and
+  `actions/setup-node@7.0.0`** (were 6.0.3 and 6.4.0). `setup-node`
+  v7 migrates the action itself to ESM, adds `cache-primary-key`
+  and `cache-matched-key` outputs, and removes the dummy
+  `NODE_AUTH_TOKEN` export.
+
+- **Developer tooling updated:** `@vscode/test-cli` 0.0.10 → 0.0.15,
+  `prettier` 3.3.3 → 3.9.5, `rimraf` 6.0.1 → 6.1.3. None of these
+  ship to end users; they keep the dev environment on current majors.
+
 ## [0.3.4] — 2026-07-17
 
 ### Fixed

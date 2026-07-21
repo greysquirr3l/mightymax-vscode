@@ -28,16 +28,20 @@ export interface TestKeyProvider extends KeyProvider {
 }
 
 /**
- * Build a `KeyProvider` double backed by an in-memory `SecretStore`-shaped
- * object. The double honors:
+ * Build a `KeyProvider` double backed by an in-memory `SecretStore`.
+ * The double honors:
  *
  *   - `pickKey()` → the active slot if it has a stored value, else
- *     the first stored slot.
+ *     the first stored slot in numeric order.
  *   - `markFailed(slot, kind)` / `markSucceeded(slot)` — track state for
  *     test assertions.
  *   - `getActiveSlot()` / `setActiveSlot()` — in-memory only.
  *   - `hasAnyKey()` / `listStoredKeys()` / `listHealthySlots()` — reflect
  *     the underlying `SecretStore` state.
+ *
+ * To pre-populate stored keys, write them through `setKey(slot, value)`
+ * after construction — the double reads from the `SecretStore` on every
+ * `pickKey`, so the underlying store is the single source of truth.
  *
  * If the caller wants to simulate cooldown, set the active slot to one
  * slot and call `markFailed` on it; subsequent `pickKey` calls will
@@ -48,10 +52,10 @@ export interface TestKeyProvider extends KeyProvider {
  */
 export function makeTestKeyProvider(
   store: SecretStore,
-  initial: { activeSlot?: KeySlot; slots?: Partial<Record<KeySlot, string>> } = {},
+  initial: { activeSlot?: KeySlot } = {},
 ): TestKeyProvider {
   const state: TestKeyProvider['__state'] = {
-    stored: { ...(initial.slots ?? {}) },
+    stored: {},
     activeSlot: initial.activeSlot ?? 1,
     failures: {},
   };

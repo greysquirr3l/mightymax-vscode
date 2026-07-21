@@ -1,6 +1,6 @@
+import { isKeySlot, type KeyProvider, type KeySlot } from '../ports/key-provider.js';
 import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
-import type { KeyProvider, KeySlot } from '../ports/key-provider.js';
 import { validateApiKey } from '../adapters/api-key-validator.js';
 import { runConfigureUtilityModelsCommand } from './configure-utility-models.js';
 
@@ -303,11 +303,12 @@ async function handleManageApiKeys(deps: ManageDeps): Promise<void> {
     const isStored = storedSet.has(slot);
     const isActive = slot === activeSlot;
     const isHealthy = healthySet.has(slot);
-    const flags = [
-      isStored ? 'stored' : 'empty',
-      isHealthy ? 'healthy' : 'cooldown',
-      isActive ? '★ active' : '',
-    ].filter(Boolean);
+    // T25 — only show the health flag for slots that actually have
+    // a key. An empty slot isn't "cooldown", it's just empty; the
+    // earlier code rendered "empty · cooldown" which was wrong.
+    const flags: string[] = [isStored ? 'stored' : 'empty'];
+    if (isStored) flags.push(isHealthy ? 'healthy' : 'cooldown');
+    if (isActive) flags.push('★ active');
     return `${KEY_SLOT_PICK_LABEL(slot)} — ${flags.join(' · ')}`;
   };
 
@@ -429,7 +430,23 @@ async function handleSetActiveSlot(
     title: 'Mighty Max — choose active slot',
   });
   if (!choice) return;
-  const slot = Number(choice.label.replace(/^Slot /, '')) as KeySlot;
+  // T25 — validate the parsed slot before persisting it. Without
+  // this, a malformed label (or a future localization change) could
+  // slip `NaN` into `globalState['mightyMax.activeKeySlot']`, which
+  // `isKeySlot()` rejects and silently falls back to slot 1 — not
+  // what the user picked. Reject anything that isn't 1, 2, or 3.
+  const parsed = Number(choice.label.replace(/^Slot /, ''));
+  if (!isKeySlot(parsed)) {
+    deps.logger.error('Manage command: unexpected active-slot pick label', {
+      label: choice.label,
+      parsed,
+    });
+    await deps.ui.showErrorMessage(
+      `Could not parse the chosen slot from "${choice.label}". Pick a "Slot N" entry.`,
+    );
+    return;
+  }
+  const slot: KeySlot = parsed;
   if (slot === currentActive) {
     await deps.ui.showInfoMessage(`Slot ${String(slot)} is already the active slot.`);
     return;

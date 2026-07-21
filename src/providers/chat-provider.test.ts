@@ -101,21 +101,26 @@ function makeRecordingLogger(): Logger & {
 }
 
 function makeSecretStore(initial?: { has: boolean; value?: string }): SecretStore {
-  const state = {
-    has: initial?.has ?? false,
-    value: initial?.value ?? '',
-  };
+  // Per-name storage so multiple keys (apiKey, apiKey2, apiKey3)
+  // can coexist in the same fake. The original single-value shape
+  // worked when only one key existed in the system; the multi-key
+  // T25 feature needs per-name entries. Backwards compat: when the
+  // caller passes `initial.has: true, initial.value: '...'`, the
+  // helper seeds the legacy 'apiKey' slot with that value, so
+  // pre-T25 tests behave identically.
+  const data = new Map<string, string>();
+  if (initial?.has && initial.value !== undefined) {
+    data.set('mightyMax.apiKey', initial.value);
+  }
   return {
-    getSecret: async () => (state.has ? state.value : undefined),
-    storeSecret: async (_name, value) => {
-      state.has = true;
-      state.value = value;
+    getSecret: async (name) => data.get(`mightyMax.${name}`),
+    storeSecret: async (name, value) => {
+      data.set(`mightyMax.${name}`, value);
     },
-    deleteSecret: async () => {
-      state.has = false;
-      state.value = '';
+    deleteSecret: async (name) => {
+      data.delete(`mightyMax.${name}`);
     },
-    hasSecret: async () => state.has,
+    hasSecret: async (name) => data.has(`mightyMax.${name}`),
   };
 }
 
@@ -548,7 +553,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
       new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
     ];
 
-    let threw = false;
+    let caughtError: Error | undefined;
     try {
       await provider.provideLanguageModelChatResponse(
         makeModelInfo('MiniMax-M3'),
@@ -558,14 +563,75 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
         new vscode.CancellationTokenSource().token,
       );
     } catch (err) {
-      threw = true;
-      ok(err instanceof Error, 'expected an Error');
-      // Should not be a MiniMaxClientError — this is a credential
-      // failure on the chat-provider side, not a transport error.
-      ok(!(err instanceof MiniMaxClientError), 'should not surface as a transport error');
+      caughtError = err as Error;
     }
-    ok(threw, 'expected provideLanguageModelChatResponse to throw when no key is stored');
+    ok(caughtError !== undefined, 'expected an error to surface');
+    // Should not be a MiniMaxClientError — this is a credential
+    // failure on the chat-provider side, not a transport error.
+    ok(!(caughtError instanceof MiniMaxClientError), 'should not surface as a transport error');
+    ok(
+      caughtError?.message.includes('not configured') &&
+        caughtError?.message.includes('Mighty Max: Manage'),
+      `expected an actionable "no key configured" message; got: ${caughtError?.message}`,
+    );
     strictEqual(client.calls.length, 0, 'transport should not be called without a key');
+  });
+
+  it('throws a distinct cooldown message when keys exist but every slot is in cooldown', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([[{ textDelta: 'ok' }]]);
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    // Put every stored slot in cooldown.
+    kp.markFailed(1, 'auth');
+    kp.markFailed(2, 'auth');
+
+    // Sanity: pickKey really does return undefined in this state.
+    const precheck = await kp.pickKey();
+    strictEqual(
+      precheck,
+      undefined,
+      `precheck: pickKey should return undefined when every slot is in cooldown; got ${JSON.stringify(precheck)}`,
+    );
+
+    const provider = new ChatProvider(logger, kp, client, catalog);
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    let caughtError: Error | undefined;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    ok(
+      caughtError !== undefined,
+      `expected an error to surface; got: ${JSON.stringify(caughtError)}`,
+    );
+    ok(
+      caughtError?.message.includes('in cooldown'),
+      `expected a cooldown-specific message; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Manage'),
+      `expected the message to point at the manage command; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Active slot'),
+      `expected the message to mention the active-slot picker; got: ${caughtError?.message}`,
+    );
+    strictEqual(client.calls.length, 0, 'transport should not be called when no slot is pickable');
   });
 
   it('surfaces transport errors as user-visible chat errors without crashing the host', async () => {

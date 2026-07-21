@@ -19,6 +19,7 @@
 import type { KeySlot, FailureKind, CooldownState } from '../lib/domain/key-pool.js';
 
 export type { KeySlot, FailureKind } from '../lib/domain/key-pool.js';
+export { isKeySlot } from '../lib/domain/key-pool.js';
 
 export interface StoredKey {
   readonly slot: KeySlot;

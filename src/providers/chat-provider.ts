@@ -154,8 +154,18 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // when every stored key is unusable.
     const initialPick = await this.keyProvider.pickKey();
     if (initialPick === undefined) {
+      // Distinguish "no keys stored" from "all keys in cooldown" so
+      // the user gets the right actionable hint. The first case
+      // means they need to set a key; the second means they need to
+      // either wait for the cooldown or change the active slot.
+      const hasAny = await this.keyProvider.hasAnyKey();
+      if (!hasAny) {
+        throw new Error('MiniMax API key not configured. Run "Mighty Max: Manage" and set a key.');
+      }
       throw new Error(
-        'MiniMax API key not configured. Run "Manage Mighty Max (Set API Key)" to configure.',
+        'All stored MiniMax API keys are in cooldown after recent failures. ' +
+          'Wait for the cooldown (auth: 60s, rate-limit: 30s) or run "Mighty Max: Manage" ' +
+          '→ "Manage API keys" → "Active slot" to switch to a healthy slot.',
       );
     }
 

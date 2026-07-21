@@ -58,6 +58,11 @@ import { makeTestKeyProvider } from '../test-helpers/key-provider-test-double.js
 // Test fixtures
 // ─────────────────────────────────────────────────────────────────────────────
 
+// (Helpers previously used for stubbing `vscode.workspace` were
+// removed: the chat-provider now accepts a `configReader` callback
+// in its constructor, so the auto-rotation tests inject the
+// setting directly rather than monkey-patching the host.)
+
 const API_KEY = 'sk-test-mighty-max-1234567890';
 
 function makeRecordingLogger(): Logger & {
@@ -622,6 +627,166 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     // Verify the error was logged
     const errorLogs = logger.calls.filter((c) => c.level === 'error');
     ok(errorLogs.length > 0, 'transport error should be logged');
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // T25 — auto-rotation toggle (mightyMax.enableAutoKeyRotation)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('falls back to the next stored key on auth failure when auto-rotation is enabled (default)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    // First call (with key 1) throws an auth error; second call (with
+    // key 2) succeeds. The provider must rotate transparently.
+    let attempt = 0;
+    let secondAttemptApiKey: string | undefined;
+    const rotatingClient: MiniMaxClient = {
+      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('auth', 'invalid api key', {
+            status: 401,
+            retriable: false,
+          });
+        }
+        if (attempt === 2) {
+          // Sanity: the second attempt used a DIFFERENT key.
+          secondAttemptApiKey = apiKey;
+          return (async function* () {
+            yield { textDelta: 'second-slot-worked' };
+            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+          })();
+        }
+        throw new Error(`unexpected attempt ${attempt}`);
+      },
+    };
+
+    // Multi-key provider: slot 1 has key-1, slot 2 has key-2.
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, rotatingClient, catalog);
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    // Default test harness has no `mightyMax.enableAutoKeyRotation`
+    // value — the helper defaults to true (auto-rotation on). We
+    // don't need to stub anything here.
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(attempt, 2, 'should have made exactly two attempts');
+    strictEqual(
+      secondAttemptApiKey,
+      'sk-second-key',
+      'second attempt must use the next healthy slot, not the same slot',
+    );
+    const warnLogs = logger.calls.filter((c) => c.level === 'warn');
+    ok(
+      warnLogs.some((c) => c.message.includes('falling back')),
+      'expected a warn log about the auth failure + fallback',
+    );
+  });
+
+  it('surfaces an auth error directly when auto-rotation is disabled (toggle off)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    const failingClient: MiniMaxClient = {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        throw new MiniMaxClientError('auth', 'invalid api key', { status: 401, retriable: false });
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+
+    const provider = new ChatProvider(logger, kp, failingClient, catalog, (key) =>
+      key === 'enableAutoKeyRotation' ? false : undefined,
+    );
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    let caughtError: Error | undefined;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caughtError = err as Error;
+    }
+
+    strictEqual(attempt, 1, 'should have made exactly ONE attempt (no fallback)');
+    ok(caughtError !== undefined, 'expected an auth error to surface');
+    ok(
+      caughtError?.message.includes('Auto-rotation is disabled'),
+      `expected user-facing message about disabled rotation; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Manage'),
+      `expected message to point at the manage command; got: ${caughtError?.message}`,
+    );
+
+    const failedSlots = Object.entries(kp.__state.failures).filter(([, v]) => v !== undefined);
+    strictEqual(
+      failedSlots.length,
+      0,
+      'no slot should have been markFailed under disabled rotation',
+    );
+  });
+
+  it('does NOT call markFailed even when auth fails under disabled rotation', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const failingClient: MiniMaxClient = {
+      streamCompletion() {
+        throw new MiniMaxClientError('auth', 'rejected', { status: 401, retriable: false });
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+
+    const provider = new ChatProvider(logger, kp, failingClient, catalog, (key) =>
+      key === 'enableAutoKeyRotation' ? false : undefined,
+    );
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        { report: () => undefined },
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch {
+      // expected
+    }
+    strictEqual(
+      kp.__state.failures[1],
+      undefined,
+      'slot 1 must NOT have a recorded failure under disabled rotation',
+    );
   });
 });
 

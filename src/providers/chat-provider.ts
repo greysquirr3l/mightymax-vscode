@@ -78,6 +78,11 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     private readonly keyProvider: KeyProvider,
     private readonly client: MiniMaxClient,
     private readonly catalog: ModelCatalog,
+    /** Optional: override the config reader. Defaults to reading
+     *  `mightyMax.enableAutoKeyRotation` from `vscode.workspace`.
+     *  Tests inject a stable callback so they don't have to monkey-patch
+     *  the host's `vscode.workspace` getter. */
+    private readonly configReader?: (key: string) => unknown,
   ) {
     // Forward catalog change events to the chat-provider change emitter
     // so the VS Code model picker refreshes when a new model lands in
@@ -316,7 +321,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           if (
             err instanceof MiniMaxClientError &&
             err.kind === 'auth' &&
-            !attemptController.signal.aborted
+            !attemptController.signal.aborted &&
+            this.isAutoRotationEnabled()
           ) {
             this.keyProvider.markFailed(pick.slot, 'auth');
             this.logger.warn('API key rejected by MiniMax, falling back', {
@@ -334,6 +340,28 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
             }
             pick = nextPick;
             continue;
+          }
+          if (
+            err instanceof MiniMaxClientError &&
+            err.kind === 'auth' &&
+            !attemptController.signal.aborted &&
+            !this.isAutoRotationEnabled()
+          ) {
+            // Auto-rotation is off (T25 setting). Surface the
+            // auth failure directly to the user with a hint that
+            // points at the manage command. No `markFailed`, no
+            // looping — the user explicitly wants manual key
+            // control, so we honor that.
+            this.logger.warn('Auth failure with auto-rotation disabled — surfacing to user', {
+              failedSlot: pick.slot,
+              status: err.status,
+            });
+            throw new Error(
+              'MiniMax rejected the active API key (auth). Auto-rotation is disabled ' +
+                '(mightyMax.enableAutoKeyRotation = false); run "Mighty Max: Manage" ' +
+                'and either pick a different slot under "Manage API keys > Active slot" ' +
+                'or set a new key, then retry.',
+            );
           }
           throw err;
         } finally {
@@ -469,6 +497,33 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const trimmed = raw.trim();
     if (trimmed.length === 0) return ChatProvider.DEFAULT_SYSTEM_PROMPT;
     return raw;
+  }
+
+  /**
+   * T25 — read the `mightyMax.enableAutoKeyRotation` setting.
+   * Defaults to `true` when the setting is missing or unreadable
+   * (host-free test harness, schema drift, etc.) so the
+   * transparent-fallback behavior of PR #45 stays the default.
+   *
+   * Read fresh on every call so flipping the toggle mid-session
+   * takes effect on the next request, not after a restart.
+   *
+   * Tests inject `configReader` via the constructor so they can
+   * drive both states without monkey-patching the host's
+   * `vscode.workspace` getter.
+   */
+  private isAutoRotationEnabled(): boolean {
+    let raw: unknown;
+    if (this.configReader !== undefined) {
+      raw = this.configReader('enableAutoKeyRotation');
+    } else {
+      const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
+        .workspace;
+      if (ws?.getConfiguration === undefined) return true;
+      const config = ws.getConfiguration('mightyMax') as { get?: (k: string) => unknown };
+      raw = config.get?.('enableAutoKeyRotation');
+    }
+    return raw !== false; // default true; explicitly `false` is the only opt-out
   }
 
   /**

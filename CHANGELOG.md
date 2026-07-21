@@ -58,6 +58,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
   now starts with "Showing usage for slot N" so the user can tell
   which key the indicator reflects.
 
+- **Settings toggle: `mightyMax.enableAutoKeyRotation`** (boolean,
+  default `true`). When enabled, transparent fallback on auth
+  failure kicks in (the chat-provider marks the failing slot
+  unhealthy and retries with the next healthy stored key). When
+  disabled, the auth error surfaces to chat immediately and the
+  user must change keys manually via `Mighty Max: Manage` →
+  `Manage API keys` → `Active slot`. The `markFailed` cooldown
+  bookkeeping is gated on the same setting — when auto-rotation
+  is off, no slot enters cooldown, so toggling the setting back
+  on does not require a restart. The setting is read fresh on
+  every request, so flipping it mid-session takes effect on the
+  next call.
+
 ## [0.4.0] — 2026-07-20
 
 ### Changed (breaking)

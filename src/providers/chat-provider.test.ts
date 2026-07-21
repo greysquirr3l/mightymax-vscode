@@ -52,10 +52,16 @@ import {
 import type { Logger } from '../ports/logger.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
+import { makeTestKeyProvider } from '../test-helpers/key-provider-test-double.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test fixtures
 // ─────────────────────────────────────────────────────────────────────────────
+
+// (Helpers previously used for stubbing `vscode.workspace` were
+// removed: the chat-provider now accepts a `configReader` callback
+// in its constructor, so the auto-rotation tests inject the
+// setting directly rather than monkey-patching the host.)
 
 const API_KEY = 'sk-test-mighty-max-1234567890';
 
@@ -95,22 +101,42 @@ function makeRecordingLogger(): Logger & {
 }
 
 function makeSecretStore(initial?: { has: boolean; value?: string }): SecretStore {
-  const state = {
-    has: initial?.has ?? false,
-    value: initial?.value ?? '',
-  };
+  // Per-name storage so multiple keys (apiKey, apiKey2, apiKey3)
+  // can coexist in the same fake. The original single-value shape
+  // worked when only one key existed in the system; the multi-key
+  // T25 feature needs per-name entries. Backwards compat: when the
+  // caller passes `initial.has: true, initial.value: '...'`, the
+  // helper seeds the legacy 'apiKey' slot with that value, so
+  // pre-T25 tests behave identically.
+  const data = new Map<string, string>();
+  if (initial?.has && initial.value !== undefined) {
+    data.set('mightyMax.apiKey', initial.value);
+  }
   return {
-    getSecret: async () => (state.has ? state.value : undefined),
-    storeSecret: async (_name, value) => {
-      state.has = true;
-      state.value = value;
+    getSecret: async (name) => data.get(`mightyMax.${name}`),
+    storeSecret: async (name, value) => {
+      data.set(`mightyMax.${name}`, value);
     },
-    deleteSecret: async () => {
-      state.has = false;
-      state.value = '';
+    deleteSecret: async (name) => {
+      data.delete(`mightyMax.${name}`);
     },
-    hasSecret: async () => state.has,
+    hasSecret: async (name) => data.has(`mightyMax.${name}`),
   };
+}
+
+/**
+ * Build a `KeyProvider` test double backed by a single stored key.
+ * Preserves the legacy `makeSecretStore({has, value})` shape so
+ * call-site changes are minimal — every test that previously did
+ * `makeSecretStore({...})` can now do `makeProvider({...})`.
+ */
+function makeProvider(initial?: { has: boolean; value?: string }) {
+  const secretStore = makeSecretStore(initial);
+  const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+  if (initial?.has && initial.value !== undefined) {
+    void kp.setKey(1, initial.value);
+  }
+  return kp;
 }
 
 function makeCatalog(entries: ReadonlyArray<ModelInfo>): ModelCatalog {
@@ -205,7 +231,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns the mapped catalog entries (silent=false)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3, M2_5]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const result = await provider.provideLanguageModelChatInformation(
       { silent: false },
       new vscode.CancellationTokenSource().token,
@@ -219,7 +245,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns [] with silent=true when no API key is stored (no prompt)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const result = await provider.provideLanguageModelChatInformation(
       { silent: true },
       new vscode.CancellationTokenSource().token,
@@ -232,7 +258,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
     const catalog = makeCatalog([M3, M2_5]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       makeFakeClient([]),
       catalog,
     );
@@ -246,7 +272,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns [] when the cancellation token is already cancelled', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const source = new vscode.CancellationTokenSource();
     source.cancel();
     const result = await provider.provideLanguageModelChatInformation(
@@ -281,7 +307,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -326,10 +352,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     // `__minimax_usage__:` text emission — no string starting with
     // that prefix may appear in the visible-text lane.
     for (const tp of textParts) {
-      ok(
-        !tp.value.includes('__minimax_usage__'),
-        `usage leaked into visible text: ${tp.value}`,
-      );
+      ok(!tp.value.includes('__minimax_usage__'), `usage leaked into visible text: ${tp.value}`);
     }
 
     const toolCallPart = parts.find((p) => p instanceof vscode.LanguageModelToolCallPart);
@@ -394,7 +417,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'Done.' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -449,7 +472,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'ok' }], [{ textDelta: 'ok' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -483,7 +506,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'ok' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -524,13 +547,13 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
     const client = makeFakeClient([[{ textDelta: 'ok' }]]);
-    const provider = new ChatProvider(logger, makeSecretStore(), client, catalog);
+    const provider = new ChatProvider(logger, makeProvider(), client, catalog);
     const { progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
       new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
     ];
 
-    let threw = false;
+    let caughtError: Error | undefined;
     try {
       await provider.provideLanguageModelChatResponse(
         makeModelInfo('MiniMax-M3'),
@@ -540,14 +563,75 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
         new vscode.CancellationTokenSource().token,
       );
     } catch (err) {
-      threw = true;
-      ok(err instanceof Error, 'expected an Error');
-      // Should not be a MiniMaxClientError — this is a credential
-      // failure on the chat-provider side, not a transport error.
-      ok(!(err instanceof MiniMaxClientError), 'should not surface as a transport error');
+      caughtError = err as Error;
     }
-    ok(threw, 'expected provideLanguageModelChatResponse to throw when no key is stored');
+    ok(caughtError !== undefined, 'expected an error to surface');
+    // Should not be a MiniMaxClientError — this is a credential
+    // failure on the chat-provider side, not a transport error.
+    ok(!(caughtError instanceof MiniMaxClientError), 'should not surface as a transport error');
+    ok(
+      caughtError?.message.includes('not configured') &&
+        caughtError?.message.includes('Mighty Max: Manage'),
+      `expected an actionable "no key configured" message; got: ${caughtError?.message}`,
+    );
     strictEqual(client.calls.length, 0, 'transport should not be called without a key');
+  });
+
+  it('throws a distinct cooldown message when keys exist but every slot is in cooldown', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([[{ textDelta: 'ok' }]]);
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    // Put every stored slot in cooldown.
+    kp.markFailed(1, 'auth');
+    kp.markFailed(2, 'auth');
+
+    // Sanity: pickKey really does return undefined in this state.
+    const precheck = await kp.pickKey();
+    strictEqual(
+      precheck,
+      undefined,
+      `precheck: pickKey should return undefined when every slot is in cooldown; got ${JSON.stringify(precheck)}`,
+    );
+
+    const provider = new ChatProvider(logger, kp, client, catalog);
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    let caughtError: Error | undefined;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    ok(
+      caughtError !== undefined,
+      `expected an error to surface; got: ${JSON.stringify(caughtError)}`,
+    );
+    ok(
+      caughtError?.message.includes('in cooldown'),
+      `expected a cooldown-specific message; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Manage'),
+      `expected the message to point at the manage command; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Active slot'),
+      `expected the message to mention the active-slot picker; got: ${caughtError?.message}`,
+    );
+    strictEqual(client.calls.length, 0, 'transport should not be called when no slot is pickable');
   });
 
   it('surfaces transport errors as user-visible chat errors without crashing the host', async () => {
@@ -575,7 +659,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
 
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       errorClient,
       catalog,
     );
@@ -610,6 +694,166 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const errorLogs = logger.calls.filter((c) => c.level === 'error');
     ok(errorLogs.length > 0, 'transport error should be logged');
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // T25 — auto-rotation toggle (mightyMax.enableAutoKeyRotation)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('falls back to the next stored key on auth failure when auto-rotation is enabled (default)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    // First call (with key 1) throws an auth error; second call (with
+    // key 2) succeeds. The provider must rotate transparently.
+    let attempt = 0;
+    let secondAttemptApiKey: string | undefined;
+    const rotatingClient: MiniMaxClient = {
+      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('auth', 'invalid api key', {
+            status: 401,
+            retriable: false,
+          });
+        }
+        if (attempt === 2) {
+          // Sanity: the second attempt used a DIFFERENT key.
+          secondAttemptApiKey = apiKey;
+          return (async function* () {
+            yield { textDelta: 'second-slot-worked' };
+            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+          })();
+        }
+        throw new Error(`unexpected attempt ${attempt}`);
+      },
+    };
+
+    // Multi-key provider: slot 1 has key-1, slot 2 has key-2.
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, rotatingClient, catalog);
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    // Default test harness has no `mightyMax.enableAutoKeyRotation`
+    // value — the helper defaults to true (auto-rotation on). We
+    // don't need to stub anything here.
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(attempt, 2, 'should have made exactly two attempts');
+    strictEqual(
+      secondAttemptApiKey,
+      'sk-second-key',
+      'second attempt must use the next healthy slot, not the same slot',
+    );
+    const warnLogs = logger.calls.filter((c) => c.level === 'warn');
+    ok(
+      warnLogs.some((c) => c.message.includes('falling back')),
+      'expected a warn log about the auth failure + fallback',
+    );
+  });
+
+  it('surfaces an auth error directly when auto-rotation is disabled (toggle off)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    const failingClient: MiniMaxClient = {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        throw new MiniMaxClientError('auth', 'invalid api key', { status: 401, retriable: false });
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+
+    const provider = new ChatProvider(logger, kp, failingClient, catalog, (key) =>
+      key === 'enableAutoKeyRotation' ? false : undefined,
+    );
+    const { progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
+    ];
+
+    let caughtError: Error | undefined;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        messages,
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caughtError = err as Error;
+    }
+
+    strictEqual(attempt, 1, 'should have made exactly ONE attempt (no fallback)');
+    ok(caughtError !== undefined, 'expected an auth error to surface');
+    ok(
+      caughtError?.message.includes('Auto-rotation is disabled'),
+      `expected user-facing message about disabled rotation; got: ${caughtError?.message}`,
+    );
+    ok(
+      caughtError?.message.includes('Manage'),
+      `expected message to point at the manage command; got: ${caughtError?.message}`,
+    );
+
+    const failedSlots = Object.entries(kp.__state.failures).filter(([, v]) => v !== undefined);
+    strictEqual(
+      failedSlots.length,
+      0,
+      'no slot should have been markFailed under disabled rotation',
+    );
+  });
+
+  it('does NOT call markFailed even when auth fails under disabled rotation', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const failingClient: MiniMaxClient = {
+      streamCompletion() {
+        throw new MiniMaxClientError('auth', 'rejected', { status: 401, retriable: false });
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+
+    const provider = new ChatProvider(logger, kp, failingClient, catalog, (key) =>
+      key === 'enableAutoKeyRotation' ? false : undefined,
+    );
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        { report: () => undefined },
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch {
+      // expected
+    }
+    strictEqual(
+      kp.__state.failures[1],
+      undefined,
+      'slot 1 must NOT have a recorded failure under disabled rotation',
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -621,7 +865,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -638,7 +882,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -659,7 +903,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3, M2_5]),
     );
@@ -694,7 +938,7 @@ describe('ChatProvider change emitter', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -787,11 +1031,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
     const msg: vscode.LanguageModelChatRequestMessage = {
       role: vscode.LanguageModelChatMessageRole.User,
       name: undefined,
-      content: [
-        new vscode.LanguageModelToolResultPart('call_circ', [
-          circular,
-        ]),
-      ],
+      content: [new vscode.LanguageModelToolResultPart('call_circ', [circular])],
     };
     const domain = vscodeToDomainMessage(msg);
     const part = domain.content[0]!;
@@ -891,9 +1131,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       ok(false, 'expected a tool-result part');
       return;
     }
-    deepStrictEqual(part.toolResult.content, [
-      '[tool result data omitted: image/png, 4 bytes]',
-    ]);
+    deepStrictEqual(part.toolResult.content, ['[tool result data omitted: image/png, 4 bytes]']);
   });
 });
 
@@ -928,16 +1166,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'do a thing',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'do a thing'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -981,16 +1216,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1031,16 +1263,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1049,9 +1278,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       progress,
       new vscode.CancellationTokenSource().token,
     );
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(toolCalls.length >= 1, 'expected tool call to be flushed on stop');
   });
 
@@ -1074,16 +1301,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1092,9 +1316,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       progress,
       new vscode.CancellationTokenSource().token,
     );
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(toolCalls.length >= 1, 'expected stranded tool call flushed on stream end');
   });
 
@@ -1118,16 +1340,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     let threw = false;
     try {
@@ -1142,9 +1361,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       threw = true;
     }
     ok(threw, 'expected the provider to throw on a mid-stream error');
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(
       toolCalls.length >= 1,
       'expected the in-flight tool call to be flushed before the error is surfaced',

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { LoggerAdapter, type LogLevel } from './adapters/logger.js';
 import { SecretStoreAdapter } from './adapters/secret-store.js';
+import { KeyProviderAdapter } from './adapters/key-provider.js';
 import { MiniMaxClientAdapter } from './adapters/transport.js';
 import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
@@ -11,6 +12,7 @@ import { runConfigureUtilityModelsCommand } from './commands/configure-utility-m
 import { runShowUsageCommand } from './commands/show-usage.js';
 import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
+import type { KeyProvider } from './ports/key-provider.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 
@@ -73,6 +75,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const logger = new LoggerAdapter(channel, initialLevel);
   const secretStore = new SecretStoreAdapter(context.secrets);
+  // T25 — multi-key rotation. The provider wraps the secret store
+  // and adds a globalState-backed active-slot preference plus an
+  // in-memory cooldown. Existing single-key users stay in slot 1
+  // (the legacy `mightyMax.apiKey` secret); slots 2 and 3 are new.
+  const keyProvider: KeyProvider = new KeyProviderAdapter({
+    secretStore,
+    globalState: context.globalState,
+  });
   // Watchdog timeouts are callbacks (like baseUrl) so settings
   // changes apply on the next request without an extension-host
   // restart. Out-of-range values are clamped to the transport's
@@ -85,7 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.getConfiguration('mightyMax').get<number>('idleTimeoutMs') ?? 60_000,
   });
   const catalog = new CatalogAdapter(logger);
-  const chatProvider = new ChatProvider(logger, secretStore, client, catalog);
+  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog);
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes
@@ -94,7 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // tick. A PAYG key or network failure surfaces as a neutral icon,
   // never a red one, matching the "click for details" affordance.
   const usageClient = new UsageTransportAdapter({ logger });
-  const statusBar = new StatusBarAdapter({ logger, secretStore, usageClient });
+  const statusBar = new StatusBarAdapter({ logger, keyProvider, secretStore, usageClient });
   context.subscriptions.push(statusBar);
 
   // T06 — when the user clears (or another extension overwrites) the
@@ -124,6 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return runManageCommand({
         logger,
         secretStore,
+        keyProvider,
         baseUrl: baseUrl(),
         ui,
         fireChange: () => chatProvider.fireChange(),
@@ -182,18 +193,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // background and never await it from the activation path.
   void runUtilityNudge({
     getByokDefault: () => {
-      const v = vscode.workspace
-        .getConfiguration()
-        .get<string>('chat.byokUtilityModelDefault');
+      const v = vscode.workspace.getConfiguration().get<string>('chat.byokUtilityModelDefault');
       return typeof v === 'string' ? v : undefined;
     },
     getUtilityModel: () => {
-      const v = vscode.workspace
-        .getConfiguration()
-        .get<string>('chat.utilityModel');
+      const v = vscode.workspace.getConfiguration().get<string>('chat.utilityModel');
       return typeof v === 'string' ? v : undefined;
     },
-    hasApiKey: async () => secretStore.hasSecret('apiKey'),
+    hasApiKey: async () => keyProvider.hasAnyKey(),
     globalState: context.globalState,
     logger,
     showInformationMessage: async (message, options) => {

@@ -9,6 +9,7 @@ import {
 } from './manage-command.js';
 import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
+import { makeTestKeyProvider } from '../test-helpers/key-provider-test-double.js';
 
 /**
  * Build a Logger that captures every call so tests can assert that no
@@ -120,9 +121,11 @@ function makeDeps(overrides: {
   };
 }): ManageDeps {
   const fireChangeCount = overrides.fireChangeCount ?? { n: 0 };
+  const secretStore = overrides.secretStore ?? createInMemorySecretStore();
   const out: ManageDeps = {
     logger: overrides.logger ?? createCapturingLogger(),
-    secretStore: overrides.secretStore ?? createInMemorySecretStore(),
+    secretStore,
+    keyProvider: makeTestKeyProvider(secretStore, { activeSlot: 1 }),
     baseUrl: overrides.baseUrl ?? 'https://api.minimax.io',
     ui: overrides.ui,
     fireChange:

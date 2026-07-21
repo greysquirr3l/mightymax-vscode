@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -219,6 +219,12 @@
           "type": "string",
           "default": "",
           "description": "Optional system prompt sent on every M3 request. When empty, Mighty Max uses a short preamble that nudges M3 to plan before the first tool call. The prompt is sanitized for UTF-16 surrogate code points and sent with `cache_control: ephemeral` so it is reused across requests.",
+          "scope": "window"
+        },
+        "mightyMax.enableAutoKeyRotation": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way.",
           "scope": "window"
         }
       }

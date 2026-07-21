@@ -26,6 +26,8 @@ import type { MiniMaxClient, MiniMaxCompletionRequest, MiniMaxStreamEvent } from
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
 
+import { makeTestKeyProvider } from '../test-helpers/key-provider-test-double.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test fixtures
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +87,18 @@ function makeSecretStore(initial?: { has: boolean; value?: string }): SecretStor
     hasSecret: async () => state.has,
   };
 }
+/**
+ * Build a `KeyProvider` test double backed by a single stored key.
+ */
+function makeProvider(initial?: { has: boolean; value?: string }) {
+  const secretStore = makeSecretStore(initial);
+  const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+  if (initial?.has && initial.value !== undefined) {
+    void kp.setKey(1, initial.value);
+  }
+  return kp;
+}
+
 
 function makeCatalog(entries: ReadonlyArray<ModelInfo>): ModelCatalog {
   const emitter = new vscode.EventEmitter<void>();
@@ -206,7 +220,7 @@ describe('Agent-loop fidelity harness', () => {
     const client = makeScriptedAgentClient(script);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -319,7 +333,7 @@ describe('Agent-loop fidelity harness', () => {
     const client = makeScriptedAgentClient(script);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -397,7 +411,7 @@ describe('Agent-loop fidelity harness', () => {
     const client = makeScriptedAgentClient(script);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -449,7 +463,7 @@ describe('Agent-loop fidelity harness', () => {
     const client = makeScriptedAgentClient(script);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );

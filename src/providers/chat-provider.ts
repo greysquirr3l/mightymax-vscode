@@ -20,20 +20,14 @@ import type { Logger } from '../ports/logger.js';
 import type { MiniMaxClient, MiniMaxCompletionRequest } from '../ports/minimax-client.js';
 import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
-import type { SecretStore } from '../ports/secret-store.js';
+import type { KeyProvider, KeyPick, KeySlot } from '../ports/key-provider.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 
 import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
-import {
-  filterTools,
-  type ToolFilterConfig,
-} from '../lib/domain/tool-filter.js';
+import { filterTools, type ToolFilterConfig } from '../lib/domain/tool-filter.js';
 import { pumpProviderStream } from './stream-pump.js';
-import {
-  mapToolsToMiniMax,
-  mapToolModeToChoice,
-} from '../lib/domain/tools.js';
+import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
   getMaxTokensForModel,
   getModelSampler,
@@ -81,9 +75,14 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
   constructor(
     private readonly logger: Logger,
-    private readonly secretStore: SecretStore,
+    private readonly keyProvider: KeyProvider,
     private readonly client: MiniMaxClient,
     private readonly catalog: ModelCatalog,
+    /** Optional: override the config reader. Defaults to reading
+     *  `mightyMax.enableAutoKeyRotation` from `vscode.workspace`.
+     *  Tests inject a stable callback so they don't have to monkey-patch
+     *  the host's `vscode.workspace` getter. */
+    private readonly configReader?: (key: string) => unknown,
   ) {
     // Forward catalog change events to the chat-provider change emitter
     // so the VS Code model picker refreshes when a new model lands in
@@ -120,7 +119,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
     // In silent mode, only return models if we have an API key
     if (options.silent) {
-      const hasKey = await this.secretStore.hasSecret('apiKey');
+      const hasKey = await this.keyProvider.hasAnyKey();
       if (!hasKey) {
         this.logger.debug('ChatProvider: silent resolve with no API key - returning []');
         return [];
@@ -149,11 +148,24 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
-    // Check for API key
-    const apiKey = await this.secretStore.getSecret('apiKey');
-    if (!apiKey) {
+    // Pick an API key. The key-provider honors the user's active-slot
+    // preference, transparently falls back to the next healthy slot if
+    // the active slot is empty or in cooldown, and returns undefined
+    // when every stored key is unusable.
+    const initialPick = await this.keyProvider.pickKey();
+    if (initialPick === undefined) {
+      // Distinguish "no keys stored" from "all keys in cooldown" so
+      // the user gets the right actionable hint. The first case
+      // means they need to set a key; the second means they need to
+      // either wait for the cooldown or change the active slot.
+      const hasAny = await this.keyProvider.hasAnyKey();
+      if (!hasAny) {
+        throw new Error('MiniMax API key not configured. Run "Mighty Max: Manage" and set a key.');
+      }
       throw new Error(
-        'MiniMax API key not configured. Run "Manage Mighty Max (Set API Key)" to configure.',
+        'All stored MiniMax API keys are in cooldown after recent failures. ' +
+          'Wait for the cooldown (auth: 60s, rate-limit: 30s) or run "Mighty Max: Manage" ' +
+          '→ "Manage API keys" → "Active slot" to switch to a healthy slot.',
       );
     }
 
@@ -255,7 +267,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       messageCount: request.messages.length,
       toolCount: tools.length,
       toolMode,
-      tools: tools.map(t => t.name),
+      tools: tools.map((t) => t.name),
       temperature: sampler.temperature,
       topP: sampler.topP,
       topK: sampler.topK,
@@ -265,30 +277,116 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     });
 
     try {
-      // Convert CancellationToken to AbortSignal
-      const abortController = new AbortController();
-      const onCancel = token.onCancellationRequested(() => abortController.abort());
+      // Convert CancellationToken to AbortSignal. Each attempt
+      // gets its own AbortController so that an auth failure on
+      // attempt N cleanly tears down that attempt's stream before
+      // attempt N+1 opens a new connection.
+      let pumpResult: Awaited<ReturnType<typeof pumpProviderStream>> | undefined;
+      const attemptedSlots: KeySlot[] = [];
 
-      let pumpResult: Awaited<ReturnType<typeof pumpProviderStream>>;
-      try {
-        // T19 stream-pump extraction: every terminal-path flush,
-        // thinking-vs-text routing, and usage-not-as-text invariant
-        // lives in `src/providers/stream-pump.ts`. The pump is the
-        // single place these rules are enforced.
-        pumpResult = await pumpProviderStream({
-          events: this.client.streamCompletion(
-            request,
-            apiKey,
-            abortController.signal,
-            this.logger,
-          ),
-          progress,
-          thinkingStyle,
-          logger: this.logger,
-          recordToolUsage: (name) => this.recordToolUsage(name),
-        });
-      } finally {
-        onCancel.dispose();
+      // T25 multi-key rotation: try the active key first; on
+      // `kind:'auth'` (401/403) the transport signals a credential
+      // problem, so mark that slot unhealthy and transparently
+      // retry with the next healthy slot. We never fall through
+      // on rate-limit/network/etc. — those are not credential
+      // problems and the transport's own retry budget already
+      // exhausted itself.
+      // The `let pick: KeyPick | undefined` annotation is necessary
+      // because TS narrows the type from `initialPick` (a let-bound
+      // union) to `KeyPick` after the first non-undefined assignment.
+      let pick: KeyPick | undefined = initialPick;
+      let lastAuthError: MiniMaxClientError | undefined;
+      while (pick !== undefined) {
+        const attemptController = new AbortController();
+        const onCancel = token.onCancellationRequested(() => attemptController.abort());
+        attemptedSlots.push(pick.slot);
+        try {
+          // T19 stream-pump extraction: every terminal-path flush,
+          // thinking-vs-text routing, and usage-not-as-text invariant
+          // lives in `src/providers/stream-pump.ts`. The pump is
+          // the single place these rules are enforced.
+          pumpResult = await pumpProviderStream({
+            events: this.client.streamCompletion(
+              request,
+              pick.key,
+              attemptController.signal,
+              this.logger,
+            ),
+            progress,
+            thinkingStyle,
+            logger: this.logger,
+            recordToolUsage: (name) => this.recordToolUsage(name),
+          });
+          // Success: clear any pending cooldown for this slot.
+          this.keyProvider.markSucceeded(pick.slot);
+          if (pick.fellBack) {
+            this.logger.info('Key fallback succeeded', {
+              triedSlots: attemptedSlots,
+              winningSlot: pick.slot,
+            });
+          }
+          lastAuthError = undefined;
+          break;
+        } catch (err) {
+          if (
+            err instanceof MiniMaxClientError &&
+            err.kind === 'auth' &&
+            !attemptController.signal.aborted &&
+            this.isAutoRotationEnabled()
+          ) {
+            this.keyProvider.markFailed(pick.slot, 'auth');
+            this.logger.warn('API key rejected by MiniMax, falling back', {
+              failedSlot: pick.slot,
+              status: err.status,
+            });
+            lastAuthError = err;
+            const nextPick = await this.keyProvider.pickKey();
+            if (nextPick === undefined) {
+              // No more healthy slots — surface the auth error to
+              // the user. Marking the loop as "exhausted" via
+              // `pick = undefined` so the post-loop block runs.
+              pick = undefined;
+              break;
+            }
+            pick = nextPick;
+            continue;
+          }
+          if (
+            err instanceof MiniMaxClientError &&
+            err.kind === 'auth' &&
+            !attemptController.signal.aborted &&
+            !this.isAutoRotationEnabled()
+          ) {
+            // Auto-rotation is off (T25 setting). Surface the
+            // auth failure directly to the user with a hint that
+            // points at the manage command. No `markFailed`, no
+            // looping — the user explicitly wants manual key
+            // control, so we honor that.
+            this.logger.warn('Auth failure with auto-rotation disabled — surfacing to user', {
+              failedSlot: pick.slot,
+              status: err.status,
+            });
+            throw new Error(
+              'MiniMax rejected the active API key (auth). Auto-rotation is disabled ' +
+                '(mightyMax.enableAutoKeyRotation = false); run "Mighty Max: Manage" ' +
+                'and either pick a different slot under "Manage API keys > Active slot" ' +
+                'or set a new key, then retry.',
+            );
+          }
+          throw err;
+        } finally {
+          onCancel.dispose();
+        }
+      }
+
+      if (pumpResult === undefined) {
+        if (lastAuthError !== undefined) {
+          throw lastAuthError;
+        }
+        throw new Error(
+          'All stored MiniMax API keys are in cooldown. ' +
+            'Use "Manage Mighty Max" to inspect key health or add a new key.',
+        );
       }
 
       // Cache the thinking block if we captured one, keyed by message content hash.
@@ -399,8 +497,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
    * and exercise in test environments.
    */
   private readSystemPromptOverride(): string {
-    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
-      .workspace;
+    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
     if (ws?.getConfiguration === undefined) {
       return ChatProvider.DEFAULT_SYSTEM_PROMPT;
     }
@@ -410,6 +507,33 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const trimmed = raw.trim();
     if (trimmed.length === 0) return ChatProvider.DEFAULT_SYSTEM_PROMPT;
     return raw;
+  }
+
+  /**
+   * T25 — read the `mightyMax.enableAutoKeyRotation` setting.
+   * Defaults to `true` when the setting is missing or unreadable
+   * (host-free test harness, schema drift, etc.) so the
+   * transparent-fallback behavior of PR #45 stays the default.
+   *
+   * Read fresh on every call so flipping the toggle mid-session
+   * takes effect on the next request, not after a restart.
+   *
+   * Tests inject `configReader` via the constructor so they can
+   * drive both states without monkey-patching the host's
+   * `vscode.workspace` getter.
+   */
+  private isAutoRotationEnabled(): boolean {
+    let raw: unknown;
+    if (this.configReader !== undefined) {
+      raw = this.configReader('enableAutoKeyRotation');
+    } else {
+      const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
+        .workspace;
+      if (ws?.getConfiguration === undefined) return true;
+      const config = ws.getConfiguration('mightyMax') as { get?: (k: string) => unknown };
+      raw = config.get?.('enableAutoKeyRotation');
+    }
+    return raw !== false; // default true; explicitly `false` is the only opt-out
   }
 
   /**
@@ -425,11 +549,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
    * stable across id-order permutations and resistant to the
    * `[object Object]` class of collision in the previous key.
    */
-  private generateMessageHash(
-    _text: string,
-    toolCallIds: string[],
-    modelId: string,
-  ): string {
+  private generateMessageHash(_text: string, toolCallIds: string[], modelId: string): string {
     const hasher = createHash('sha256');
     hasher.update(modelId);
     hasher.update('\u0000');
@@ -501,7 +621,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         value: cached.thinking,
       };
       if (cached.signature) {
-        (thinkingPart as { type: 'thinking'; value: string; signature?: string }).signature = cached.signature;
+        (thinkingPart as { type: 'thinking'; value: string; signature?: string }).signature =
+          cached.signature;
       }
       const enriched: ChatMessage = {
         ...msg,
@@ -660,11 +781,7 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
           // real tool output — decode the bytes instead of
           // stringifying the Uint8Array into a byte map.
           const mime = dataPart.mimeType.toLowerCase();
-          if (
-            mime.startsWith('text/') ||
-            mime === 'application/json' ||
-            mime.endsWith('+json')
-          ) {
+          if (mime.startsWith('text/') || mime === 'application/json' || mime.endsWith('+json')) {
             resultContent.push(new TextDecoder().decode(dataPart.data));
             continue;
           }
@@ -763,8 +880,7 @@ function readToolFilterConfig(): ToolFilterConfig {
   type ConfigReader = {
     get?: <T>(k: string, d?: T) => T;
   };
-  const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } })
-    .workspace;
+  const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
   if (ws?.getConfiguration === undefined) {
     return {
       enableSmartToolFiltering: true,
@@ -774,8 +890,7 @@ function readToolFilterConfig(): ToolFilterConfig {
   }
   const config = ws.getConfiguration('mightyMax') as ConfigReader;
   return {
-    enableSmartToolFiltering:
-      config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
+    enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
     maxTools: config.get?.<number>('maxTools', 64) ?? 64,
     alwaysIncludeTools:
       config.get?.<string[]>('alwaysIncludeTools', [
@@ -807,9 +922,7 @@ function collectHistoryReferencedToolNames(
   const names = new Set<string>();
   for (const m of msgs) {
     const parts =
-      typeof m.content === 'string'
-        ? [new vscode.LanguageModelTextPart(m.content)]
-        : m.content;
+      typeof m.content === 'string' ? [new vscode.LanguageModelTextPart(m.content)] : m.content;
     for (const p of parts) {
       if (p instanceof vscode.LanguageModelToolCallPart) {
         if (p.name.length > 0) names.add(p.name);

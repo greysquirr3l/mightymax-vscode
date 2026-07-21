@@ -4,6 +4,73 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-07-21
+
+### Added
+
+- **Multi-key storage and rotation (T25).** Users can now store up
+  to three independent MiniMax API keys (one per "slot") and pick
+  which is the active one. The "Manage API keys" submenu in the
+  manage command offers:
+
+  - **View** — slot-level status (stored / healthy / active / cooldown)
+  - **Set key 1/2/3** — store a new key on a specific slot,
+    validated against `/v1/models` like the existing flow
+  - **Clear key 1/2/3** — remove a specific slot
+  - **Active slot** — switch the preferred pick between stored
+    slots
+  - **Test all stored keys** — run the connectivity test against
+    each stored slot in turn
+
+  Existing single-key users are unaffected: the original `apiKey`
+  secret continues to be slot 1, no migration required.
+
+- **Transparent fallback on auth failures (T25).** When the
+  active key is rejected by MiniMax (401/403), the chat-provider
+  marks that slot unhealthy for 60 seconds and transparently
+  retries the request with the next healthy stored key. The
+  in-memory cooldown is per-failure-kind:
+
+  | Failure kind       | Cooldown |
+  | ------------------ | -------- |
+  | `auth` (401/403)   | 60 s     |
+  | `rate-limit` (429) | 30 s     |
+  | `http` (5xx)       | 15 s     |
+  | `network`          | 10 s     |
+  | other              | 5 s      |
+
+  When every stored slot is in cooldown, the request fails with a
+  user-facing hint that points at the manage command. Non-auth
+  errors (rate-limit / network / http) are not used as a fallback
+  signal — those are not credential problems and the transport's
+  own retry budget already exhausted itself.
+
+- **Port + adapter for `KeyProvider`** (src/ports/key-provider.ts,
+  src/adapters/key-provider.ts) and a pure domain layer
+  (src/lib/domain/key-pool.ts) for the rotation logic. The domain
+  is I/O-free and is exhaustively unit-tested in isolation
+  (16 cases). The adapter wires the domain over
+  `vscode.SecretStorage` + `vscode.Memento`. Tests use a small
+  `makeTestKeyProvider` double in `src/test-helpers/` that wraps
+  an in-memory `SecretStore`.
+
+- **Status bar shows the active slot.** The Token Plan tooltip
+  now starts with "Showing usage for slot N" so the user can tell
+  which key the indicator reflects.
+
+- **Settings toggle: `mightyMax.enableAutoKeyRotation`** (boolean,
+  default `true`). When enabled, transparent fallback on auth
+  failure kicks in (the chat-provider marks the failing slot
+  unhealthy and retries with the next healthy stored key). When
+  disabled, the auth error surfaces to chat immediately and the
+  user must change keys manually via `Mighty Max: Manage` →
+  `Manage API keys` → `Active slot`. The `markFailed` cooldown
+  bookkeeping is gated on the same setting — when auto-rotation
+  is off, no slot enters cooldown, so toggling the setting back
+  on does not require a restart. The setting is read fresh on
+  every request, so flipping it mid-session takes effect on the
+  next call.
+
 ## [0.4.0] — 2026-07-20
 
 ### Changed (breaking)

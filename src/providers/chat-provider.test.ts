@@ -52,6 +52,7 @@ import {
 import type { Logger } from '../ports/logger.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { SecretStore } from '../ports/secret-store.js';
+import { makeTestKeyProvider } from '../test-helpers/key-provider-test-double.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test fixtures
@@ -111,6 +112,21 @@ function makeSecretStore(initial?: { has: boolean; value?: string }): SecretStor
     },
     hasSecret: async () => state.has,
   };
+}
+
+/**
+ * Build a `KeyProvider` test double backed by a single stored key.
+ * Preserves the legacy `makeSecretStore({has, value})` shape so
+ * call-site changes are minimal — every test that previously did
+ * `makeSecretStore({...})` can now do `makeProvider({...})`.
+ */
+function makeProvider(initial?: { has: boolean; value?: string }) {
+  const secretStore = makeSecretStore(initial);
+  const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+  if (initial?.has && initial.value !== undefined) {
+    void kp.setKey(1, initial.value);
+  }
+  return kp;
 }
 
 function makeCatalog(entries: ReadonlyArray<ModelInfo>): ModelCatalog {
@@ -205,7 +221,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns the mapped catalog entries (silent=false)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3, M2_5]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const result = await provider.provideLanguageModelChatInformation(
       { silent: false },
       new vscode.CancellationTokenSource().token,
@@ -219,7 +235,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns [] with silent=true when no API key is stored (no prompt)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const result = await provider.provideLanguageModelChatInformation(
       { silent: true },
       new vscode.CancellationTokenSource().token,
@@ -232,7 +248,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
     const catalog = makeCatalog([M3, M2_5]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       makeFakeClient([]),
       catalog,
     );
@@ -246,7 +262,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
   it('returns [] when the cancellation token is already cancelled', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
-    const provider = new ChatProvider(logger, makeSecretStore(), makeFakeClient([]), catalog);
+    const provider = new ChatProvider(logger, makeProvider(), makeFakeClient([]), catalog);
     const source = new vscode.CancellationTokenSource();
     source.cancel();
     const result = await provider.provideLanguageModelChatInformation(
@@ -281,7 +297,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -326,10 +342,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     // `__minimax_usage__:` text emission — no string starting with
     // that prefix may appear in the visible-text lane.
     for (const tp of textParts) {
-      ok(
-        !tp.value.includes('__minimax_usage__'),
-        `usage leaked into visible text: ${tp.value}`,
-      );
+      ok(!tp.value.includes('__minimax_usage__'), `usage leaked into visible text: ${tp.value}`);
     }
 
     const toolCallPart = parts.find((p) => p instanceof vscode.LanguageModelToolCallPart);
@@ -394,7 +407,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'Done.' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -449,7 +462,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'ok' }], [{ textDelta: 'ok' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -483,7 +496,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const client = makeFakeClient([[{ textDelta: 'ok' }]]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
@@ -524,7 +537,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
     const client = makeFakeClient([[{ textDelta: 'ok' }]]);
-    const provider = new ChatProvider(logger, makeSecretStore(), client, catalog);
+    const provider = new ChatProvider(logger, makeProvider(), client, catalog);
     const { progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
       new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi'),
@@ -575,7 +588,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
 
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       errorClient,
       catalog,
     );
@@ -621,7 +634,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -638,7 +651,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -659,7 +672,7 @@ describe('ChatProvider.provideTokenCount', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3, M2_5]),
     );
@@ -694,7 +707,7 @@ describe('ChatProvider change emitter', () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(
       logger,
-      makeSecretStore(),
+      makeProvider(),
       makeFakeClient([]),
       makeCatalog([M3]),
     );
@@ -787,11 +800,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
     const msg: vscode.LanguageModelChatRequestMessage = {
       role: vscode.LanguageModelChatMessageRole.User,
       name: undefined,
-      content: [
-        new vscode.LanguageModelToolResultPart('call_circ', [
-          circular,
-        ]),
-      ],
+      content: [new vscode.LanguageModelToolResultPart('call_circ', [circular])],
     };
     const domain = vscodeToDomainMessage(msg);
     const part = domain.content[0]!;
@@ -891,9 +900,7 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       ok(false, 'expected a tool-result part');
       return;
     }
-    deepStrictEqual(part.toolResult.content, [
-      '[tool result data omitted: image/png, 4 bytes]',
-    ]);
+    deepStrictEqual(part.toolResult.content, ['[tool result data omitted: image/png, 4 bytes]']);
   });
 });
 
@@ -928,16 +935,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'do a thing',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'do a thing'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -981,16 +985,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1031,16 +1032,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1049,9 +1047,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       progress,
       new vscode.CancellationTokenSource().token,
     );
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(toolCalls.length >= 1, 'expected tool call to be flushed on stop');
   });
 
@@ -1074,16 +1070,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     await provider.provideLanguageModelChatResponse(
       makeModelInfo('MiniMax-M3'),
@@ -1092,9 +1085,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       progress,
       new vscode.CancellationTokenSource().token,
     );
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(toolCalls.length >= 1, 'expected stranded tool call flushed on stream end');
   });
 
@@ -1118,16 +1109,13 @@ describe('ChatProvider T19 — response-part correctness', () => {
     ]);
     const provider = new ChatProvider(
       logger,
-      makeSecretStore({ has: true, value: API_KEY }),
+      makeProvider({ has: true, value: API_KEY }),
       client,
       catalog,
     );
     const { parts, progress } = makeProgress();
     const messages: vscode.LanguageModelChatRequestMessage[] = [
-      new vscode.LanguageModelChatMessage(
-        vscode.LanguageModelChatMessageRole.User,
-        'go',
-      ),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'go'),
     ];
     let threw = false;
     try {
@@ -1142,9 +1130,7 @@ describe('ChatProvider T19 — response-part correctness', () => {
       threw = true;
     }
     ok(threw, 'expected the provider to throw on a mid-stream error');
-    const toolCalls = parts.filter(
-      (p) => p instanceof vscode.LanguageModelToolCallPart,
-    );
+    const toolCalls = parts.filter((p) => p instanceof vscode.LanguageModelToolCallPart);
     ok(
       toolCalls.length >= 1,
       'expected the in-flight tool call to be flushed before the error is surfaced',

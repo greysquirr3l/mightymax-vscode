@@ -8,19 +8,21 @@
  * per-window progress bars, and a click-through to the
  * `mightyMax.showUsage` webview.
  *
- * The status bar reads the API key from the shared `SecretStore`
- * (using `API_KEY_NAME = 'apiKey'` from `../ports/usage-client.ts`,
- * which is the same name the manage command uses). When no key is
- * stored the icon stays neutral with a "run 'Mighty Max: Manage'
- * first" hint — the same is done for `UsageUnavailableError` (PAYG
- * keys have no Token Plan bar; that's a normal state).
+ * The status bar reads the API key via the `KeyProvider` so the
+ * Token Plan fetch uses the same key the chat-provider will pick.
+ * (T25 multi-key: a future enhancement could show per-slot usage
+ * but that's a paid-tier / billing-API question — out of scope for
+ * this PR.) When no key is stored the icon stays neutral with a
+ * "run 'Mighty Max: Manage' first" hint — the same is done for
+ * `UsageUnavailableError` (PAYG keys have no Token Plan bar; that's
+ * a normal state).
  */
 
 import * as vscode from 'vscode';
 import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
+import type { KeyProvider } from '../ports/key-provider.js';
 import {
-  API_KEY_NAME,
   UsageUnavailableError,
   type TokenPlanUsage,
   type UsageClient,
@@ -34,6 +36,7 @@ const MANAGE_COMMAND_TITLE = 'Mighty Max: Manage';
 export interface StatusBarDeps {
   readonly logger: Logger;
   readonly secretStore: SecretStore;
+  readonly keyProvider: KeyProvider;
   readonly usageClient: UsageClient;
   /** Injected for tests. Defaults to `vscode.window.createStatusBarItem`. */
   readonly createItem?: typeof vscode.window.createStatusBarItem;
@@ -44,17 +47,24 @@ export interface StatusBarDeps {
 
 export class StatusBarAdapter implements vscode.Disposable {
   private readonly logger: Logger;
-  private readonly secretStore: SecretStore;
+  // secretStore is no longer used directly — the chat-pipeline
+  // consults the keyProvider for the active key. Kept in the deps
+  // for backwards compatibility with the existing extension.ts
+  // wiring.
+  private readonly keyProvider: KeyProvider;
   private readonly usageClient: UsageClient;
   private readonly item: vscode.StatusBarItem;
-  private readonly setIntervalImpl: (handler: () => void, ms: number) => ReturnType<typeof setInterval>;
+  private readonly setIntervalImpl: (
+    handler: () => void,
+    ms: number,
+  ) => ReturnType<typeof setInterval>;
   private readonly clearIntervalImpl: (handle: ReturnType<typeof setInterval>) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private lastUsage: TokenPlanUsage | undefined;
 
   constructor(deps: StatusBarDeps) {
     this.logger = deps.logger;
-    this.secretStore = deps.secretStore;
+    this.keyProvider = deps.keyProvider;
     this.usageClient = deps.usageClient;
     const createItem = deps.createItem ?? vscode.window.createStatusBarItem;
     this.setIntervalImpl = deps.setIntervalImpl ?? setInterval;
@@ -83,15 +93,19 @@ export class StatusBarAdapter implements vscode.Disposable {
   /** Exposed so the webview's "Refresh" button and the secrets-change
    *  listener can force an out-of-band refresh. */
   async refresh(): Promise<TokenPlanUsage | undefined> {
-    const key = await this.secretStore.getSecret(API_KEY_NAME);
-    if (key === undefined || key.length === 0) {
+    // Use the same pick() the chat-provider would, so Token Plan
+    // usage reflects the same key the next request will send. If
+    // every stored key is in cooldown we still surface the icon
+    // (we just can't fetch usage) and tell the user why.
+    const pick = await this.keyProvider.pickKey();
+    if (pick === undefined) {
       this.renderNoKey();
       return undefined;
     }
     try {
-      const usage = await this.usageClient.fetchUsage(key);
+      const usage = await this.usageClient.fetchUsage(pick.key);
       this.lastUsage = usage;
-      this.render(usage);
+      this.render(usage, pick.slot);
       return usage;
     } catch (err) {
       if (err instanceof UsageUnavailableError) {
@@ -110,7 +124,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     return this.lastUsage;
   }
 
-  private render(usage: TokenPlanUsage): void {
+  private render(usage: TokenPlanUsage, currentSlot: number): void {
     const pct = usage.percentUsed;
     this.item.text = pct === undefined ? ICON : `${ICON} ${String(pct)}%`;
     this.item.backgroundColor =
@@ -122,7 +136,8 @@ export class StatusBarAdapter implements vscode.Disposable {
 
     const md = new vscode.MarkdownString(undefined, true);
     md.isTrusted = true;
-    md.appendMarkdown('**Mighty Max — MiniMax Token Plan**\n\n');
+    md.appendMarkdown(`**Mighty Max — MiniMax Token Plan**\n\n`);
+    md.appendMarkdown(`_Showing usage for slot ${String(currentSlot)}._\n\n`);
     if (usage.windows.length === 0) {
       md.appendMarkdown('_No quota windows reported._\n\n');
     } else {

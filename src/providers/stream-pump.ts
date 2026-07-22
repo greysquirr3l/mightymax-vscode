@@ -8,16 +8,20 @@
  * composition root (`ChatProvider`) keeps the request-building and
  * tool-filter logic in one place while this file owns the
  * per-event fan-out. T19 invariants live here: thinking surfaces
- * to progress (never as visible text), usage logs at `debug`
- * only (never as text), and the tool-call accumulator flushes on
- * every terminal path (mid-stream error, `finishReason` of any
- * value, or stream-end with no finish marker).
+ * to progress (never as visible text), usage surfaces as a
+ * `LanguageModelDataPart` with the `'usage'` MIME type (matching
+ * the convention VS Code's built-in Copilot BYOK providers use;
+ * see `extensions/copilot/src/platform/endpoint/common/endpointTypes.ts`
+ * `CustomDataPartMimeTypes.Usage`), and the tool-call accumulator
+ * flushes on every terminal path (mid-stream error, `finishReason`
+ * of any value, or stream-end with no finish marker).
  *
  * Imports `vscode` because the progress reporter and the
- * `LanguageModelDataPart` (T19 thinking surface) require it.
- * `MiniMaxClientError` is intentionally NOT caught here — the
- * caller decides how to surface the failure (the chat-provider
- * re-wraps it as a typed chat error for the host).
+ * `LanguageModelDataPart` (T19 thinking surface, T26 usage
+ * surface) require it. `MiniMaxClientError` is intentionally NOT
+ * caught here — the caller decides how to surface the failure
+ * (the chat-provider re-wraps it as a typed chat error for the
+ * host).
  */
 
 import * as vscode from 'vscode';
@@ -131,6 +135,43 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
             cacheReadTokens: typed.usage.cacheReadTokens,
             cacheCreateTokens: typed.usage.cacheCreateTokens,
           });
+          // T26 (issue #46): Surface usage as a `LanguageModelDataPart`
+          // with the `'usage'` MIME type. This matches the convention
+          // VS Code's built-in Copilot BYOK providers use (see
+          // `CustomDataPartMimeTypes.Usage` in
+          // extensions/copilot/src/platform/endpoint/common/endpointTypes.ts).
+          //
+          // As of VS Code 1.125, the public `LanguageModelChatProvider`
+          // API does not give third-party providers a direct path to
+          // the chat-widget's context-usage gauge (that gauge reads
+          // `response.usage`, which is populated by the
+          // `vscode.chat` participant API's `stream.usage()` only).
+          // Emitting this data part still:
+          //   1. Future-proofs us if/when VS Code adds a native decode
+          //      for provider-stream usage data parts.
+          //   2. Makes the usage visible to any other extension
+          //      consuming our response stream.
+          //   3. Round-trips cleanly with Copilot's BYOK wrappers if
+          //      our extension is ever loaded inside a host that
+          //      decodes this MIME type (e.g. a custom agent loop).
+          //
+          // Never throw out of this branch — a malformed JSON
+          // payload must not abort the agent turn.
+          try {
+            const payload = JSON.stringify({
+              promptTokens: typed.usage.promptTokens,
+              completionTokens: typed.usage.completionTokens,
+              cacheReadTokens: typed.usage.cacheReadTokens ?? 0,
+              cacheCreateTokens: typed.usage.cacheCreateTokens ?? 0,
+            });
+            deps.progress.report(
+              new vscode.LanguageModelDataPart(new TextEncoder().encode(payload), 'usage'),
+            );
+          } catch (err) {
+            deps.logger.warn('Failed to surface usage data part', {
+              error: String(err),
+            });
+          }
         }
       }
 

@@ -95,6 +95,13 @@ class LanguageModelToolResultPart {
   }
 }
 
+class LanguageModelDataPart {
+  constructor(data, mimeType) {
+    this.data = data;
+    this.mimeType = mimeType;
+  }
+}
+
 class LanguageModelChatMessage {
   constructor(role, content, name) {
     this.role = role;
@@ -161,6 +168,7 @@ const vscodeStub = {
   LanguageModelTextPart,
   LanguageModelToolCallPart,
   LanguageModelToolResultPart,
+  LanguageModelDataPart,
   LanguageModelChatMessage,
   LanguageModelChatMessageRole,
   LanguageModelChatToolMode,

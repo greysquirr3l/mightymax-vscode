@@ -23,10 +23,7 @@
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 
-import {
-  pumpProviderStream,
-  type StreamPumpDeps,
-} from './stream-pump.js';
+import { pumpProviderStream, type StreamPumpDeps } from './stream-pump.js';
 
 function makeProgress() {
   const parts: unknown[] = [];
@@ -150,11 +147,7 @@ describe('pumpProviderStream — finishReason flush paths', () => {
       recordToolUsage: () => undefined,
     };
     const result = await pumpProviderStream(deps);
-    strictEqual(
-      result.toolCallIds.length,
-      1,
-      'stranded tool call must be flushed on stream end',
-    );
+    strictEqual(result.toolCallIds.length, 1, 'stranded tool call must be flushed on stream end');
   });
 
   it('flushes the accumulator before rethrowing on a mid-stream transport error', async () => {
@@ -200,10 +193,7 @@ describe('pumpProviderStream — finishReason flush paths', () => {
         (r as { callId: unknown }).callId === 'call_pre_error'
       );
     });
-    ok(
-      callsReported.length >= 1,
-      'in-flight tool call must be flushed before the error',
-    );
+    ok(callsReported.length >= 1, 'in-flight tool call must be flushed before the error');
   });
 });
 
@@ -235,6 +225,96 @@ describe('pumpProviderStream — never emits usage as chat text', () => {
         );
       }
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T26 (issue #46): usage surfaces as a `LanguageModelDataPart`
+// with the `'usage'` MIME type — matching the convention used by
+// VS Code's built-in Copilot BYOK providers. This makes the usage
+// visible to any extension consuming our response stream and
+// future-proofs us if/when VS Code adds a native decode for
+// provider-stream usage data parts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pumpProviderStream — T26 usage data part', () => {
+  it('emits a LanguageModelDataPart with mimeType="usage" carrying the usage JSON', async () => {
+    const progress = makeProgress();
+    const deps: StreamPumpDeps = {
+      events: asyncIterable([
+        { textDelta: 'hi' },
+        {
+          usage: {
+            promptTokens: 42,
+            completionTokens: 7,
+            cacheReadTokens: 11,
+            cacheCreateTokens: 0,
+          },
+        },
+        { finishReason: 'stop' },
+      ]),
+      progress: progress.progress,
+      thinkingStyle: 'anthropic',
+      logger: noopLogger(),
+      recordToolUsage: () => undefined,
+    };
+    await pumpProviderStream(deps);
+
+    const usageParts = progress.parts.filter(
+      (p) =>
+        typeof p === 'object' &&
+        p !== null &&
+        (p as { constructor?: { name?: string } }).constructor?.name === 'LanguageModelDataPart' &&
+        (p as { mimeType?: unknown }).mimeType === 'usage',
+    );
+    strictEqual(usageParts.length, 1, 'expected exactly one usage data part');
+
+    const usage = usageParts[0] as {
+      data: Uint8Array;
+      mimeType: string;
+    };
+    strictEqual(usage.mimeType, 'usage');
+    const decoded = JSON.parse(new TextDecoder().decode(usage.data)) as {
+      promptTokens: number;
+      completionTokens: number;
+      cacheReadTokens: number;
+      cacheCreateTokens: number;
+    };
+    strictEqual(decoded.promptTokens, 42);
+    strictEqual(decoded.completionTokens, 7);
+    strictEqual(decoded.cacheReadTokens, 11);
+    strictEqual(decoded.cacheCreateTokens, 0);
+  });
+
+  it('coerces undefined cache fields to 0 (T26 invariant)', async () => {
+    const progress = makeProgress();
+    const deps: StreamPumpDeps = {
+      events: asyncIterable([
+        {
+          usage: { promptTokens: 1, completionTokens: 1 },
+        },
+        { finishReason: 'stop' },
+      ]),
+      progress: progress.progress,
+      thinkingStyle: 'anthropic',
+      logger: noopLogger(),
+      recordToolUsage: () => undefined,
+    };
+    await pumpProviderStream(deps);
+
+    const usagePart = progress.parts.find(
+      (p) =>
+        typeof p === 'object' &&
+        p !== null &&
+        (p as { constructor?: { name?: string } }).constructor?.name === 'LanguageModelDataPart' &&
+        (p as { mimeType?: unknown }).mimeType === 'usage',
+    );
+    ok(usagePart, 'expected a usage data part');
+    const decoded = JSON.parse(
+      new TextDecoder().decode((usagePart as unknown as { data: Uint8Array }).data),
+    ) as { cacheReadTokens: number; cacheCreateTokens: number };
+    strictEqual(decoded.cacheReadTokens, 0);
+    strictEqual(decoded.cacheCreateTokens, 0);
   });
 });
 

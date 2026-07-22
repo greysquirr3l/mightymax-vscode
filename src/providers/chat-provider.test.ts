@@ -339,8 +339,13 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     );
 
     // T19: usage is no longer emitted as a visible chat text part.
-    // 2 text parts ('Hello, ' + 'world!') and 1 tool-call part.
-    strictEqual(parts.length, 3);
+    // T26: usage IS emitted as a `LanguageModelDataPart` with the
+    // `'usage'` MIME type so any consumer of the response stream
+    // (future host decoders, third-party agent loops, etc.) can
+    // see the token counts. So we expect 4 parts here:
+    // 2 text parts ('Hello, ' + 'world!'), 1 tool-call part,
+    // and 1 usage data part.
+    strictEqual(parts.length, 4);
 
     const textParts = parts.filter(
       (p): p is vscode.LanguageModelTextPart => p instanceof vscode.LanguageModelTextPart,
@@ -857,7 +862,7 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// provideTokenCount
+// provideTokenCount — T26 (issue #46) hardening
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('ChatProvider.provideTokenCount', () => {
@@ -926,6 +931,123 @@ describe('ChatProvider.provideTokenCount', () => {
       m3Count !== m25Count,
       `expected family-aware token counts to differ; got M3=${m3Count} M2.5=${m25Count}`,
     );
+  });
+
+  it('returns 0 for empty string input (T26 invariant)', async () => {
+    const logger = makeRecordingLogger();
+    const provider = new ChatProvider(
+      logger,
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([M3]),
+    );
+    const count = await provider.provideTokenCount(
+      makeModelInfo('MiniMax-M3'),
+      '',
+      new vscode.CancellationTokenSource().token,
+    );
+    strictEqual(count, 0, 'empty input must return exactly 0');
+  });
+
+  it('returns 0 for an empty LanguageModelChatRequestMessage (T26 invariant)', async () => {
+    const logger = makeRecordingLogger();
+    const provider = new ChatProvider(
+      logger,
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([M3]),
+    );
+    const msg = new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, '');
+    const count = await provider.provideTokenCount(
+      makeModelInfo('MiniMax-M3'),
+      msg,
+      new vscode.CancellationTokenSource().token,
+    );
+    strictEqual(count, 0, 'empty message must return exactly 0');
+  });
+
+  it('falls back to 1 instead of throwing when the catalog lookup throws (T26 invariant)', async () => {
+    const logger = makeRecordingLogger();
+    const explodingCatalog = {
+      getModel: () => {
+        throw new Error('catalog offline');
+      },
+      getAllModels: () => [],
+      onDidChange: () => ({ dispose: () => undefined }),
+    };
+    const provider = new ChatProvider(
+      logger,
+      makeProvider(),
+      makeFakeClient([]),
+      explodingCatalog as unknown as ModelCatalog,
+    );
+    const count = await provider.provideTokenCount(
+      makeModelInfo('MiniMax-M3'),
+      'hello world',
+      new vscode.CancellationTokenSource().token,
+    );
+    ok(Number.isInteger(count), 'fallback count must be an integer');
+    ok(count >= 1, 'fallback count must be >= 1 so consumers never see 0');
+    const sawWarn = logger.calls.some(
+      (c) => c.level === 'warn' && c.message.includes('provideTokenCount failed'),
+    );
+    ok(sawWarn, 'expected a structured warn log on fallback');
+  });
+
+  it('does not throw when an unknown part type is mixed with text (T26 invariant)', async () => {
+    const logger = makeRecordingLogger();
+    const provider = new ChatProvider(
+      logger,
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([M3]),
+    );
+    // A realistic multimodal message: text + an image data part.
+    // VS Code's `LanguageModelDataPart` for images has its own
+    // `mimeType`/`data` fields (not `kind`/`data`); the host
+    // passes it through unchanged. Our `extractMessageText` must
+    // skip the image part (we can't tokenize bytes without a
+    // real tokenizer) and count only the text.
+    const msg = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      content: [
+        {
+          mimeType: 'image/png',
+          data: new Uint8Array([1, 2, 3]),
+        } as unknown as vscode.LanguageModelTextPart,
+        new vscode.LanguageModelTextPart('describe this image please'),
+      ],
+    } as unknown as vscode.LanguageModelChatRequestMessage;
+    const count = await provider.provideTokenCount(
+      makeModelInfo('MiniMax-M3'),
+      msg,
+      new vscode.CancellationTokenSource().token,
+    );
+    ok(Number.isInteger(count), 'multimodal count must be an integer');
+    ok(count > 0, 'multimodal count must be > 0 because the text part has length');
+  });
+
+  it('tokenizes a tool-call message without throwing on circular input (T26 invariant)', async () => {
+    const logger = makeRecordingLogger();
+    const provider = new ChatProvider(
+      logger,
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([M3]),
+    );
+    // Build a circular tool-call input that would crash JSON.stringify.
+    const circular: Record<string, unknown> = { name: 'search' };
+    circular.self = circular;
+    const msg = new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.Assistant, [
+      new vscode.LanguageModelToolCallPart('call-1', 'search', circular),
+    ]);
+    const count = await provider.provideTokenCount(
+      makeModelInfo('MiniMax-M3'),
+      msg,
+      new vscode.CancellationTokenSource().token,
+    );
+    ok(Number.isInteger(count), 'circular-input count must be an integer');
+    ok(count >= 1, 'circular-input count must be >= 1');
   });
 });
 

@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]*.[0-9]*.[0-9]*"
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g., v0.1.0)"
+        description: 'Release tag (e.g., v0.1.0)'
         required: true
         type: string
 
@@ -19,8 +19,14 @@ concurrency:
 # Scorecard flags any top-level write scope, so the GITHUB_TOKEN
 # stays read-only at the workflow level. Only the `release` job
 # needs `contents: write` (it creates the GitHub Release); the
-# `publish` job uses the per-project PAT secrets (VSCE_PAT/OVSX_PAT)
-# for marketplace auth and never touches GITHUB_TOKEN write paths.
+# `publish` job uses the per-project VSCE_PAT secret for
+# marketplace auth and never touches GITHUB_TOKEN write paths.
+#
+# Open VSX publishing is currently disabled — see the commented
+# "Publish to Open VSX" step in the publish job. Re-enable when
+# the `greysquirr3l` namespace has been granted on Open VSX
+# (https://github.com/EclipseFdn/open-vsx.org/issues) and the
+# OVSX_PAT secret has been provisioned.
 permissions:
   contents: read
 
@@ -179,8 +185,11 @@ jobs:
       # Pinned to match @vscode/vsce in package.json devDependencies so
       # the lockfile-driven local build and the CI publish install use
       # the same dependency tree (markdown-it ^14.2.0, xml2js ^0.5.0).
-      - name: Install vsce and ovsx
-        run: npm install -g @vscode/vsce@3.9.2 ovsx@latest
+      # `ovsx` was removed from this install line in tandem with the
+      # commented-out "Publish to Open VSX" step further down — re-add
+      # when Open VSX publishing is re-enabled.
+      - name: Install vsce
+        run: npm install -g @vscode/vsce@3.9.2
 
       - name: Publish to VS Code Marketplace
         if: ${{ !contains(needs.resolve-tag.outputs.tag, '-') }}
@@ -204,15 +213,23 @@ jobs:
           fi
           vsce publish --pre-release --packagePath mighty-max.vsix --pat "${VSCE_PAT}"
 
-      - name: Publish to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          if [[ -z "${OVSX_PAT}" ]]; then
-            echo "Warning: OVSX_PAT secret not set, skipping Open VSX publish"
-            exit 0
-          fi
-          ovsx publish mighty-max.vsix --pat "${OVSX_PAT}"
+      # Open VSX publishing is temporarily disabled while the
+      # `greysquirr3l` namespace claim is pending approval at
+      # https://github.com/EclipseFdn/open-vsx.org/issues and the
+      # OVSX_PAT secret has not been provisioned. Re-enable when
+      # both gates are clear: drop the leading `# ` from each
+      # line below, add `ovsx@latest` back to the install step
+      # above, and restore the OVSX_PAT mention in the
+      # workflow-level comment at the top of this file.
+      # - name: Publish to Open VSX
+      #   env:
+      #     OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      #   run: |
+      #     if [[ -z "${OVSX_PAT}" ]]; then
+      #       echo "Warning: OVSX_PAT secret not set, skipping Open VSX publish"
+      #       exit 0
+      #     fi
+      #     ovsx publish mighty-max.vsix --pat "${OVSX_PAT}"
 
   release:
     name: Create GitHub Release
@@ -241,7 +258,7 @@ jobs:
         with:
           tag_name: ${{ needs.resolve-tag.outputs.tag }}
           target_commitish: ${{ needs.resolve-tag.outputs.sha }}
-          name: "Mighty Max ${{ needs.resolve-tag.outputs.tag }}"
+          name: 'Mighty Max ${{ needs.resolve-tag.outputs.tag }}'
           draft: false
           prerelease: ${{ contains(needs.resolve-tag.outputs.tag, '-') }}
           generate_release_notes: true

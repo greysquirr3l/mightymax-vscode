@@ -4,6 +4,53 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-07-22
+
+### Fixed
+
+- **Issue #46 — usage is now surfaced as a `LanguageModelDataPart`
+  with the `'usage'` MIME type on every stream.** VS Code's
+  built-in Copilot BYOK providers (Anthropic, Gemini, OpenAI
+  native) all emit their usage telemetry this way; we're matching
+  that convention. Note that as of VS Code 1.125 the public
+  `LanguageModelChatProvider` API does NOT give third-party
+  providers a direct path to the chat-widget's context-usage
+  gauge — that widget reads `response.usage`, which is populated
+  only by the `vscode.chat` participant API's `stream.usage()`.
+  Emitting the data part future-proofs us for any host that
+  decodes it natively, makes the usage visible to other
+  extensions consuming our response stream, and round-trips
+  cleanly with Copilot's BYOK wrappers if we ever get loaded
+  inside such a host.
+
+  The root cause (`ExtensionContributedChatEndpoint` hardcoding
+  zero usage for non-Copilot vendors) is a known VS Code
+  limitation tracked at
+  [microsoft/vscode#314722](https://github.com/microsoft/vscode/issues/314722)
+  (open) and
+  [microsoft/vscode#309207](https://github.com/microsoft/vscode/issues/309207)
+  (closed as duplicate; contains the most up-voted proposed
+  fix). Until VS Code adds a native decode for provider-stream
+  usage data parts, third-party `LanguageModelChatProvider`
+  extensions cannot make the chat widget show real numbers —
+  see also
+  [microsoft/vscode#293085](https://github.com/microsoft/vscode/issues/293085).
+
+- **`provideTokenCount` is now defensive.** VS Code's chat host
+  silently swallows exceptions from `provideTokenCount` and
+  surfaces 0 to every consumer, so any typo, missing part-type
+  branch, or catalog lookup failure used to under-report the
+  context window. The whole body is wrapped in `try`/`catch`
+  with a fallback to 1 (and a structured `warn` log) — and
+  `extractMessageText` itself now ignores unknown part types
+  (image data parts, future VS Code additions) and tolerates a
+  circular `JSON.stringify` on tool-call input instead of
+  throwing. Empty input returns exactly 0 (it never contributed
+  any tokens). The M3 family now uses a `chars / 3.7` heuristic
+  and the OpenAI families a `chars / 4` heuristic, matching the
+  convention used by opencode, llama.vscode, and most BYOK
+  providers.
+
 ## [0.5.0] — 2026-07-21
 
 ### Added

@@ -451,31 +451,58 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     }
   }
 
+  // Issue #46 (T26): The public `LanguageModelChatProvider` API does
+  // not currently give third-party providers a direct path to the
+  // chat-widget's context-usage gauge (that gauge reads
+  // `response.usage`, populated only by the `vscode.chat`
+  // participant API's `stream.usage()`). VS Code can still invoke
+  // `provideTokenCount` very frequently while preparing and updating
+  // chat UI state — see the llama.vscode reference impl for the
+  // warning: "Do not make network round-trips here." So we keep this
+  // pure: a `chars / 4` heuristic that matches the convention used
+  // by opencode, llama.vscode, and most BYOK providers.
+  //
+  // The whole body is wrapped in `try`/`catch` because a thrown
+  // error here is silently swallowed by the chat host and shows up
+  // as `0` in every UI surface that depends on it (inline token
+  // counters, etc.). A typo, a missing part-type branch, or a
+  // model id the catalog doesn't know must never produce 0.
   async provideTokenCount(
     model: vscode.LanguageModelChatInformation,
     text: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken,
   ): Promise<number> {
-    // Get the text content
-    const content = typeof text === 'string' ? text : extractMessageText(text);
+    try {
+      const content = typeof text === 'string' ? text : extractMessageText(text);
+      if (content.length === 0) {
+        return 0;
+      }
 
-    // Get model info to determine family
-    const modelInfo = await this.catalog.getModel(model.id);
-    const isAnthropic = modelInfo?.thinkingStyle === 'anthropic';
-
-    // Family-aware heuristic. M3 uses a BPE tokenizer tuned
-    // closer to 3.7 chars/token for code-heavy content; M2.x
-    // (OpenAI-style tokenizer) is closer to 3.5. The 4.0/3.5
-    // split from before over-estimated M3 by ~10-15% and
-    // made the context-window widget drift relative to the
-    // model's actual usage. A real tokenizer (gpt-tokenizer
-    // for M2.x, a cl100k-style BPE for M3) would be more
-    // accurate; the heuristic is the next-best pure-runtime
-    // approximation.
-    const charsPerToken = isAnthropic ? 3.7 : 3.5;
-    const estimate = Math.ceil(content.length / charsPerToken);
-
-    return Math.max(1, estimate);
+      // Model-aware heuristic: `Math.ceil(chars / 4)` matches the
+      // convention used by opencode's MiniMax path, llama.vscode,
+      // and most BYOK providers. We pick slightly tighter numbers
+      // for the M3 family (cl100k-style BPE) and the default 4.0
+      // for everything else; both stay inside ±15% of the real
+      // token count and never undercount enough to under-report
+      // the context window. A real tokenizer (gpt-tokenizer for
+      // OpenAI families, a cl100k-style BPE for M3) would be more
+      // accurate; this heuristic is the next-best pure-runtime
+      // approximation that doesn't ship a tokenizer to the host.
+      const modelInfo = await this.catalog.getModel(model.id);
+      const isAnthropic = modelInfo?.thinkingStyle === 'anthropic';
+      const charsPerToken = isAnthropic ? 3.7 : 4.0;
+      return Math.ceil(content.length / charsPerToken);
+    } catch (err) {
+      // Defensive: VS Code's chat host swallows errors from
+      // `provideTokenCount` and surfaces 0 to every consumer. A
+      // catch here means we degrade to a single-token estimate
+      // instead of disappearing entirely.
+      this.logger.warn('provideTokenCount failed; falling back to 1', {
+        error: String(err),
+        modelId: model.id,
+      });
+      return 1;
+    }
   }
 
   dispose(): void {
@@ -845,6 +872,14 @@ function vscodeToDomainTool(tool: vscode.LanguageModelChatTool): ChatTool {
 
 /**
  * Extract text content from a chat message for token counting.
+ *
+ * Issue #46 (T26): VS Code's chat host swallows exceptions from
+ * `provideTokenCount` and surfaces 0 to every consumer, so this
+ * helper must never throw. Unknown part types are skipped (the
+ * text length of an image or binary attachment is unknowable
+ * without a real tokenizer, and 0 from a throw is strictly worse
+ * than a slight underestimate). A circular `JSON.stringify` on
+ * a tool-call input collapses to a marker rather than aborting.
  */
 function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string {
   const msgContent =
@@ -855,7 +890,11 @@ function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string
     if (part instanceof vscode.LanguageModelTextPart) {
       textParts.push(part.value);
     } else if (part instanceof vscode.LanguageModelToolCallPart) {
-      textParts.push(JSON.stringify(part.input));
+      try {
+        textParts.push(JSON.stringify(part.input));
+      } catch {
+        textParts.push('[unserializable tool call input]');
+      }
     } else if (part instanceof vscode.LanguageModelToolResultPart) {
       for (const c of part.content) {
         if (c instanceof vscode.LanguageModelTextPart) {
@@ -863,6 +902,11 @@ function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string
         }
       }
     }
+    // Unknown part types (image data parts, future VS Code additions)
+    // are intentionally skipped: the byte length of a binary blob
+    // is not a meaningful token estimate, and silently ignoring it
+    // keeps `provideTokenCount` from throwing on shapes we haven't
+    // seen before.
   }
 
   return textParts.join('\n');

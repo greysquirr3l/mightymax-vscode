@@ -183,7 +183,28 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.Disposable.from({ dispose: () => logger.info('Mighty Max extension deactivated') }),
   );
 
-  logger.info('Mighty Max extension activated', { vendor: 'minimax', baseUrl: baseUrl() });
+  // T27 capability detection: log the runtime's host-side
+  // affordances so support can diagnose the "thinking is
+  // verbose" symptom (issue #46) without having to repro it.
+  // `LanguageModelThinkingPart` (proposed API in
+  // `vscode.proposed.languageModelThinkingPart.d.ts`) lands in
+  // VS Code 1.128+; the stream-pump falls back to a JSON data
+  // part on hosts where it's missing so users on 1.125–1.127
+  // still see the thinking content (just inline rather than
+  // collapsible).
+  const hasThinkingPartCtor =
+    typeof (
+      vscode as unknown as {
+        LanguageModelThinkingPart?: unknown;
+      }
+    ).LanguageModelThinkingPart === 'function';
+  logger.info('Mighty Max host capabilities', {
+    vendor: 'minimax',
+    baseUrl: baseUrl(),
+    vscodeVersion: vscode.version,
+    hasLanguageModelThinkingPart: hasThinkingPartCtor,
+    thinkingSurface: hasThinkingPartCtor ? 'thinking-part' : 'data-part-fallback',
+  });
 
   // T20 activation nudge — fires at most once after activation
   // when an API key is stored and the BYOK utility settings are

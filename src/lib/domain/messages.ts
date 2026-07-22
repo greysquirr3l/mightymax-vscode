@@ -286,8 +286,7 @@ export function mapRequestToMiniMax(
           // user-role wire message — the hoist is purely additive.
           warnings.push({
             kind: 'unsupported-content',
-            reason:
-              'tool-call in user request content (hoisted into synthesized assistant turn)',
+            reason: 'tool-call in user request content (hoisted into synthesized assistant turn)',
           });
           const hoistedId = part.toolCall.callId;
           const hoistedName = part.toolCall.name;
@@ -604,9 +603,7 @@ export function truncateToolResults(
   return { messages: out, truncatedCount, droppedChars };
 }
 
-function extractTextFromParts(
-  parts: ReadonlyArray<MiniMaxWireContentPart>,
-): string {
+function extractTextFromParts(parts: ReadonlyArray<MiniMaxWireContentPart>): string {
   return parts
     .filter((p): p is Extract<MiniMaxWireContentPart, { type: 'text' }> => p.type === 'text')
     .map((p) => p.text)
@@ -682,6 +679,14 @@ export function mapStreamDeltaToResponseParts(
   //    splits the Anthropic stream into per-block deltas) — same
   //    treatment as reasoning content. Preserve the signature if
   //    present so it can be replayed in the next request.
+  //
+  // The signature may arrive in a separate event from the delta
+  // (Anthropic's wire protocol sends `signature_delta` as its own
+  // chunk). Emit it as a standalone thinking part with `value: ''`
+  // when it arrives on its own so the stream-pump can attach it
+  // to the most recent thinking accumulator — that keeps the
+  // signature flowing into the next request's Anthropic wire
+  // field without dropping it on the floor.
   if (delta.thinkingDelta !== undefined && delta.thinkingDelta.length > 0) {
     const thinkingPart: ChatResponsePart = {
       type: 'thinking',
@@ -692,6 +697,14 @@ export function mapStreamDeltaToResponseParts(
         delta.thinkingSignature;
     }
     parts.push(thinkingPart);
+  } else if (delta.thinkingSignature) {
+    // Standalone signature: surface as a zero-length thinking
+    // part so the stream-pump's accumulator picks it up.
+    parts.push({
+      type: 'thinking',
+      value: '',
+      signature: delta.thinkingSignature,
+    });
   }
 
   // 4. Usage data — normalize and emit as a usage response part.

@@ -117,7 +117,22 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
           deps.logger.debug('Text delta', { length: typed.value.length });
           deps.progress.report(toLanguageModelTextPart(typed.value));
         } else if (typed.type === 'thinking') {
-          reportThinkingPart(deps.progress, typed, deps.logger);
+          if (typed.value.length > 0) {
+            reportThinkingPart(deps.progress, typed, deps.logger);
+          } else if (typed.signature) {
+            // Standalone signature: Anthropic may emit the
+            // signature_delta on its own chunk (no `thinking_delta`
+            // paired with it). Emit a zero-length
+            // `LanguageModelThinkingPart` carrying the signature
+            // in `metadata.signature` so the chat widget can
+            // attach it to the prior thinking block — the same
+            // pattern Copilot's Anthropic BYOK provider uses
+            // (`anthropicProvider.ts:762-769`).
+            reportThinkingPart(deps.progress, typed, deps.logger);
+          } else {
+            // Truly empty (no value, no signature) — nothing to do.
+            continue;
+          }
           if (!currentThinking) {
             const accumulated: { thinking: string; signature?: string } = {
               thinking: typed.value,
@@ -227,42 +242,103 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
 }
 
 /**
- * Report a thinking event to the host. Until
- * `LanguageModelThinkingPart` lands in `@types/vscode`, we use
- * `LanguageModelDataPart.json(value, mime)` with a discriminating
- * MIME so the chat UI routes the part to the thinking panel
- * rather than the visible-text lane. The runtime is present on
- * VS Code 1.128+; the type is missing from `@types/vscode 1.104`,
- * so the constructor is resolved via a small cast.
+ * Report a thinking event to the host. The preferred surface
+ * is `LanguageModelThinkingPart` — VS Code's chat widget routes
+ * it to a collapsible "click to show" section (see
+ * `ChatThinkingContentPart extends ChatCollapsibleContentPart`
+ * in upstream's
+ * `src/vs/workbench/contrib/chat/browser/widget/chatContentParts/chatThinkingContentPart.ts`),
+ * matching the affordance users see with Claude and ChatGPT.
+ *
+ * The runtime constructor is present on VS Code 1.128+ but the
+ * type is not yet stable in `@types/vscode 1.125.0` — it lives
+ * in `vscode.proposed.languageModelThinkingPart.d.ts` upstream.
+ * We resolve the constructor via a small cast (the same pattern
+ * we use for `LanguageModelDataPart`); once the proposed API
+ * stabilizes, the cast drops and the call site becomes typed.
+ *
+ * Fallback for VS Code < 1.128: the proposed API isn't on the
+ * runtime, so we emit a `LanguageModelDataPart` with the
+ * previous `application/vnd.minimax.thinking+json` MIME. This
+ * is the same surface the extension used before T27 — the
+ * chat widget renders it as raw inline text (a 3-version
+ * upgrade window of "verbose but visible" rather than the
+ * pre-T27 "JSON-wrapped verbose" — the chat widget recognizes
+ * a string-only payload with no nested object and renders the
+ * `value` field directly).
+ *
+ * The Anthropic signature rides on `.metadata.signature` (when
+ * we have the thinking-part surface) or as a sibling field on
+ * the JSON payload (when we fall back to the data part), the
+ * same pattern Copilot's Anthropic BYOK provider uses
+ * (`extensions/copilot/src/extension/byok/vscode-node/anthropicProvider.ts`
+ * lines 762-769) so a downstream consumer that wants to capture
+ * the full thinking+signature pair for replay can do so via the
+ * same field.
  */
 function reportThinkingPart(
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
   part: { type: 'thinking'; value: string; signature?: string },
   logger: Logger,
 ): void {
+  type ThinkingCtor = new (
+    value: string | string[],
+    id?: string,
+    metadata?: { readonly [key: string]: unknown },
+  ) => unknown;
   type DataCtor = new (data: Uint8Array, mime: string) => unknown;
-  const ctor = (vscode as unknown as { LanguageModelDataPart?: DataCtor }).LanguageModelDataPart;
-  const payload = part.signature
-    ? { thinking: part.value, signature: part.signature }
-    : { thinking: part.value };
-  if (typeof ctor === 'function') {
+
+  const thinkingCtor = (vscode as unknown as { LanguageModelThinkingPart?: ThinkingCtor })
+    .LanguageModelThinkingPart;
+  const dataCtor = (vscode as unknown as { LanguageModelDataPart?: DataCtor })
+    .LanguageModelDataPart;
+
+  if (typeof thinkingCtor === 'function') {
     try {
-      const json = new TextEncoder().encode(JSON.stringify(payload));
+      const metadata: { signature?: string } =
+        part.signature !== undefined ? { signature: part.signature } : {};
       progress.report(
-        new ctor(json, 'application/vnd.minimax.thinking+json') as vscode.LanguageModelResponsePart,
+        new thinkingCtor(part.value, undefined, metadata) as vscode.LanguageModelResponsePart,
       );
       return;
     } catch (err) {
-      logger.warn('LanguageModelDataPart construction failed; falling back to no-op', {
+      logger.warn('LanguageModelThinkingPart construction failed; falling back to data part', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
-  // No-op: the cached `currentThinking` still feeds the LRU
-  // replay cache so the thinking signature survives into the
-  // next request. When LanguageModelThinkingPart lands in
-  // @types/vscode, swap this fallback for the typed
-  // constructor.
+
+  // VS Code < 1.128 fallback: emit a data part with the same
+  // MIME we used pre-T27. The thinking text is in the JSON
+  // payload as `thinking`; the signature rides on
+  // `signature` (when present). The chat widget renders this
+  // as raw inline text — verbose but visible, which is
+  // strictly better than silently dropping the reasoning.
+  if (typeof dataCtor === 'function') {
+    try {
+      const payload: { thinking: string; signature?: string } = {
+        thinking: part.value,
+      };
+      if (part.signature !== undefined) payload.signature = part.signature;
+      const json = new TextEncoder().encode(JSON.stringify(payload));
+      progress.report(
+        new dataCtor(
+          json,
+          'application/vnd.minimax.thinking+json',
+        ) as vscode.LanguageModelResponsePart,
+      );
+    } catch (err) {
+      logger.warn('LanguageModelDataPart construction failed; thinking dropped', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // If both constructors are missing, the cached `currentThinking`
+  // at the pump scope still feeds the LRU replay cache so the
+  // thinking signature survives into the next request — at the
+  // cost of the visible-text affordance. This branch is
+  // unreachable on any VS Code that supports the
+  // LanguageModelChatProvider API.
 }
 
 /**

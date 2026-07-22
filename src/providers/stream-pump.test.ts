@@ -21,7 +21,7 @@
  */
 
 import { describe, it } from 'node:test';
-import { ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 
 import { pumpProviderStream, type StreamPumpDeps } from './stream-pump.js';
 
@@ -315,6 +315,139 @@ describe('pumpProviderStream — T26 usage data part', () => {
     ) as { cacheReadTokens: number; cacheCreateTokens: number };
     strictEqual(decoded.cacheReadTokens, 0);
     strictEqual(decoded.cacheCreateTokens, 0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T27 (verbose thinking): M3 thinking surfaces as a
+// `LanguageModelThinkingPart` on VS Code 1.128+, and falls back
+// to `LanguageModelDataPart(application/vnd.minimax.thinking+json)`
+// on hosts where the proposed API isn't yet available (VS Code
+// 1.125–1.127 upgrade window). Either way, the LRU replay
+// accumulator (`currentThinking` in the pump scope) still gets
+// the signature for Anthropic wire replay.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('pumpProviderStream — T27 thinking surface', () => {
+  it('emits a LanguageModelThinkingPart when the constructor is present', async () => {
+    // The stub already exposes LanguageModelThinkingPart; this
+    // test asserts the happy path so a regression in the
+    // primary surface is caught.
+    const progress = makeProgress();
+    const deps: StreamPumpDeps = {
+      events: asyncIterable([
+        { thinkingDelta: 'planning the next step' },
+        { thinkingSignature: 'sig_xyz' },
+        { textDelta: 'On it.' },
+        { finishReason: 'stop' },
+      ]),
+      progress: progress.progress,
+      thinkingStyle: 'anthropic',
+      logger: noopLogger(),
+      recordToolUsage: () => undefined,
+    };
+    await pumpProviderStream(deps);
+
+    const thinkingParts = progress.parts.filter(
+      (p): p is { value: string | string[]; metadata?: { signature?: string } } =>
+        (p as { constructor?: { name?: string } }).constructor?.name ===
+        'LanguageModelThinkingPart',
+    );
+    strictEqual(thinkingParts.length, 2);
+    const deltaPart = thinkingParts[0];
+    const signaturePart = thinkingParts[1];
+    ok(deltaPart, 'expected a delta thinking part');
+    ok(signaturePart, 'expected a signature thinking part');
+    strictEqual(deltaPart.value, 'planning the next step');
+    deepStrictEqual(deltaPart.metadata, {});
+    strictEqual(signaturePart.value, '');
+    deepStrictEqual(signaturePart.metadata, { signature: 'sig_xyz' });
+  });
+
+  it('falls back to LanguageModelDataPart when LanguageModelThinkingPart is missing', async () => {
+    // Simulate VS Code < 1.128 by deleting the proposed-API
+    // constructor from the underlying stub exports. The
+    // stream-pump must fall back to the JSON data-part surface
+    // (the pre-T27 behavior) instead of silently dropping the
+    // thinking.
+    //
+    // We mutate the source exports object directly: `__importStar`
+    // in the compiled chat-provider/stream-pump wrappers reads
+    // each property lazily from the source, so deleting here
+    // makes the wrappers see `undefined` too.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const stubExports = require('vscode') as Record<string, unknown>;
+    const ThinkingCtor = stubExports['LanguageModelThinkingPart'];
+    delete stubExports['LanguageModelThinkingPart'];
+
+    try {
+      const progress = makeProgress();
+      const deps: StreamPumpDeps = {
+        events: asyncIterable([
+          { thinkingDelta: 'planning the next step' },
+          { thinkingSignature: 'sig_xyz' },
+          { textDelta: 'On it.' },
+          { finishReason: 'stop' },
+        ]),
+        progress: progress.progress,
+        thinkingStyle: 'anthropic',
+        logger: noopLogger(),
+        recordToolUsage: () => undefined,
+      };
+      await pumpProviderStream(deps);
+
+      // No LanguageModelThinkingPart on hosts without 1.128+.
+      const thinkingParts = progress.parts.filter(
+        (p) =>
+          (p as { constructor?: { name?: string } }).constructor?.name ===
+          'LanguageModelThinkingPart',
+      );
+      strictEqual(
+        thinkingParts.length,
+        0,
+        'expected no LanguageModelThinkingPart on hosts without the proposed API',
+      );
+
+      // Two data-part emissions: one for the delta, one for the
+      // standalone signature (each carrying the same JSON
+      // payload as the pre-T27 stream).
+      const dataParts = progress.parts.filter(
+        (p) =>
+          (p as { constructor?: { name?: string } }).constructor?.name ===
+            'LanguageModelDataPart' &&
+          (p as { mimeType?: unknown }).mimeType === 'application/vnd.minimax.thinking+json',
+      );
+      strictEqual(
+        dataParts.length,
+        2,
+        'expected one delta data part and one signature data part on the fallback surface',
+      );
+
+      const [deltaPart, signaturePart] = dataParts as Array<{
+        data: Uint8Array;
+      }>;
+      ok(deltaPart, 'expected a delta data part');
+      ok(signaturePart, 'expected a signature data part');
+      const decodedDelta = JSON.parse(new TextDecoder().decode(deltaPart.data)) as {
+        thinking: string;
+        signature?: string;
+      };
+      strictEqual(decodedDelta.thinking, 'planning the next step');
+      strictEqual(
+        decodedDelta.signature,
+        undefined,
+        'the delta data part should not carry a signature when the signature is its own chunk',
+      );
+
+      const decodedSignature = JSON.parse(new TextDecoder().decode(signaturePart.data)) as {
+        thinking: string;
+        signature?: string;
+      };
+      strictEqual(decodedSignature.thinking, '');
+      strictEqual(decodedSignature.signature, 'sig_xyz');
+    } finally {
+      stubExports['LanguageModelThinkingPart'] = ThinkingCtor;
+    }
   });
 });
 

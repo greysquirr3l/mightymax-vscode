@@ -1265,17 +1265,18 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
 describe('ChatProvider T19 — response-part correctness', () => {
   it('reports thinking parts via progress.report, NEVER as LanguageModelTextPart', async () => {
     // T19 invariant 1: thinking content must NEVER appear as a
-    // LanguageModelTextPart value. The provider must surface the
-    // thinking through progress.report (currently via a
-    // LanguageModelDataPart with a distinguishing MIME; will move
-    // to LanguageModelThinkingPart when it lands in @types/vscode).
+    // LanguageModelTextPart value. The provider surfaces the
+    // thinking through progress.report as a
+    // `LanguageModelThinkingPart` so the chat widget renders it
+    // as a collapsible "click to show" section (the same
+    // affordance Claude and ChatGPT users see).
     //
     // The test stubs in the unit runner do not yet export
-    // `LanguageModelDataPart`, so the chat-provider falls back to
-    // the cached LRU replay path (thinking is preserved into the
-    // next request's Anthropic wire signature field). The
-    // NEGATIVE assertion on the visible-text lane is the load-bearing
-    // invariant we assert here.
+    // `LanguageModelThinkingPart`, so the chat-provider falls
+    // back to the cached LRU replay path (thinking is preserved
+    // into the next request's Anthropic wire signature field).
+    // The NEGATIVE assertion on the visible-text lane is the
+    // load-bearing invariant we assert here.
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
     const client = makeFakeClient([
@@ -1314,6 +1315,90 @@ describe('ChatProvider T19 — response-part correctness', () => {
         `thinking content leaked into a LanguageModelTextPart value: ${tp.value}`,
       );
     }
+  });
+
+  it('surfaces thinking as LanguageModelThinkingPart when the runtime supports it (T27)', async () => {
+    // T27: VS Code's chat widget renders `LanguageModelThinkingPart`
+    // as a collapsible "click to show" section (the Claude /
+    // ChatGPT affordance). The runtime constructor is present on
+    // VS Code 1.128+ even though it's not yet stable in
+    // `@types/vscode 1.125.0` — see
+    // `vscode.proposed.languageModelThinkingPart.d.ts`. The
+    // vscode-stub exposes a stub `LanguageModelThinkingPart`
+    // class so this code path can be exercised without a real
+    // host.
+    //
+    // The signature travels in `.metadata.signature` — the same
+    // pattern Copilot's Anthropic BYOK provider uses
+    // (`extensions/copilot/src/extension/byok/vscode-node/anthropicProvider.ts`
+    // lines 762-769) so downstream consumers can capture the
+    // full thinking+signature pair for replay.
+    const ThinkingCtor = (
+      vscode as unknown as {
+        LanguageModelThinkingPart: new (
+          value: string | string[],
+          id?: string,
+          metadata?: { signature?: string },
+        ) => { readonly value: string | string[]; readonly metadata?: { signature?: string } };
+      }
+    ).LanguageModelThinkingPart;
+
+    ok(
+      typeof ThinkingCtor === 'function',
+      'vscode.LanguageModelThinkingPart must be present in the stub for this test',
+    );
+
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+    const client = makeFakeClient([
+      [
+        { thinkingDelta: 'planning the next step' },
+        { thinkingSignature: 'sig_xyz' },
+        { textDelta: 'On it.' },
+        { finishReason: 'stop' },
+      ],
+    ]);
+    const provider = new ChatProvider(
+      logger,
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      catalog,
+    );
+    const { parts, progress } = makeProgress();
+    const messages: vscode.LanguageModelChatRequestMessage[] = [
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'do a thing'),
+    ];
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    const thinkingParts = parts.filter((p) => p instanceof ThinkingCtor);
+    // Two `LanguageModelThinkingPart`s are emitted for the
+    // thinking delta + standalone signature:
+    //   1. value='planning the next step', metadata={}
+    //   2. value='', metadata={ signature: 'sig_xyz' }
+    // The host uses the second part's metadata to attach the
+    // signature to the prior thinking block (Copilot's BYOK
+    // pattern at `anthropicProvider.ts:762-769`).
+    strictEqual(
+      thinkingParts.length,
+      2,
+      'expected one thinking part for the delta and one for the signature',
+    );
+    const [deltaPart, signaturePart] = thinkingParts as unknown as Array<{
+      value: string | string[];
+      metadata: { signature?: string } | undefined;
+    }>;
+    ok(deltaPart, 'expected a delta thinking part');
+    ok(signaturePart, 'expected a signature thinking part');
+    strictEqual(deltaPart.value, 'planning the next step');
+    deepStrictEqual(deltaPart.metadata, {});
+    strictEqual(signaturePart.value, '');
+    deepStrictEqual(signaturePart.metadata, { signature: 'sig_xyz' });
   });
 
   it('never emits `__minimax_usage__:` as a LanguageModelTextPart value', async () => {

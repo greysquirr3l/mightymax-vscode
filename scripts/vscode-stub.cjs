@@ -102,6 +102,22 @@ class LanguageModelDataPart {
   }
 }
 
+// T27: VS Code 1.128+ exposes a proposed-API `LanguageModelThinkingPart`
+// that the chat widget renders as a collapsible "click to show"
+// section (the Claude/ChatGPT affordance). The proposed API is
+// tracked at `vscode.proposed.languageModelThinkingPart.d.ts` upstream;
+// not yet in `@types/vscode 1.125.0`. We expose a stub here so the
+// stream-pump's `LanguageModelThinkingPart` emission path can be
+// exercised without a real VS Code host. The constructor accepts the
+// same `(value, id?, metadata?)` signature as the proposed API.
+class LanguageModelThinkingPart {
+  constructor(value, id, metadata) {
+    this.value = value;
+    this.id = id;
+    this.metadata = metadata;
+  }
+}
+
 class LanguageModelChatMessage {
   constructor(role, content, name) {
     this.role = role;
@@ -169,6 +185,7 @@ const vscodeStub = {
   LanguageModelToolCallPart,
   LanguageModelToolResultPart,
   LanguageModelDataPart,
+  LanguageModelThinkingPart,
   LanguageModelChatMessage,
   LanguageModelChatMessageRole,
   LanguageModelChatToolMode,

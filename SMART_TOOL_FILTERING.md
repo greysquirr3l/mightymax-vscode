@@ -57,8 +57,6 @@ Tools matched by `alwaysIncludeTools` (exact / prefix / substring), PLUS every t
 
 After pinning, the remaining budget (`maxTools - pinnedCount`) is filled with the first-N tools in the order VS Code passed them in. Order is stable, so the model sees the same tools every turn at the same cap.
 
-
-
 For each remaining tool, score is calculated based on:
 
 - **Exact name match**: +1.0 if prompt contains full tool name

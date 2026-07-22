@@ -182,14 +182,28 @@ jobs:
         with:
           node-version: 20
 
-      # Pinned to match @vscode/vsce in package.json devDependencies so
-      # the lockfile-driven local build and the CI publish install use
-      # the same dependency tree (markdown-it ^14.2.0, xml2js ^0.5.0).
-      # `ovsx` was removed from this install line in tandem with the
-      # commented-out "Publish to Open VSX" step further down — re-add
-      # when Open VSX publishing is re-enabled.
-      - name: Install vsce
-        run: npm install -g @vscode/vsce@3.9.2
+      # Install vsce from package.json's `devDependencies` via
+      # `npm ci` so the tarball integrity hash from
+      # `package-lock.json` is enforced (OpenSSF Scorecard
+      # "Pinned-Dependencies" check). The prior shape used
+      # `npm install -g @vscode/vsce@3.9.2` — that pins the
+      # version spec but lets npm resolve fresh metadata from
+      # the registry on every run, which the Scorecard flagged
+      # with score 9.
+      #
+      # After `npm ci` the binary lives at
+      # `node_modules/.bin/vsce`. We expose it on PATH for the
+      # publish steps below via an env-relative alias rather
+      # than installing globally.
+      #
+      # `ovsx` is left out while the Open VSX publish step is
+      # commented out below — re-add (and pin via the same
+      # lockfile-driven path) when the namespace is granted.
+      - name: Install vsce via lockfile
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          ls -la node_modules/.bin/vsce
 
       - name: Publish to VS Code Marketplace
         if: ${{ !contains(needs.resolve-tag.outputs.tag, '-') }}
@@ -200,7 +214,7 @@ jobs:
             echo "Warning: VSCE_PAT secret not set, skipping VS Code Marketplace publish"
             exit 0
           fi
-          vsce publish --packagePath mighty-max.vsix --pat "${VSCE_PAT}"
+          node_modules/.bin/vsce publish --packagePath mighty-max.vsix --pat "${VSCE_PAT}"
 
       - name: Publish pre-release to VS Code Marketplace
         if: ${{ contains(needs.resolve-tag.outputs.tag, '-') }}
@@ -211,7 +225,7 @@ jobs:
             echo "Warning: VSCE_PAT secret not set, skipping VS Code Marketplace publish"
             exit 0
           fi
-          vsce publish --pre-release --packagePath mighty-max.vsix --pat "${VSCE_PAT}"
+          node_modules/.bin/vsce publish --pre-release --packagePath mighty-max.vsix --pat "${VSCE_PAT}"
 
       # Open VSX publishing is temporarily disabled while the
       # `greysquirr3l` namespace claim is pending approval at

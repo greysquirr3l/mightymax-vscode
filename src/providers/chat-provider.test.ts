@@ -1584,7 +1584,7 @@ describe('vscodeToDomainMessage — pasted-image pass-through', () => {
       role: vscode.LanguageModelChatMessageRole.User,
       name: undefined,
       content: [
-        { mimeType: 'image/png', data: pngBytes } as unknown as vscode.LanguageModelTextPart,
+        { mimeType: 'image/png', data: pngBytes },
         new vscode.LanguageModelTextPart('describe this image please'),
       ],
     };
@@ -1606,7 +1606,7 @@ describe('vscodeToDomainMessage — pasted-image pass-through', () => {
         {
           mimeType: 'cache_control',
           data: new TextEncoder().encode('ephemeral'),
-        } as unknown as vscode.LanguageModelTextPart,
+        },
         new vscode.LanguageModelTextPart('hello'),
       ],
     };

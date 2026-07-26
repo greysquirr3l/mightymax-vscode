@@ -891,8 +891,19 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
           content: resultContent,
         },
       });
+    } else {
+      // A pasted/attached image arrives as a `LanguageModelDataPart`,
+      // structurally `{mimeType, data}` (same shape recognized by
+      // `asDataPart` above). Provider-directed metadata parts
+      // (cache_control etc.) never carry an `image/*` mimeType, so
+      // the prefix check alone keeps them out without consulting
+      // `METADATA_DATA_PART_MIMES`. Mime validation and base64
+      // encoding happen downstream in `messages.ts:buildImageContentPart`.
+      const dataPart = asDataPart(part);
+      if (dataPart !== undefined && dataPart.mimeType.toLowerCase().startsWith('image/')) {
+        content.push({ type: 'image', mimeType: dataPart.mimeType, data: dataPart.data });
+      }
     }
-    // Image parts would be handled here if supported
   }
 
   return { role, content, name: msg.name };

@@ -4,6 +4,28 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] — 2026-07-26
+
+### Fixed
+
+- **Flight-deck tooltip layout.** The status-bar tooltip joined its
+  lines with a plain `\n`, which VS Code's markdown renderer treats
+  as a soft break and collapses to a space — the whole dashboard
+  reflowed into one long paragraph instead of rendering as separate
+  lines. Lines are now joined with a real markdown hard break.
+
+- **Pasted images weren't reaching MiniMax.** A pasted/attached
+  image in chat arrives as a `LanguageModelDataPart`, but the
+  VS Code → domain message converter only recognized text, tool-call,
+  and tool-result parts, so images were silently dropped before the
+  request ever left the extension — despite the wire layer already
+  supporting image content. Images are now forwarded as domain
+  `image` content parts.
+
+- **Documentation gap.** The README settings table and multi-key
+  management section, added during 0.6.0 development, had not
+  actually been committed. Backfilled here.
+
 ## [0.6.0] — 2026-07-26
 
 ### Added

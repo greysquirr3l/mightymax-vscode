@@ -1567,6 +1567,56 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// vscodeToDomainMessage — pasted-image pass-through
+//
+// A pasted/attached image arrives at the top level of user message
+// content as a `LanguageModelDataPart` (structurally `{mimeType,
+// data}`), not as a `LanguageModelTextPart`. Before this fix, the
+// content loop only recognized text/tool-call/tool-result parts, so
+// the image was silently dropped and never reached the domain
+// `image` content part (and therefore never reached MiniMax).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('vscodeToDomainMessage — pasted-image pass-through', () => {
+  it('converts a top-level image data part to a domain image content part', () => {
+    const pngBytes = new Uint8Array([137, 80, 78, 71]);
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        { mimeType: 'image/png', data: pngBytes },
+        new vscode.LanguageModelTextPart('describe this image please'),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    strictEqual(domain.content.length, 2);
+    const imagePart = domain.content[0]!;
+    strictEqual(imagePart.type, 'image');
+    if (imagePart.type !== 'image') return;
+    strictEqual(imagePart.mimeType, 'image/png');
+    deepStrictEqual(imagePart.data, pngBytes);
+    strictEqual(domain.content[1]!.type, 'text');
+  });
+
+  it('does not forward provider metadata data parts (cache_control) as images', () => {
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        {
+          mimeType: 'cache_control',
+          data: new TextEncoder().encode('ephemeral'),
+        },
+        new vscode.LanguageModelTextPart('hello'),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    strictEqual(domain.content.length, 1);
+    strictEqual(domain.content[0]!.type, 'text');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // T19 — Response-part correctness: thinking parts, usage leak, tool-call
 // finalization on every terminal path.
 // ─────────────────────────────────────────────────────────────────────────────

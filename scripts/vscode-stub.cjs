@@ -177,6 +177,29 @@ function getConfiguration(section = '') {
   return config;
 }
 
+// T32: StatusBarAdapter needs three more value-classes from the
+// `vscode` namespace — `MarkdownString`, `ThemeColor`, and the
+// `StatusBarAlignment` enum. They're trivially modelled here so
+// `src/adapters/status-bar.test.ts` can exercise the four T32 render
+// states (healthy / one-slot-cooldown / last-fallback-set / no-keys)
+// without a real VS Code host.
+class MarkdownString {
+  constructor(value, supportThemeIcons) {
+    this.value = value ?? '';
+    this.supportThemeIcons = !!supportThemeIcons;
+    this.isTrusted = false;
+  }
+  appendMarkdown(text) {
+    this.value += text;
+  }
+}
+class ThemeColor {
+  constructor(id) {
+    this.id = id;
+  }
+}
+const StatusBarAlignment = Object.freeze({ Left: 1, Right: 2 });
+
 const vscodeStub = {
   Disposable,
   EventEmitter,
@@ -190,11 +213,22 @@ const vscodeStub = {
   LanguageModelChatMessageRole,
   LanguageModelChatToolMode,
   ConfigurationTarget,
+  MarkdownString,
+  ThemeColor,
+  StatusBarAlignment,
   workspace: {
     getConfiguration,
     onDidChangeConfiguration: () => new Disposable(),
   },
-  window: {},
+  window: {
+    createStatusBarItem: () => ({
+      text: '',
+      tooltip: '',
+      backgroundColor: undefined,
+      show() {},
+      dispose() {},
+    }),
+  },
   extensions: { getExtension: () => undefined },
 };
 

@@ -328,6 +328,18 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
             // T27 sticky fallback: promote the winner so the next
             // turn hits it instead of reverting to the failed slot.
             await this.keyProvider.setActiveSlot(pick.slot);
+            // T32 — record the most-recent successful fallback so the
+            // status-bar dashboard can surface "Last fallback: slot X
+            // · Ym ago" in its tooltip. `attemptedSlots` already
+            // contains the failed slot(s) we tried before this one
+            // succeeded; the most-recent failed slot is its penultimate
+            // entry. If only one slot was tried (the active one
+            // succeeded with `fellBack:false` we wouldn't be here) the
+            // invariant is `attemptedSlots.length >= 2`.
+            const fellBackFrom = attemptedSlots[attemptedSlots.length - 2];
+            if (fellBackFrom !== undefined) {
+              this.keyProvider.recordFallback(pick.slot, fellBackFrom, Date.now());
+            }
             this.logger.info('Key fallback succeeded', {
               triedSlots: attemptedSlots,
               winningSlot: pick.slot,

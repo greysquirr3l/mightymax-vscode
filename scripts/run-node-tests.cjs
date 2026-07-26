@@ -48,6 +48,10 @@ const EXCLUDED = new Set([
   'out/lib/no-vscode.test.js',
   'out/lib/messages.test.js',
   'out/lib/messages-id-fidelity.test.js',
+  // T32 — the status-bar test transitively requires `vscode`
+  // (the adapter imports `vscode.MarkdownString`, `vscode.ThemeColor`,
+  // etc.). It runs under the stub runner, not here.
+  'out/adapters/status-bar.test.js',
 ]);
 
 // Recursive *.test.js collector. CI pins Node 20, which predates

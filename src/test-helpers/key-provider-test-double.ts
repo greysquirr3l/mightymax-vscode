@@ -15,6 +15,12 @@
  */
 import type { KeyProvider, KeySlot, FailureKind, KeyPick } from '../ports/key-provider.js';
 import type { SecretStore } from '../ports/secret-store.js';
+import {
+  emptyCooldownState,
+  withFailure,
+  withSuccess,
+  type CooldownState,
+} from '../lib/domain/key-pool.js';
 
 export interface TestKeyProvider extends KeyProvider {
   /** Test-only: inspect the slot state. */
@@ -25,6 +31,14 @@ export interface TestKeyProvider extends KeyProvider {
   };
   /** Test-only: configure the active slot directly. */
   setActiveSlotSync(slot: KeySlot): void;
+  /** Test-only: inspect the last-recorded fallback (T32). */
+  readonly lastFallback: { slot: KeySlot; fellBackFrom: KeySlot; atMs: number } | undefined;
+  /** Test-only: configure the last fallback directly. */
+  setLastFallback(slot: KeySlot, fellBackFrom: KeySlot, atMs: number): void;
+  /** Test-only: advance the simulated clock for cooldown math. */
+  advanceClock(ms: number): void;
+  /** Test-only: read the simulated clock. */
+  getClock(): number;
 }
 
 /**
@@ -52,13 +66,23 @@ export interface TestKeyProvider extends KeyProvider {
  */
 export function makeTestKeyProvider(
   store: SecretStore,
-  initial: { activeSlot?: KeySlot } = {},
+  initial: { activeSlot?: KeySlot; nowMs?: number } = {},
 ): TestKeyProvider {
   const state: TestKeyProvider['__state'] = {
     stored: {},
     activeSlot: initial.activeSlot ?? 1,
     failures: {},
   };
+  // T32 — closure-scoped fallback record. The `lastFallback` field is
+  // a getter that reads from this variable so tests can observe the
+  // latest `recordFallback` call.
+  let testLastFallback: { slot: KeySlot; fellBackFrom: KeySlot; atMs: number } | undefined;
+  // T32 — a real `CooldownState` so the status-bar's
+  // `__testOnlyCooldown` seam can drive cooldown-remaining math in
+  // tests. `markFailed`/`markSucceeded` update this; `simulatedNowMs`
+  // is the test-controlled clock so cooldown math is deterministic.
+  let cooldown: CooldownState = emptyCooldownState();
+  let simulatedNowMs = initial.nowMs ?? 0;
 
   async function readStored(): Promise<Partial<Record<KeySlot, string>>> {
     const next: Partial<Record<KeySlot, string>> = {};
@@ -69,10 +93,19 @@ export function makeTestKeyProvider(
     return next;
   }
 
-  return {
+  const provider: TestKeyProvider = {
     __state: state,
-    setActiveSlotSync(slot) {
+    setActiveSlotSync(slot: KeySlot) {
       state.activeSlot = slot;
+    },
+    get lastFallback() {
+      return testLastFallback;
+    },
+    recordFallback(slot: KeySlot, fellBackFrom: KeySlot, atMs: number) {
+      testLastFallback = { slot, fellBackFrom, atMs };
+    },
+    setLastFallback(slot: KeySlot, fellBackFrom: KeySlot, atMs: number) {
+      testLastFallback = { slot, fellBackFrom, atMs };
     },
     async pickKey(): Promise<KeyPick | undefined> {
       const stored = await readStored();
@@ -121,9 +154,11 @@ export function makeTestKeyProvider(
     },
     markFailed(slot: KeySlot, kind: FailureKind) {
       state.failures[slot] = kind;
+      cooldown = withFailure(cooldown, slot, kind, simulatedNowMs);
     },
     markSucceeded(slot: KeySlot) {
       delete state.failures[slot];
+      cooldown = withSuccess(cooldown, slot);
     },
     async listHealthySlots() {
       const stored = await readStored();
@@ -135,5 +170,15 @@ export function makeTestKeyProvider(
       }
       return out;
     },
+    get __testOnlyCooldown() {
+      return cooldown;
+    },
+    advanceClock(ms: number) {
+      simulatedNowMs += ms;
+    },
+    getClock() {
+      return simulatedNowMs;
+    },
   };
+  return provider;
 }

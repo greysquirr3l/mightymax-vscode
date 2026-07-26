@@ -131,6 +131,25 @@ function isInCooldown(slot: KeySlot, state: CooldownState, nowMs: number): boole
   return nowMs - failedAt < COOLDOWN_MS[kind];
 }
 
+/**
+ * Public helper (T32): ms remaining in cooldown for `slot` at `nowMs`,
+ * or `0` if the slot is healthy. Used by the status-bar flight-deck
+ * renderer so it can show "cooldown 47s" instead of just "○ cooldown".
+ * Returns `0` when the slot has no cooldown entry (healthy or
+ * never-failed) and is also `0` when the cooldown has already elapsed
+ * (the entry is stale; the renderer treats both the same — caller
+ * may want to call `withSuccess` to garbage-collect stale entries,
+ * but the status bar reads state passively).
+ */
+export function cooldownRemainingMs(slot: KeySlot, state: CooldownState, nowMs: number): number {
+  const failedAt = state.failedAtMs.get(slot);
+  if (failedAt === undefined) return 0;
+  const kind = state.failureKinds.get(slot);
+  if (kind === undefined) return 0;
+  const remaining = COOLDOWN_MS[kind] - (nowMs - failedAt);
+  return remaining > 0 ? remaining : 0;
+}
+
 /** Return a new `CooldownState` with `slot` marked failed at `nowMs`. */
 export function withFailure(
   state: CooldownState,

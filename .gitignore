@@ -8,6 +8,7 @@ PROGRESS.md
 mighty-max-plan.toml
 docs/dev/
 .npm-cache/
+.npm-cache-local/
 .npm-tmp/
 .coraline/
 node_modules/
@@ -27,4 +28,4 @@ IMPLEMENTATION_SUMMARY.md
 CLAUDE.md
 .mcp.json
 opencode.json
-.claude/settings.json
+.claude/

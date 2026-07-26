@@ -404,3 +404,110 @@ describe('runManageCommand — cancellation and safety', () => {
     ok(!joined.includes('invalid api key'), 'logs must not echo the 401 response body');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T28 — Toggle auto-rotation (mightyMax.enableAutoKeyRotation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('runManageCommand — Toggle auto-rotation', () => {
+  it('flips enableAutoKeyRotation from ON to OFF and calls fireChange', async () => {
+    const configCalls: Array<{ key: string; value: unknown }> = [];
+    const fireChangeCount = { n: 0 };
+    const { ui } = scriptedUi([
+      { pick: { label: '● Auto-rotate on auth failure: ON' } },
+      { info: undefined },
+    ]);
+    const deps = makeDeps({
+      ui,
+      fireChangeCount,
+      getConfig: () => ({
+        get: (k: string) => (k === 'enableAutoKeyRotation' ? true : undefined),
+        update: async (k, v) => {
+          configCalls.push({ key: k, value: v });
+          return undefined;
+        },
+      }),
+    });
+    await runManageCommand(deps);
+    equal(configCalls.length, 1, 'expected exactly one config.update call');
+    equal(configCalls[0]?.key, 'enableAutoKeyRotation');
+    equal(configCalls[0]?.value, false, 'expected the toggled value (false)');
+    equal(fireChangeCount.n, 1, 'fireChange must be called so the picker re-fires');
+  });
+
+  it('flips enableAutoKeyRotation from OFF to ON and calls fireChange', async () => {
+    const configCalls: Array<{ key: string; value: unknown }> = [];
+    const fireChangeCount = { n: 0 };
+    const { ui } = scriptedUi([
+      { pick: { label: '○ Auto-rotate on auth failure: OFF' } },
+      { info: undefined },
+    ]);
+    const deps = makeDeps({
+      ui,
+      fireChangeCount,
+      getConfig: () => ({
+        get: (k: string) => (k === 'enableAutoKeyRotation' ? false : undefined),
+        update: async (k, v) => {
+          configCalls.push({ key: k, value: v });
+          return undefined;
+        },
+      }),
+    });
+    await runManageCommand(deps);
+    equal(configCalls.length, 1, 'expected exactly one config.update call');
+    equal(configCalls[0]?.key, 'enableAutoKeyRotation');
+    equal(configCalls[0]?.value, true, 'expected the toggled value (true)');
+    equal(fireChangeCount.n, 1, 'fireChange must be called so the picker re-fires');
+  });
+
+  it('renders the toggle row with the ON state when the setting is true', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const deps = makeDeps({
+      ui,
+      getConfig: () => ({
+        get: (k: string) => (k === 'enableAutoKeyRotation' ? true : undefined),
+        update: async () => undefined,
+      }),
+    });
+    await runManageCommand(deps);
+    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    ok(
+      labels.includes('● Auto-rotate on auth failure: ON'),
+      `expected ON-state toggle label in ${JSON.stringify(labels)}`,
+    );
+  });
+
+  it('renders the toggle row with the OFF state when the setting is false', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const deps = makeDeps({
+      ui,
+      getConfig: () => ({
+        get: (k: string) => (k === 'enableAutoKeyRotation' ? false : undefined),
+        update: async () => undefined,
+      }),
+    });
+    await runManageCommand(deps);
+    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    ok(
+      labels.includes('○ Auto-rotate on auth failure: OFF'),
+      `expected OFF-state toggle label in ${JSON.stringify(labels)}`,
+    );
+  });
+
+  it('defaults the toggle to ON when no setting value has been persisted', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const deps = makeDeps({
+      ui,
+      getConfig: () => ({
+        get: () => undefined, // nothing stored yet
+        update: async () => undefined,
+      }),
+    });
+    await runManageCommand(deps);
+    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    ok(
+      labels.includes('● Auto-rotate on auth failure: ON'),
+      `expected default-ON label when nothing is stored, got: ${JSON.stringify(labels)}`,
+    );
+  });
+});

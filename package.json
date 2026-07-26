@@ -224,7 +224,7 @@
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,
-          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way.",
+          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' → 'Toggle auto-rotation' (the row label shows the current state: '● … ON' / '○ … OFF').",
           "scope": "window"
         }
       }

@@ -65,4 +65,5 @@ require('../out/lib/messages-id-fidelity.test.js');
 
 require('../out/providers/stream-pump.test.js');
 require('../out/providers/chat-provider.test.js');
+require('../out/commands/manage-command.test.js');
 require('../out/test/tool-filtering.test.js');

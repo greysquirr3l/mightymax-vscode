@@ -86,10 +86,27 @@ const PICK_ITEMS: readonly ManagePickItem[] = [
   { label: 'Test connection', description: 'Validate the currently-stored API key' },
   { label: 'Clear API key', description: 'Remove the stored MiniMax API key' },
   {
+    label: 'Toggle auto-rotation',
+    description:
+      'Flip the mightyMax.enableAutoKeyRotation setting (visible label shows current state)',
+  },
+  {
     label: 'Configure utility models',
     description: 'Fix the BYOK "no utility model configured" error',
   },
 ] as const;
+
+// T28 — auto-rotation toggle label is state-dependent, so it is
+// computed per render rather than stored in the static PICK_ITEMS.
+const AUTO_ROTATION_KEY = 'enableAutoKeyRotation';
+function autoRotationLabel(enabled: boolean): string {
+  return `${enabled ? '●' : '○'} Auto-rotate on auth failure: ${enabled ? 'ON' : 'OFF'}`;
+}
+function readAutoRotationEnabled(deps: ManageDeps): boolean {
+  const raw = deps.getConfig?.().get(AUTO_ROTATION_KEY);
+  // The package.json default is `true`; treat anything-but-`false` as on.
+  return raw !== false;
+}
 
 /** Subset of PICK_ITEMS handled inline (the rest delegate out). */
 type InlinePick = 'Set API key' | 'Set base URL' | 'Test connection' | 'Clear API key';
@@ -104,11 +121,20 @@ function pickByLabel(label: string): ManagePickItem {
 
 export async function runManageCommand(deps: ManageDeps): Promise<void> {
   deps.logger.debug('Manage command: showing main pick');
-  const choice = await deps.ui.showQuickPick(PICK_ITEMS, {
+  const autoRotationEnabled = readAutoRotationEnabled(deps);
+  const items = buildManagePickItems(autoRotationEnabled);
+  const choice = await deps.ui.showQuickPick(items, {
     title: 'Mighty Max — manage connection',
   });
   if (!choice) {
     deps.logger.debug('Manage command: main pick dismissed');
+    return;
+  }
+
+  // T28 — toggle dispatches before the static-label dispatch because
+  // its label is state-dependent (`● … ON` vs `○ … OFF`).
+  if (choice.label === autoRotationLabel(true) || choice.label === autoRotationLabel(false)) {
+    await handleToggleAutoRotation(deps, autoRotationEnabled);
     return;
   }
 
@@ -125,6 +151,40 @@ export async function runManageCommand(deps: ManageDeps): Promise<void> {
   } else if (choice.label === pickByLabel('Configure utility models').label) {
     await handleConfigureUtilityModels(deps);
   }
+}
+
+// Build the runtime pick list. The static PICK_ITEMS has a placeholder
+// "Toggle auto-rotation" row that is rewritten here with a state-bearing
+// label and a description that names the current value, so the user
+// sees what they're about to flip.
+function buildManagePickItems(autoRotationEnabled: boolean): readonly ManagePickItem[] {
+  return PICK_ITEMS.map((item) =>
+    item.label === 'Toggle auto-rotation'
+      ? {
+          label: autoRotationLabel(autoRotationEnabled),
+          description: `Currently ${autoRotationEnabled ? 'ON' : 'OFF'} — pick to flip`,
+        }
+      : item,
+  );
+}
+
+async function handleToggleAutoRotation(deps: ManageDeps, currentValue: boolean): Promise<void> {
+  const nextValue = !currentValue;
+  const cfg = deps.getConfig?.();
+  if (!cfg) {
+    deps.logger.warn('Manage command: no config provider, cannot toggle auto-rotation');
+    await deps.ui.showErrorMessage('Auto-rotation cannot be toggled in this environment.');
+    return;
+  }
+  await cfg.update(AUTO_ROTATION_KEY, nextValue);
+  deps.logger.info('Manage command: auto-rotation toggled', {
+    from: currentValue,
+    to: nextValue,
+  });
+  deps.fireChange();
+  await deps.ui.showInfoMessage(
+    `Auto-rotation on auth failure is now ${nextValue ? 'ON' : 'OFF'}.`,
+  );
 }
 
 /** Inline pick labels excluding "Configure utility models" (delegated). */

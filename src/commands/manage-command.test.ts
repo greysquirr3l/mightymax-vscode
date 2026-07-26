@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, equal, ok, strictEqual } from 'node:assert/strict';
 
+import type { KeySlot } from '../ports/key-provider.js';
+import type { SlotLabelsStore } from './manage-command.js';
+
 import {
   type ManageDeps,
   type ManagePickItem,
@@ -119,6 +122,7 @@ function makeDeps(overrides: {
     get: (k: string) => unknown;
     update: (k: string, v: unknown) => Promise<unknown>;
   };
+  slotLabels?: SlotLabelsStore;
 }): ManageDeps {
   const fireChangeCount = overrides.fireChangeCount ?? { n: 0 };
   const secretStore = overrides.secretStore ?? createInMemorySecretStore();
@@ -136,6 +140,7 @@ function makeDeps(overrides: {
   };
   if (overrides.fetchImpl !== undefined) out.fetchImpl = overrides.fetchImpl;
   if (overrides.getConfig !== undefined) out.getConfig = overrides.getConfig;
+  if (overrides.slotLabels !== undefined) out.slotLabels = overrides.slotLabels;
   // Suppress "unused" warning on the counter when a custom fireChange is provided.
   void fireChangeCount;
   return out;
@@ -348,6 +353,57 @@ describe('runManageCommand — T30 Settings submenu', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T31 — per-slot flight-deck view from the "Manage keys" CTA
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('runManageCommand — T31 flight-deck view', () => {
+  it('opens a per-slot view (one row per stored key) when Manage keys is picked', async () => {
+    const secretStore = createInMemorySecretStore();
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    const { ui, shown } = scriptedUi([
+      { pick: { label: '🔑 Manage keys (2 slots)' } },
+      { pick: undefined }, // dismiss the flight-deck
+    ]);
+    const deps = makeDeps({ ui, secretStore });
+    Object.assign(deps, { keyProvider: kp });
+    await runManageCommand(deps);
+    const flightDeckItems = shown.picks[1] ?? [];
+    strictEqual(flightDeckItems.length, 2, 'expected one row per stored key');
+  });
+
+  it('persists slot-label changes via the SlotLabelsStore', async () => {
+    const secretStore = createInMemorySecretStore();
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    // In-memory slot-labels store, observable from the test.
+    let persisted: ReadonlyMap<KeySlot, string> = new Map();
+    const slotLabels = {
+      getAll: async () => persisted,
+      set: async (m: ReadonlyMap<KeySlot, string>) => {
+        persisted = new Map(m);
+      },
+    };
+    // Script: pick Manage keys → pick slot 2 → pick Rename → enter "work account" → confirm.
+    const { ui } = scriptedUi([
+      { pick: { label: '🔑 Manage keys (2 slots)' } },
+      { pick: { label: 'Slot 2  ●' } },
+      { pick: { label: 'Rename slot' } },
+      { input: 'work account' },
+    ]);
+    const deps = makeDeps({ ui, secretStore, slotLabels });
+    Object.assign(deps, { keyProvider: kp });
+    await runManageCommand(deps);
+    ok(
+      persisted.get(2) === 'work account',
+      `expected slot 2 label "work account" to be persisted; got: ${JSON.stringify([...persisted])}`,
+    );
+  });
+});
+
 describe('runManageCommand — Set API key', () => {
   it('stores a valid key after a successful validation', async () => {
     const { ui } = scriptedUi([
@@ -394,7 +450,10 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('does NOT store an unauthorized key', async () => {
-    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: 'sk-bad-key' }]);
+    const { ui } = scriptedUi([
+      { pick: { label: '➕ Add or rotate API key' } },
+      { input: 'sk-bad-key' },
+    ]);
     const secretStore = createInMemorySecretStore();
     const deps = makeDeps({
       ui,
@@ -418,7 +477,10 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('does not call fireChange when the key is rejected', async () => {
-    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: 'sk-bad-key' }]);
+    const { ui } = scriptedUi([
+      { pick: { label: '➕ Add or rotate API key' } },
+      { input: 'sk-bad-key' },
+    ]);
     const fireChangeCount = { n: 0 };
     const deps = makeDeps({
       ui,
@@ -429,8 +491,6 @@ describe('runManageCommand — Set API key', () => {
     equal(fireChangeCount.n, 0);
   });
 });
-
-
 
 describe('runManageCommand — Set base URL', () => {
   it('stores a new base URL in the workspace configuration', async () => {
@@ -443,7 +503,8 @@ describe('runManageCommand — Set base URL', () => {
       },
     };
     const { ui } = scriptedUi([
-      { pick: { label: '⚙ Settings' } }, { pick: { label: 'Set base URL' } },
+      { pick: { label: '⚙ Settings' } },
+      { pick: { label: 'Set base URL' } },
       { input: 'https://example.test/v1' },
     ]);
     const deps = makeDeps({ ui, getConfig: () => fakeConfig });
@@ -460,7 +521,11 @@ describe('runManageCommand — Set base URL', () => {
         return undefined;
       },
     };
-    const { ui } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: { label: 'Set base URL' } }, { input: '' }]);
+    const { ui } = scriptedUi([
+      { pick: { label: '⚙ Settings' } },
+      { pick: { label: 'Set base URL' } },
+      { input: '' },
+    ]);
     const deps = makeDeps({ ui, getConfig: () => fakeConfig });
     await runManageCommand(deps);
     deepStrictEqual(updated, []);
@@ -480,7 +545,10 @@ describe('runManageCommand — cancellation and safety', () => {
 
   it('does nothing when the user dismisses the API key input', async () => {
     const secretStore = createInMemorySecretStore();
-    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: undefined }]);
+    const { ui } = scriptedUi([
+      { pick: { label: '➕ Add or rotate API key' } },
+      { input: undefined },
+    ]);
     const deps = makeDeps({ ui, secretStore, fetchImpl: okFetch() });
     await runManageCommand(deps);
     equal(await secretStore.hasSecret('apiKey'), false);
@@ -490,7 +558,10 @@ describe('runManageCommand — cancellation and safety', () => {
     const secretStore = createInMemorySecretStore();
     await secretStore.storeSecret('apiKey', 'sk-supersecret-1234567890');
     const logger = createCapturingLogger();
-    const { ui } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: { label: 'Test connection' } }]);
+    const { ui } = scriptedUi([
+      { pick: { label: '⚙ Settings' } },
+      { pick: { label: 'Test connection' } },
+    ]);
     const deps = makeDeps({
       ui,
       secretStore,

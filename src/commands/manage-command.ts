@@ -4,6 +4,18 @@ import type { SecretStore } from '../ports/secret-store.js';
 import { validateApiKey } from '../adapters/api-key-validator.js';
 import { runConfigureUtilityModelsCommand } from './configure-utility-models.js';
 import { buildStatusHeader } from './quickpick-header.js';
+import { runFlightDeckView } from './flight-deck-view.js';
+import type { SlotLabelMap } from '../lib/domain/slot-labels.js';
+
+/**
+ * T31 — Slot labels persist across restarts in a Memento-backed store.
+ * The adapter wraps `vscode.ExtensionContext.globalState`; the test
+ * double is an in-memory map exposed by `manage-command.test-helpers.ts`.
+ */
+export interface SlotLabelsStore {
+  getAll(): Promise<SlotLabelMap>;
+  set(map: SlotLabelMap): Promise<void>;
+}
 
 /**
  * runManageCommand — orchestrates the `mightyMax.manage` QuickPick UI.
@@ -75,6 +87,8 @@ export interface ManageDeps {
   fetchImpl?: typeof fetch;
   /** Optional config override used by tests for the base-URL flow. */
   getConfig?: () => ManageConfig;
+  /** T31 — slot labels persist across restarts via this Memento-backed store. */
+  slotLabels?: SlotLabelsStore;
 }
 
 const PICK_ITEMS: readonly ManagePickItem[] = [
@@ -172,9 +186,10 @@ export async function runManageCommand(deps: ManageDeps): Promise<void> {
     // a different label so the user knows they're swapping.
     await handleSetApiKey(deps);
   } else if (choice.label.startsWith(MANAGE_KEYS_PREFIX)) {
-    // T30 — Manage-keys CTA still routes to the existing per-slot menu
-    // (T31 will replace this with the flight-deck view).
-    await handleManageApiKeys(deps);
+    // T31 — Manage-keys CTA opens the per-slot flight-deck view, which
+    // dispatches into per-slot action sheets (Set / Test / Clear / Make
+    // active / Rename).
+    await runFlightDeckForManage(deps);
   } else if (choice.label === SETTINGS_LABEL) {
     await runSettingsMenu(deps);
   }
@@ -223,6 +238,52 @@ function buildManagePickItems(
     },
   ];
   return items;
+}
+
+// T31 — open the per-slot flight-deck view from the "Manage keys"
+// CTA. Loads slot labels from the Memento-backed store (or empty when
+// no store is wired), runs the view, and persists any label changes
+// the user made via the "Rename slot" action.
+//
+// The `runFlightDeckView` orchestrator takes a snapshot of labels at
+// the start of the flow; subsequent renames happen in-memory inside
+// the action sheet. For T31 we propagate the final map back via a
+// post-write — the in-memory `labels` map carried in the closure IS
+// the persisted state at flow exit. (The view itself is pure over
+// its inputs, but the action-sheet handlers mutate a working map
+// passed by reference via a tiny adapter shim.)
+async function runFlightDeckForManage(deps: ManageDeps): Promise<void> {
+  const initialLabels = (await deps.slotLabels?.getAll()) ?? new Map<KeySlot, string>();
+  // The `Map(Iterable<K,V>)` constructor types its return as `Map<any, any>`
+  // under TypeScript's lib (it predates ReadonlyMap-aware constructor
+  // signatures). Spread explicitly so we keep `Map<KeySlot, string>`.
+  const workingLabels = new Map<KeySlot, string>(
+    initialLabels instanceof Map ? initialLabels : [...initialLabels],
+  );
+
+  await runFlightDeckView({
+    slot: 1, // overwritten per-action by runSlotActionSheet
+    keyProvider: deps.keyProvider,
+    ui: deps.ui,
+    logger: deps.logger,
+    labels: workingLabels,
+    fireChange: deps.fireChange,
+    baseUrl: deps.baseUrl,
+    ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+  });
+
+  // Persist any label changes the user made during the flow.
+  if (deps.slotLabels !== undefined && !mapsEqual(initialLabels, workingLabels)) {
+    await deps.slotLabels.set(workingLabels);
+  }
+}
+
+function mapsEqual(a: ReadonlyMap<KeySlot, string>, b: ReadonlyMap<KeySlot, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) {
+    if (b.get(k) !== v) return false;
+  }
+  return true;
 }
 
 // T30 — Settings submenu. Five entries: Set base URL, Test all stored

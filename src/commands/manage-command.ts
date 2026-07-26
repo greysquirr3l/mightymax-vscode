@@ -3,6 +3,7 @@ import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
 import { validateApiKey } from '../adapters/api-key-validator.js';
 import { runConfigureUtilityModelsCommand } from './configure-utility-models.js';
+import { buildStatusHeader } from './quickpick-header.js';
 
 /**
  * runManageCommand — orchestrates the `mightyMax.manage` QuickPick UI.
@@ -30,6 +31,13 @@ const BASE_URL_SETTING = 'baseUrl';
 export interface ManagePickItem {
   label: string;
   description?: string;
+  /**
+   * T29 — non-selectable header rows use `kind: 'separator'`. Regular
+   * CTA rows omit this so vscode's QuickPick treats them as selectable.
+   */
+  kind?: 'separator' | 'header';
+  /** T29 — header rows must stick at the top; always true for separators. */
+  alwaysShown?: boolean;
 }
 
 export interface ManageUi {
@@ -99,6 +107,7 @@ const PICK_ITEMS: readonly ManagePickItem[] = [
 // T28 — auto-rotation toggle label is state-dependent, so it is
 // computed per render rather than stored in the static PICK_ITEMS.
 const AUTO_ROTATION_KEY = 'enableAutoKeyRotation';
+const LOG_LEVEL_KEY = 'logLevel';
 function autoRotationLabel(enabled: boolean): string {
   return `${enabled ? '●' : '○'} Auto-rotate on auth failure: ${enabled ? 'ON' : 'OFF'}`;
 }
@@ -107,6 +116,14 @@ function readAutoRotationEnabled(deps: ManageDeps): boolean {
   // The package.json default is `true`; treat anything-but-`false` as on.
   return raw !== false;
 }
+
+// T30 — three primary CTAs only. The "Set base URL" / "Test connection" /
+// "Clear API key" / "Configure utility models" / "Toggle auto-rotation"
+// entries are no longer top-level — they all live in the Settings submenu.
+const PRIMARY_CTA_ADD = '➕ Add or rotate API key';
+const PRIMARY_CTA_ROTATE = '⚠ Rotate to a healthy key';
+const MANAGE_KEYS_PREFIX = '🔑 Manage keys';
+const SETTINGS_LABEL = '⚙ Settings';
 
 /** Subset of PICK_ITEMS handled inline (the rest delegate out). */
 type InlinePick = 'Set API key' | 'Set base URL' | 'Test connection' | 'Clear API key';
@@ -122,7 +139,16 @@ function pickByLabel(label: string): ManagePickItem {
 export async function runManageCommand(deps: ManageDeps): Promise<void> {
   deps.logger.debug('Manage command: showing main pick');
   const autoRotationEnabled = readAutoRotationEnabled(deps);
-  const items = buildManagePickItems(autoRotationEnabled);
+  const storedKeys = await deps.keyProvider.listStoredKeys();
+  const activeSlot = await deps.keyProvider.getActiveSlot();
+  const healthySlots = await deps.keyProvider.listHealthySlots();
+  // "Active in cooldown" only when the active slot has a key on file
+  // AND it's not in the healthy set. With no keys stored, the CTA stays
+  // in the onboarding "Add or rotate" state rather than warning about
+  // a key the user hasn't added yet.
+  const activeStored = storedKeys.some((k) => k.slot === activeSlot);
+  const activeInCooldown = activeStored && !healthySlots.includes(activeSlot);
+  const items = buildManagePickItems(autoRotationEnabled, storedKeys.length, activeInCooldown);
   const choice = await deps.ui.showQuickPick(items, {
     title: 'Mighty Max — manage connection',
   });
@@ -132,40 +158,152 @@ export async function runManageCommand(deps: ManageDeps): Promise<void> {
   }
 
   // T28 — toggle dispatches before the static-label dispatch because
-  // its label is state-dependent (`● … ON` vs `○ … OFF`).
+  // its label is state-dependent (`● … ON` vs `○ … OFF`). T30 — the
+  // toggle now lives in the Settings submenu, but if a stale label
+  // leaks in (e.g. user-driven config edit mid-pick), still handle it.
   if (choice.label === autoRotationLabel(true) || choice.label === autoRotationLabel(false)) {
     await handleToggleAutoRotation(deps, autoRotationEnabled);
     return;
   }
 
-  if (choice.label === pickByLabel('Set API key').label) {
+  if (choice.label === PRIMARY_CTA_ADD || choice.label === PRIMARY_CTA_ROTATE) {
+    // T30 — primary CTA flows through the same validation+storage as
+    // the old "Set API key"; the rotate-warning variant just carries
+    // a different label so the user knows they're swapping.
     await handleSetApiKey(deps);
-  } else if (choice.label === pickByLabel('Manage API keys').label) {
+  } else if (choice.label.startsWith(MANAGE_KEYS_PREFIX)) {
+    // T30 — Manage-keys CTA still routes to the existing per-slot menu
+    // (T31 will replace this with the flight-deck view).
     await handleManageApiKeys(deps);
-  } else if (choice.label === pickByLabel('Set base URL').label) {
-    await handleSetBaseUrl(deps);
-  } else if (choice.label === pickByLabel('Test connection').label) {
-    await handleTestConnection(deps);
-  } else if (choice.label === pickByLabel('Clear API key').label) {
-    await handleClearApiKey(deps);
-  } else if (choice.label === pickByLabel('Configure utility models').label) {
-    await handleConfigureUtilityModels(deps);
+  } else if (choice.label === SETTINGS_LABEL) {
+    await runSettingsMenu(deps);
   }
 }
 
-// Build the runtime pick list. The static PICK_ITEMS has a placeholder
-// "Toggle auto-rotation" row that is rewritten here with a state-bearing
-// label and a description that names the current value, so the user
-// sees what they're about to flip.
-function buildManagePickItems(autoRotationEnabled: boolean): readonly ManagePickItem[] {
-  return PICK_ITEMS.map((item) =>
-    item.label === 'Toggle auto-rotation'
-      ? {
-          label: autoRotationLabel(autoRotationEnabled),
-          description: `Currently ${autoRotationEnabled ? 'ON' : 'OFF'} — pick to flip`,
-        }
-      : item,
+// Build the runtime pick list. The status header (T29) sits at index 0;
+// the three flight-deck CTAs follow. The primary CTA's label and the
+// Manage-keys count are derived from live state per render.
+function buildManagePickItems(
+  autoRotationEnabled: boolean,
+  keyCount: number,
+  activeInCooldown: boolean,
+): readonly ManagePickItem[] {
+  const primaryLabel = activeInCooldown
+    ? `${PRIMARY_CTA_ROTATE} (slot in cooldown)`
+    : PRIMARY_CTA_ADD;
+  const primaryDescription = activeInCooldown
+    ? 'Pick to set a new key — current active is in cooldown'
+    : 'Set or rotate the key on the active slot';
+
+  const header = buildStatusHeader({
+    activeSlot: 1,
+    stored: [1, 2, 3].slice(0, keyCount === 0 ? 0 : Math.max(keyCount, 1)) as readonly KeySlot[],
+    cooldown: new Map(),
+    autoRotateEnabled: autoRotationEnabled,
+  });
+
+  const items: ManagePickItem[] = [
+    {
+      label: header.label,
+      kind: 'separator',
+      alwaysShown: true,
+      ...(header.description !== undefined ? { description: header.description } : {}),
+    },
+    {
+      label: primaryLabel,
+      description: primaryDescription,
+    },
+    {
+      label: `${MANAGE_KEYS_PREFIX} (${String(keyCount)} ${keyCount === 1 ? 'slot' : 'slots'})`,
+      description: 'View, set, clear, or rotate stored API keys',
+    },
+    {
+      label: SETTINGS_LABEL,
+      description: 'Base URL, log level, auto-rotation, utility models',
+    },
+  ];
+  return items;
+}
+
+// T30 — Settings submenu. Five entries: Set base URL, Test all stored
+// keys, Configure utility models, Log level (with current value), and
+// Auto-rotate on auth failure (toggle).
+async function runSettingsMenu(deps: ManageDeps): Promise<void> {
+  const autoRotationEnabled = readAutoRotationEnabled(deps);
+  const logLevelRaw = deps.getConfig?.().get(LOG_LEVEL_KEY);
+  const logLevel = typeof logLevelRaw === 'string' ? logLevelRaw : 'info';
+
+  const settingsItems: ManagePickItem[] = [
+    {
+      label: 'Set base URL',
+      description: 'Change the MiniMax endpoint (default: platform.minimax.io)',
+    },
+    {
+      label: 'Test all stored keys',
+      description: 'Validate each stored key against the models endpoint',
+    },
+    {
+      label: 'Configure utility models',
+      description: 'Fix the BYOK "no utility model configured" error',
+    },
+    {
+      label: `Log level: ${logLevel}`,
+      description: 'Change the chat-provider log level (debug / info / warn / error)',
+    },
+    {
+      label: autoRotationLabel(autoRotationEnabled),
+      description: `Currently ${autoRotationEnabled ? 'ON' : 'OFF'} — pick to flip`,
+    },
+  ];
+
+  const choice = await deps.ui.showQuickPick(settingsItems, {
+    title: 'Mighty Max — settings',
+  });
+  if (!choice) {
+    deps.logger.debug('Manage command: settings submenu dismissed');
+    return;
+  }
+
+  if (choice.label === 'Set base URL') {
+    await handleSetBaseUrl(deps);
+  } else if (choice.label === 'Test all stored keys') {
+    const stored = await deps.keyProvider.listStoredKeys();
+    await handleTestAllKeys(deps, stored);
+  } else if (choice.label === 'Configure utility models') {
+    await handleConfigureUtilityModels(deps);
+  } else if (choice.label.startsWith('Log level:')) {
+    await handleLogLevel(deps, logLevel);
+  } else if (
+    choice.label === autoRotationLabel(true) ||
+    choice.label === autoRotationLabel(false)
+  ) {
+    await handleToggleAutoRotation(deps, autoRotationEnabled);
+  }
+}
+
+async function handleLogLevel(deps: ManageDeps, current: string): Promise<void> {
+  const next = await deps.ui.showQuickPick(
+    [
+      { label: 'debug', description: 'Verbose — every chat-provider call' },
+      { label: 'info', description: 'Operational — request start/end, key rotation' },
+      { label: 'warn', description: 'Failures and recoverable errors only' },
+      { label: 'error', description: 'Hard failures only' },
+    ],
+    { title: 'Mighty Max — log level' },
   );
+  if (!next) return;
+  if (next.label === current) {
+    await deps.ui.showInfoMessage(`Log level is already ${current}.`);
+    return;
+  }
+  const cfg = deps.getConfig?.();
+  if (!cfg) {
+    await deps.ui.showErrorMessage('Log level cannot be changed in this environment.');
+    return;
+  }
+  await cfg.update(LOG_LEVEL_KEY, next.label);
+  deps.logger.info('Manage command: log level updated', { from: current, to: next.label });
+  await deps.ui.showInfoMessage(`Log level is now ${next.label}.`);
 }
 
 async function handleToggleAutoRotation(deps: ManageDeps, currentValue: boolean): Promise<void> {

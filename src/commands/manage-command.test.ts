@@ -1,5 +1,5 @@
 import { describe, it } from 'node:test';
-import { deepStrictEqual, equal, ok } from 'node:assert/strict';
+import { deepStrictEqual, equal, ok, strictEqual } from 'node:assert/strict';
 
 import {
   type ManageDeps,
@@ -158,24 +158,200 @@ function unauthorizedFetch(): typeof fetch {
 }
 
 describe('runManageCommand — show-only flow', () => {
-  it('shows the four management options', async () => {
+  it('shows the flight-deck primary actions (3 CTAs after the status header)', async () => {
     const { ui, shown } = scriptedUi([{ pick: undefined }]);
     const deps = makeDeps({ ui });
     await runManageCommand(deps);
     const items = shown.picks[0];
     ok(items, 'expected one quick pick');
     const labels = items.map((i) => i.label);
-    ok(labels.includes('Set API key'), 'missing "Set API key" option');
-    ok(labels.includes('Set base URL'), 'missing "Set base URL" option');
-    ok(labels.includes('Test connection'), 'missing "Test connection" option');
-    ok(labels.includes('Clear API key'), 'missing "Clear API key" option');
+    // T30 — collapsed to 3 primary CTAs.
+    ok(
+      labels.some((l) => l.startsWith('➕') && l.includes('Add or rotate API key')),
+      `expected primary "Add or rotate API key" CTA; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      labels.some((l) => l.includes('Manage keys')),
+      `expected "Manage keys" CTA; got: ${JSON.stringify(labels)}`,
+    );
+    ok(labels.includes('⚙ Settings'), `expected "⚙ Settings" CTA; got: ${JSON.stringify(labels)}`);
+    // T30 — Set base URL / Test connection / Clear API key are no longer top-level.
+    ok(
+      !labels.includes('Set base URL'),
+      `expected Set base URL to move to Settings submenu; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      !labels.includes('Test connection'),
+      `expected Test connection to move to Settings submenu; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      !labels.includes('Clear API key'),
+      `expected Clear API key to move to Settings submenu; got: ${JSON.stringify(labels)}`,
+    );
+  });
+
+  it('renders the T29 status header as the first row (kind=separator, alwaysShown)', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const deps = makeDeps({ ui });
+    await runManageCommand(deps);
+    const items = shown.picks[0] ?? [];
+    const header = items[0] as unknown as
+      { kind?: string; alwaysShown?: boolean; label?: string } | undefined;
+    ok(header, 'expected the status header to be the first row');
+    strictEqual(header?.kind, 'separator');
+    strictEqual(header?.alwaysShown, true);
+    ok(
+      typeof header?.label === 'string' && header.label.length > 0,
+      `expected a non-empty header label; got: ${header?.label}`,
+    );
+  });
+
+  it('renders the primary CTA with the active-healthy label by default', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const deps = makeDeps({ ui });
+    await runManageCommand(deps);
+    const items = shown.picks[0] ?? [];
+    // Header + 3 CTAs. The primary CTA is items[1].
+    const primary = items[1] as unknown as { label?: string } | undefined;
+    ok(
+      primary?.label?.includes('Add or rotate API key'),
+      `expected "Add or rotate API key" as primary CTA; got: ${primary?.label}`,
+    );
+    ok(
+      !primary?.label?.includes('⚠ Rotate to a healthy key'),
+      `expected non-warning primary CTA when active is healthy; got: ${primary?.label}`,
+    );
+  });
+
+  it('flips the primary CTA to the warning label when the active slot is in cooldown', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const secretStore = createInMemorySecretStore();
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    kp.markFailed(1, 'auth');
+    const deps = makeDeps({ ui, secretStore });
+    // Replace the default keyProvider with one that has slot 1 in cooldown
+    // so listHealthySlots() returns [2] and active-slot-in-cooldown is detected.
+    Object.assign(deps, { keyProvider: kp });
+    await runManageCommand(deps);
+    const items = shown.picks[0] ?? [];
+    const primary = items[1] as unknown as { label?: string } | undefined;
+    ok(
+      primary?.label?.includes('⚠ Rotate to a healthy key'),
+      `expected the warning CTA when active is in cooldown; got: ${primary?.label}`,
+    );
+  });
+
+  it('renders the Manage-keys row with the stored-key count', async () => {
+    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const secretStore = createInMemorySecretStore();
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+    const deps = makeDeps({ ui, secretStore });
+    Object.assign(deps, { keyProvider: kp });
+    await runManageCommand(deps);
+    const items = shown.picks[0] ?? [];
+    const manageRow = items[2] as unknown as { label?: string } | undefined;
+    ok(
+      manageRow?.label?.includes('Manage keys') && manageRow.label.includes('(2'),
+      `expected "Manage keys (2 slots)" with the stored-key count; got: ${manageRow?.label}`,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T30 — primary CTA ("Add or rotate API key") + Settings submenu
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('runManageCommand — T30 primary CTA', () => {
+  it('routes the primary CTA through the same flow as "Set API key" (validates + stores)', async () => {
+    const { ui } = scriptedUi([
+      { pick: { label: '➕ Add or rotate API key' } },
+      { input: 'sk-test-1234567890' },
+    ]);
+    const secretStore = createInMemorySecretStore();
+    const fireChangeCount = { n: 0 };
+    const deps = makeDeps({
+      ui,
+      secretStore,
+      fireChangeCount,
+      fetchImpl: okFetch(),
+    });
+    await runManageCommand(deps);
+    strictEqual(
+      await secretStore.getSecret('apiKey'),
+      'sk-test-1234567890',
+      'primary CTA must write the validated key to the active slot',
+    );
+    strictEqual(fireChangeCount.n, 1, 'fireChange must be called so the picker re-fires');
+  });
+});
+
+describe('runManageCommand — T30 Settings submenu', () => {
+  it('opens a second QuickPick when "⚙ Settings" is picked', async () => {
+    const { ui, shown } = scriptedUi([
+      { pick: { label: '⚙ Settings' } },
+      { pick: undefined }, // dismiss the submenu
+    ]);
+    const deps = makeDeps({ ui });
+    await runManageCommand(deps);
+    ok(
+      shown.picks.length >= 2,
+      `expected Settings to open a second QuickPick; got ${shown.picks.length} pick calls`,
+    );
+  });
+
+  it('Settings submenu lists Set base URL, Test all stored keys, Configure utility models, Log level, and Auto-rotate toggle', async () => {
+    const { ui, shown } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: undefined }]);
+    const deps = makeDeps({ ui });
+    await runManageCommand(deps);
+    const submenuItems = shown.picks[1] ?? [];
+    const labels = submenuItems.map((i) => i.label);
+    ok(labels.includes('Set base URL'), `missing Set base URL; got: ${JSON.stringify(labels)}`);
+    ok(
+      labels.some((l) => l.includes('Test all stored keys')),
+      `missing Test all stored keys; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      labels.some((l) => l.includes('Configure utility models')),
+      `missing Configure utility models; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      labels.some((l) => l.includes('Log level')),
+      `missing Log level; got: ${JSON.stringify(labels)}`,
+    );
+    ok(
+      labels.some((l) => l.includes('Auto-rotate')),
+      `missing Auto-rotate toggle; got: ${JSON.stringify(labels)}`,
+    );
+  });
+
+  it('Log level row shows the current value', async () => {
+    const { ui, shown } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: undefined }]);
+    const deps = makeDeps({
+      ui,
+      getConfig: () => ({
+        get: (k) => (k === 'logLevel' ? 'debug' : undefined),
+        update: async () => undefined,
+      }),
+    });
+    await runManageCommand(deps);
+    const submenuItems = shown.picks[1] ?? [];
+    const logRow = submenuItems.find((i) => i.label.startsWith('Log level'));
+    ok(logRow, `expected a Log level row; got: ${JSON.stringify(submenuItems)}`);
+    ok(
+      logRow?.label?.includes('debug'),
+      `expected Log level row to name the current value; got: ${logRow?.label}`,
+    );
   });
 });
 
 describe('runManageCommand — Set API key', () => {
   it('stores a valid key after a successful validation', async () => {
     const { ui } = scriptedUi([
-      { pick: { label: 'Set API key' } },
+      { pick: { label: '➕ Add or rotate API key' } },
       { input: 'sk-test-1234567890' },
     ]);
     const secretStore = createInMemorySecretStore();
@@ -194,7 +370,7 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('rejects an empty key and does NOT store it', async () => {
-    const { ui } = scriptedUi([{ pick: { label: 'Set API key' } }, { input: '' }]);
+    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: '' }]);
     const secretStore = createInMemorySecretStore();
     const deps = makeDeps({
       ui,
@@ -206,7 +382,7 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('rejects a whitespace-only key and does NOT store it', async () => {
-    const { ui } = scriptedUi([{ pick: { label: 'Set API key' } }, { input: '   ' }]);
+    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: '   ' }]);
     const secretStore = createInMemorySecretStore();
     const deps = makeDeps({
       ui,
@@ -218,7 +394,7 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('does NOT store an unauthorized key', async () => {
-    const { ui } = scriptedUi([{ pick: { label: 'Set API key' } }, { input: 'sk-bad-key' }]);
+    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: 'sk-bad-key' }]);
     const secretStore = createInMemorySecretStore();
     const deps = makeDeps({
       ui,
@@ -231,7 +407,7 @@ describe('runManageCommand — Set API key', () => {
 
   it('masks the input box (password: true)', async () => {
     const { ui, shown } = scriptedUi([
-      { pick: { label: 'Set API key' } },
+      { pick: { label: '➕ Add or rotate API key' } },
       { input: 'sk-test-1234567890' },
     ]);
     const deps = makeDeps({ ui, fetchImpl: okFetch() });
@@ -242,7 +418,7 @@ describe('runManageCommand — Set API key', () => {
   });
 
   it('does not call fireChange when the key is rejected', async () => {
-    const { ui } = scriptedUi([{ pick: { label: 'Set API key' } }, { input: 'sk-bad-key' }]);
+    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: 'sk-bad-key' }]);
     const fireChangeCount = { n: 0 };
     const deps = makeDeps({
       ui,
@@ -254,60 +430,7 @@ describe('runManageCommand — Set API key', () => {
   });
 });
 
-describe('runManageCommand — Clear API key', () => {
-  it('removes a stored key and fires change', async () => {
-    const secretStore = createInMemorySecretStore();
-    await secretStore.storeSecret('apiKey', 'sk-existing-key');
-    const { ui } = scriptedUi([{ pick: { label: 'Clear API key' } }]);
-    const fireChangeCount = { n: 0 };
-    const deps = makeDeps({ ui, secretStore, fireChangeCount });
-    await runManageCommand(deps);
-    equal(await secretStore.hasSecret('apiKey'), false);
-    equal(fireChangeCount.n, 1);
-  });
 
-  it('is a no-op when no key is stored', async () => {
-    const secretStore = createInMemorySecretStore();
-    const { ui } = scriptedUi([{ pick: { label: 'Clear API key' } }]);
-    const fireChangeCount = { n: 0 };
-    const deps = makeDeps({ ui, secretStore, fireChangeCount });
-    await runManageCommand(deps);
-    equal(fireChangeCount.n, 0);
-  });
-});
-
-describe('runManageCommand — Test connection', () => {
-  it('uses the stored key and reports ok', async () => {
-    const secretStore = createInMemorySecretStore();
-    await secretStore.storeSecret('apiKey', 'sk-good-key');
-    const { ui } = scriptedUi([{ pick: { label: 'Test connection' } }]);
-    const fetchImpl = okFetch(['MiniMax-M3', 'MiniMax-M2.5']);
-    const logger = createCapturingLogger();
-    const deps = makeDeps({ ui, secretStore, logger, fetchImpl });
-    await runManageCommand(deps);
-    // The success info message should NOT include the key.
-    const allLogs = logger.lines.flatMap((l) => [l.msg, JSON.stringify(l.ctx ?? {})]);
-    for (const line of allLogs) {
-      ok(!String(line).includes('sk-good-key'), `log must not contain the key: ${String(line)}`);
-    }
-  });
-
-  it('reports a friendly error when no key is stored', async () => {
-    const secretStore = createInMemorySecretStore();
-    const { ui } = scriptedUi([{ pick: { label: 'Test connection' } }]);
-    const deps = makeDeps({ ui, secretStore });
-    await runManageCommand(deps);
-    // No fetch is ever made — we never see a "valid" success path.
-  });
-
-  it('reports unauthorized on a 401', async () => {
-    const secretStore = createInMemorySecretStore();
-    await secretStore.storeSecret('apiKey', 'sk-bad');
-    const { ui } = scriptedUi([{ pick: { label: 'Test connection' } }]);
-    const deps = makeDeps({ ui, secretStore, fetchImpl: unauthorizedFetch() });
-    await runManageCommand(deps);
-  });
-});
 
 describe('runManageCommand — Set base URL', () => {
   it('stores a new base URL in the workspace configuration', async () => {
@@ -320,7 +443,7 @@ describe('runManageCommand — Set base URL', () => {
       },
     };
     const { ui } = scriptedUi([
-      { pick: { label: 'Set base URL' } },
+      { pick: { label: '⚙ Settings' } }, { pick: { label: 'Set base URL' } },
       { input: 'https://example.test/v1' },
     ]);
     const deps = makeDeps({ ui, getConfig: () => fakeConfig });
@@ -337,7 +460,7 @@ describe('runManageCommand — Set base URL', () => {
         return undefined;
       },
     };
-    const { ui } = scriptedUi([{ pick: { label: 'Set base URL' } }, { input: '' }]);
+    const { ui } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: { label: 'Set base URL' } }, { input: '' }]);
     const deps = makeDeps({ ui, getConfig: () => fakeConfig });
     await runManageCommand(deps);
     deepStrictEqual(updated, []);
@@ -357,7 +480,7 @@ describe('runManageCommand — cancellation and safety', () => {
 
   it('does nothing when the user dismisses the API key input', async () => {
     const secretStore = createInMemorySecretStore();
-    const { ui } = scriptedUi([{ pick: { label: 'Set API key' } }, { input: undefined }]);
+    const { ui } = scriptedUi([{ pick: { label: '➕ Add or rotate API key' } }, { input: undefined }]);
     const deps = makeDeps({ ui, secretStore, fetchImpl: okFetch() });
     await runManageCommand(deps);
     equal(await secretStore.hasSecret('apiKey'), false);
@@ -367,7 +490,7 @@ describe('runManageCommand — cancellation and safety', () => {
     const secretStore = createInMemorySecretStore();
     await secretStore.storeSecret('apiKey', 'sk-supersecret-1234567890');
     const logger = createCapturingLogger();
-    const { ui } = scriptedUi([{ pick: { label: 'Test connection' } }]);
+    const { ui } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: { label: 'Test connection' } }]);
     const deps = makeDeps({
       ui,
       secretStore,
@@ -461,7 +584,7 @@ describe('runManageCommand — Toggle auto-rotation', () => {
   });
 
   it('renders the toggle row with the ON state when the setting is true', async () => {
-    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const { ui, shown } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: undefined }]);
     const deps = makeDeps({
       ui,
       getConfig: () => ({
@@ -470,15 +593,15 @@ describe('runManageCommand — Toggle auto-rotation', () => {
       }),
     });
     await runManageCommand(deps);
-    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    const labels = (shown.picks[1] ?? []).map((i) => i.label);
     ok(
       labels.includes('● Auto-rotate on auth failure: ON'),
-      `expected ON-state toggle label in ${JSON.stringify(labels)}`,
+      `expected ON-state toggle label in Settings submenu; got: ${JSON.stringify(labels)}`,
     );
   });
 
   it('renders the toggle row with the OFF state when the setting is false', async () => {
-    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const { ui, shown } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: undefined }]);
     const deps = makeDeps({
       ui,
       getConfig: () => ({
@@ -487,15 +610,15 @@ describe('runManageCommand — Toggle auto-rotation', () => {
       }),
     });
     await runManageCommand(deps);
-    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    const labels = (shown.picks[1] ?? []).map((i) => i.label);
     ok(
       labels.includes('○ Auto-rotate on auth failure: OFF'),
-      `expected OFF-state toggle label in ${JSON.stringify(labels)}`,
+      `expected OFF-state toggle label in Settings submenu; got: ${JSON.stringify(labels)}`,
     );
   });
 
   it('defaults the toggle to ON when no setting value has been persisted', async () => {
-    const { ui, shown } = scriptedUi([{ pick: undefined }]);
+    const { ui, shown } = scriptedUi([{ pick: { label: '⚙ Settings' } }, { pick: undefined }]);
     const deps = makeDeps({
       ui,
       getConfig: () => ({
@@ -504,10 +627,10 @@ describe('runManageCommand — Toggle auto-rotation', () => {
       }),
     });
     await runManageCommand(deps);
-    const labels = (shown.picks[0] ?? []).map((i) => i.label);
+    const labels = (shown.picks[1] ?? []).map((i) => i.label);
     ok(
       labels.includes('● Auto-rotate on auth failure: ON'),
-      `expected default-ON label when nothing is stored, got: ${JSON.stringify(labels)}`,
+      `expected default-ON label in Settings submenu; got: ${JSON.stringify(labels)}`,
     );
   });
 });

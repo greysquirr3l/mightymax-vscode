@@ -95,29 +95,107 @@ Use any Chat feature:
 
 ## Configuration
 
-| Setting              | Scope       | Default                  | Description                                                     |
-| -------------------- | ----------- | ------------------------ | --------------------------------------------------------------- |
-| `mightyMax.baseUrl`  | application | `https://api.minimax.io` | MiniMax API base URL. Restricted in untrusted workspaces.       |
-| `mightyMax.logLevel` | window      | `info`                   | Minimum log level forwarded to the `Mighty Max` output channel. |
+| Setting                              | Scope       | Default                                                                                           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mightyMax.baseUrl`                  | application | `https://api.minimax.io`                                                                          | MiniMax API base URL. Restricted in untrusted workspaces. Change via **Mighty Max: Manage → ⚙ Settings → Set base URL**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `mightyMax.logLevel`                 | window      | `info`                                                                                            | Minimum log level forwarded to the `Mighty Max` output channel (`debug` / `info` / `warn` / `error`). Change via **Mighty Max: Manage → ⚙ Settings → Log level**.                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `mightyMax.firstByteTimeoutMs`       | window      | `45000`                                                                                           | How long the transport waits for the first byte of a streaming response before treating the request as failed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `mightyMax.idleTimeoutMs`            | window      | `60000`                                                                                           | How long the transport waits between subsequent bytes before treating the stream as stalled.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `mightyMax.enableAutoKeyRotation`    | window      | `true`                                                                                            | When `true`, the chat-provider transparently falls back to a healthy stored key if the active key fails (auth, rate-limit, network, http). Flip via **Mighty Max: Manage → ⚙ Settings → Auto-rotate**.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `mightyMax.enableSmartToolFiltering` | window      | `true`                                                                                            | When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 64). History-referenced tools and a pin list of always-on built-ins (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list and history-referenced set are still honored. |
+| `mightyMax.maxTools`                 | window      | `64`                                                                                              | Hard cap on the number of tools forwarded per request when smart filtering is enabled. Tools are ordered by usage frequency (history-referenced first, then always-include, then the rest of the catalog).                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `mightyMax.alwaysIncludeTools`       | window      | `["copilot_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search"]` | Override the built-in pin list. Each entry supports three match forms: exact name (`"run_in_terminal"`), prefix (`"copilot_"` → any tool starting with `copilot_`), or substring (`"grep"` → any tool whose name contains `grep`).                                                                                                                                                                                                                                                                                                                                                                                |
+| `mightyMax.toolFilterStrategy`       | window      | `"hybrid"`                                                                                        | Strategy for choosing which tools to drop when the cap binds. `"hybrid"` combines history-aware pinning with the always-include list; `"history"` drops the least-recently-used; `"always"` drops nothing.                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 The API key never lives in settings — it is stored exclusively in
 `context.secrets` (SecretStorage) and entered through the
 `Mighty Max: Manage` command.
 
+## Multi-key management (flight deck)
+
+Mighty Max can store up to **three** independent MiniMax API keys (one
+per slot). Open the manage command and pick **🔑 Manage keys (N slots)**
+to see the per-slot view:
+
+- **Set** — store or replace the key for a slot (validated against
+  `/v1/models` like the single-key flow).
+- **Test** — hit `/v1/models` to confirm the key works.
+- **Clear** — remove the stored key for a slot.
+- **Make active** — promote the slot to the user's preferred pick.
+  Hidden when the slot is already active.
+- **Rename** — give the slot a friendly label (e.g. "personal",
+  "work"); the label persists across restarts in `globalState` and
+  surfaces in both the manage UI and the status-bar dashboard.
+
+When a stored key fails, the chat-provider marks that slot
+unhealthy for a kind-appropriate cooldown (auth 60s, rate-limit 30s,
+http 15s, network 10s, other 5s) and transparently retries the
+request with the next healthy slot. On success, the fallback winner
+is **promoted to active** (sticky rotation) so the next turn hits
+it instead of reverting to the failed slot — the chat-provider
+remembers the most-recent fallback in-memory and the status-bar
+dashboard surfaces "Last fallback: slot N · Mm ago".
+
+The manage command's main menu is now organised around an
+**aviator/flight-deck theme** matching the existing mascot brand.
+A non-selectable status header at the top surfaces the current
+state ("Active: Slot N ★ ● ● ● Auto-rotate: ON" or
+"⚠ Active key (Slot N) was rejected Ns ago" when the active slot
+is in cooldown), then three CTAs:
+
+- **➕ Add or rotate API key** — set or replace the active slot's
+  key. The label flips to **⚠ Rotate to a healthy key** when the
+  active slot is in cooldown, so the primary action is always the
+  one that fixes the visible problem.
+- **🔑 Manage keys (N slots)** — opens the per-slot flight-deck
+  view (Set / Test / Clear / Make active / Rename per slot).
+- **⚙ Settings** — opens the settings submenu:
+  - **Set base URL** — change `mightyMax.baseUrl`.
+  - **Test all stored keys** — run the connectivity probe against
+    every slot, surfacing the per-slot result.
+  - **Configure utility models** — one-click fix for the
+    BYOK "No utility model is configured" warning (see
+    [One-click utility model configuration](#one-click-utility-model-configuration-for-byok-agent-mode)).
+  - **Log level** — change `mightyMax.logLevel`. The current value
+    shows inline on the row so you can see the active setting
+    before picking.
+  - **Auto-rotate** — flip `mightyMax.enableAutoKeyRotation`. The
+    row label reflects the current state ("● … ON" / "○ … OFF").
+
 ## Token plan usage indicator
 
 Once a Subscription Key is stored, Mighty Max adds a status-bar item
-on the right side (the Mighty Max aviator glyph) that mirrors the
-MiniMax console's Token Plan usage bar. The icon stays neutral until
-the first successful fetch, then renders the binding constraint
-across the 5-hour and weekly windows:
+on the right side (the Mighty Max aviator glyph) carrying a
+**flight-deck dashboard** tooltip. The dashboard is a 5-section
+markdown layout that surfaces everything you need to know about
+your key pool at a glance:
+
+```
+▼ Mighty Max · Flight Deck
+─────────────────────────
+Slot 1 ● healthy ★ personal
+Slot 2 ● healthy   work
+Slot 3 ○ cooldown 47s
+─────────────────────────
+Auto-rotation: ON
+Last fallback: slot 2 · 3m ago
+─────────────────────────
+5h window: 42% used ████░░░░░░
+Weekly:    18% used ██░░░░░░░░
+as of 16:24:03 · click for details
+```
+
+The headline percentage (next to the icon) drives the background
+tint:
 
 - **0–79%** — neutral foreground
 - **80–99%** — warning tint
 - **100%** — error tint (the console also pauses requests at 100%)
 
-Hover for a tooltip with per-window usage bars and reset times; click
-(or run **Mighty Max: Show MiniMax Usage**) to open a compact panel
+The item text gets a `$(error)` codicon suffix when the **active
+slot is in cooldown** so the failure mode is visible at a glance
+without hovering. Click (or run **Mighty Max: Show MiniMax Usage**)
+to open a compact panel
 with the same data, a refresh button, and a collapsible raw-response
 disclosure that helps diagnose schema drift.
 
@@ -231,19 +309,20 @@ other feature keep working.
 
 Mighty Max covers every BYOK-supported surface in VS Code Chat:
 
-| Feature                 | Status       | Notes                                                                |
-| ----------------------- | ------------ | -------------------------------------------------------------------- |
-| Chat: Ask               | ✅ Supported | Standard chat mode in the Chat panel                                 |
-| Chat: Edit              | ✅ Supported | Edit mode with diff previews                                         |
-| Chat: Inline            | ✅ Supported | Inline chat in the editor (Ctrl+I)                                   |
-| Agent mode              | ✅ Supported | Full agentic tool calling with built-in, extension, and MCP tools    |
-| Custom/local agents     | ✅ Supported | User-authored agent definitions work with MiniMax models             |
-| Utility tasks           | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting      |
-| Tool calling            | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers |
-| Image input             | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                       |
-| Thinking blocks         | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning |
-| Multi-round agent loops | ✅ Supported | Tool results fed back across many rounds without dropping calls      |
-| Token usage tracking    | ✅ Supported | Accurate context-window widget via prompt + completion token counts  |
+| Feature                 | Status       | Notes                                                                                                           |
+| ----------------------- | ------------ | --------------------------------------------------------------------------------------------------------------- |
+| Chat: Ask               | ✅ Supported | Standard chat mode in the Chat panel                                                                            |
+| Chat: Edit              | ✅ Supported | Edit mode with diff previews                                                                                    |
+| Chat: Inline            | ✅ Supported | Inline chat in the editor (Ctrl+I)                                                                              |
+| Agent mode              | ✅ Supported | Full agentic tool calling with built-in, extension, and MCP tools                                               |
+| Custom/local agents     | ✅ Supported | User-authored agent definitions work with MiniMax models                                                        |
+| Utility tasks           | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                 |
+| Tool calling            | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                            |
+| Image input             | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                                                                  |
+| Thinking blocks         | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning                                            |
+| Multi-round agent loops | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                 |
+| Multi-key rotation      | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard |
+| Token usage tracking    | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                             |
 
 ## What Mighty Max does NOT provide
 
@@ -295,12 +374,12 @@ disable sourcemaps.
 ```
 src/
   extension.ts                 # composition root
-  ports/                       # port interfaces (Logger, SecretStore, MiniMaxClient, ModelCatalog, UsageClient)
-  adapters/                    # port implementations (I/O lives here; StatusBarAdapter + UsageTransportAdapter for the usage panel)
+  ports/                       # port interfaces (Logger, SecretStore, MiniMaxClient, ModelCatalog, UsageClient, KeyProvider)
+  adapters/                    # port implementations (I/O lives here; StatusBarAdapter + UsageTransportAdapter for the usage panel; KeyProviderAdapter for multi-key)
   providers/                   # VS Code LanguageModelChatProvider
-  commands/                    # command handlers (manage, configure-utility-models, show-usage)
+  commands/                    # command handlers (manage, flight-deck-view, configure-utility-models, show-usage, quickpick-header)
   lib/                         # domain layer (no vscode, no HTTP)
-    domain/                    # pure catalog, mapping, capability, usage-normalization rules
+    domain/                    # pure catalog, mapping, capability, key-pool, slot-labels, flight-deck-tooltip, usage-normalization rules
     *.test.ts                  # unit tests (vanilla mocha, no host)
   test/                        # integration tests (run in the VS Code host)
 assets/

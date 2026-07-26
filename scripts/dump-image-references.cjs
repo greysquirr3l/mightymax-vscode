@@ -25,10 +25,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const REPO_ROOT_CANDIDATES = [
-  process.cwd(),
-  path.resolve(__dirname, '..'),
-];
+const REPO_ROOT_CANDIDATES = [process.cwd(), path.resolve(__dirname, '..')];
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
 

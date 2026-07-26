@@ -4,6 +4,97 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-07-26
+
+### Added
+
+- **Flight-deck key management UX.** The manage command is now
+  organised around an aviator/flight-deck theme that matches the
+  existing mascot brand. The main menu collapsed from 6 items to
+  3 CTAs (Add or rotate key / Manage keys / Settings) sitting
+  under a non-selectable status header at the top. The 10-item
+  "Manage API keys" submenu was replaced by a per-slot view —
+  one row per stored slot, tapping a row opens a per-slot action
+  sheet (Set / Test / Clear / Make active / Rename). User-chosen
+  slot labels persist across restarts in `globalState`. The
+  primary CTA flips to "⚠ Rotate to a healthy key" when the
+  active slot is in cooldown.
+
+- **Status-bar flight-deck dashboard.** The status-bar item now
+  carries a 5-section markdown tooltip: per-slot health (● / ★ /
+  ○ cooldown Ns) → auto-rotation toggle → most-recent fallback
+  with relative-ago math → Token Plan bars (5h window / Weekly) →
+  refresh time. The item text gets a `$(error)` codicon suffix
+  when the active slot is in cooldown, so the failure mode is
+  visible at a glance without hovering. The new public helper
+  `cooldownRemainingMs` in `src/lib/domain/key-pool.ts` powers
+  the per-slot remaining-cooldown math deterministically.
+
+- **In-app auto-rotation toggle.** A new "Auto-rotate" row in
+  the Settings submenu inverts the `mightyMax.enableAutoKeyRotation`
+  setting without restarting the host. `fireChange()` is called
+  so the picker refreshes on the next render. Default `true`
+  (preserves the T25 transparent-fallback behaviour).
+
+- **TDD test sweep (T33).** Eight new tests close gaps in the
+  rotation matrix and per-slot view acceptance criteria that the
+  original T27/T31 implementations didn't pin explicitly: http
+  5xx fallback, no-promote under disabled rotation, no-markFailed
+  for rate-limit/network/http under disabled rotation, all-on-
+  cooldown rendering, three-key mixed-health dot matrix, empty /
+  single-key / two-key row counts, and Rename persistence.
+
+- **Image-attachment workflow helper (T34).** A new
+  `scripts/dump-image-references.cjs` lists every image file
+  under `tmp/` (sorted by mtime, filtered to the same MIME set
+  the T04 mapper accepts) so the agent and the user can see what
+  visual references are available at the start of a session. A
+  companion doc (`docs/dev/agent-prompts.md`, gitignored) and an
+  AGENTS.md one-liner rule pin the convention: drop images into
+  `tmp/<descriptive-name>.png` and reference the path, because
+  in-prompt image attachments are visible to the user in the
+  chat UI but not propagated to the executing subagent.
+
+### Changed
+
+- **Multi-key rotation is now sticky.** When the active key is
+  rejected (any failure kind, not just auth) and the
+  chat-provider falls back to a healthy slot, the fallback
+  winner is promoted to active via `setActiveSlot(pick.slot)` so
+  the next turn hits it instead of reverting to the failed slot.
+  The `KeyProvider` port now exposes `recordFallback(slot,
+  fellBackFrom, atMs)` and `readonly lastFallback` so the
+  status-bar dashboard can surface the most-recent fallback.
+
+- **Rotation cover is wider.** `markFailed` now fires for any
+  `MiniMaxClientErrorKind` (rate-limit / network / http / parse
+  / abandoned / stall) by collapsing the wider kind union onto
+  the key-pool's `FailureKind` via a small `mapErrorKindToFailureKind`
+  helper. Rate-limit / network / http 5xx now trigger transparent
+  fallback when auto-rotation is enabled (previously only auth
+  did).
+
+- **Auto-rotation-off is clean.** With the toggle off: auth
+  failures surface the actionable "Manage command" hint;
+  rate-limit / network / http / parse / abandoned / stall surface
+  their raw `MiniMaxClientError` envelope so the user keeps
+  full manual control and sees the exact upstream error message.
+  No silent retries, no sticky promotion under disabled rotation.
+
+- **Status-bar tooltip was rewritten.** The single-line usage
+  summary was replaced by the 5-section dashboard above. The
+  background-color tint still flips at 80% (warning) / 100%
+  (error) on the headline percentage.
+
+### Notes
+
+- Total tests: **553** test cases pass across three layers
+  (392 node + 161 vscode-stub + 15 vscode-host under
+  `@vscode/test-cli --label unit`). Preflight is clean:
+  `typecheck` (no errors), `lint --max-warnings 0` (no
+  warnings), `npm run package` produces a valid 34.9 MB .vsix
+  (975 files). No new production dependencies.
+
 ## [0.5.1] — 2026-07-22
 
 ### Fixed

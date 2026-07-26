@@ -859,6 +859,315 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
       'slot 1 must NOT have a recorded failure under disabled rotation',
     );
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // T27 — rotation wiring fidelity: markFailed for non-auth failure kinds
+  // (rate-limit, network, http, other) and sticky fallback via setActiveSlot.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  it('falls back to the next stored key on rate-limit when auto-rotation is enabled', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    let secondAttemptApiKey: string | undefined;
+    const rateLimitedClient: MiniMaxClient = {
+      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('rate-limit', '429 too many requests', {
+            status: 429,
+            retriable: true,
+          });
+        }
+        if (attempt === 2) {
+          secondAttemptApiKey = apiKey;
+          return (async function* () {
+            yield { textDelta: 'recovered-on-slot-2' };
+            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+          })();
+        }
+        throw new Error(`unexpected attempt ${attempt}`);
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, rateLimitedClient, catalog);
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(attempt, 2, 'rate-limit must trigger fallback, not surface');
+    strictEqual(
+      secondAttemptApiKey,
+      'sk-second-key',
+      'second attempt must use slot 2, not the rate-limited slot 1',
+    );
+    strictEqual(
+      kp.__state.failures[1],
+      'rate-limit',
+      'slot 1 must be marked failed with the rate-limit kind (not auth, not undefined)',
+    );
+  });
+
+  it('falls back to the next stored key on network error when auto-rotation is enabled', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    let secondAttemptApiKey: string | undefined;
+    const networkDownClient: MiniMaxClient = {
+      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('network', 'fetch failed (ENOTFOUND)', {
+            retriable: true,
+          });
+        }
+        if (attempt === 2) {
+          secondAttemptApiKey = apiKey;
+          return (async function* () {
+            yield { textDelta: 'recovered-on-slot-2' };
+            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+          })();
+        }
+        throw new Error(`unexpected attempt ${attempt}`);
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, networkDownClient, catalog);
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(attempt, 2, 'network error must trigger fallback, not surface');
+    strictEqual(
+      secondAttemptApiKey,
+      'sk-second-key',
+      'second attempt must use slot 2, not the network-failed slot 1',
+    );
+    strictEqual(
+      kp.__state.failures[1],
+      'network',
+      'slot 1 must be marked failed with the network kind',
+    );
+  });
+
+  it('promotes the fallback winner to active slot after a successful auth fallback (sticky rotation)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    const authThenOkClient: MiniMaxClient = {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('auth', 'invalid api key', {
+            status: 401,
+            retriable: false,
+          });
+        }
+        return (async function* () {
+          yield { textDelta: 'slot 2 worked' };
+          yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+        })();
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, authThenOkClient, catalog);
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(
+      await kp.getActiveSlot(),
+      2,
+      'after a successful fallback to slot 2, slot 2 must be promoted to active so the next turn hits it',
+    );
+
+    const fallbackLog = logger.calls.find(
+      (c) => c.level === 'info' && c.message.includes('Key fallback succeeded'),
+    );
+    ok(fallbackLog, 'expected an info log line about the successful fallback');
+    if (fallbackLog && fallbackLog.context) {
+      strictEqual(
+        fallbackLog.context['newActiveSlot'],
+        2,
+        'fallback-success log must include newActiveSlot: 2 so operators can see the promotion',
+      );
+    }
+  });
+
+  // ─── T33 — gaps in the T27 rotation-wiring matrix ────────────────────────
+
+  it('falls back to the next stored key on http 5xx when auto-rotation is enabled', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    let secondAttemptApiKey: string | undefined;
+    const httpDownClient: MiniMaxClient = {
+      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('http', '502 bad gateway', { status: 502, retriable: true });
+        }
+        if (attempt === 2) {
+          secondAttemptApiKey = apiKey;
+          return (async function* () {
+            yield { textDelta: 'recovered-on-slot-2' };
+            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+          })();
+        }
+        throw new Error(`unexpected attempt ${attempt}`);
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-first-key');
+    await kp.setKey(2, 'sk-second-key');
+
+    const provider = new ChatProvider(logger, kp, httpDownClient, catalog);
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      makeModelInfo('MiniMax-M3'),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+
+    strictEqual(attempt, 2, 'http 5xx must trigger fallback, not surface');
+    strictEqual(
+      secondAttemptApiKey,
+      'sk-second-key',
+      'second attempt must use slot 2, not the http-failed slot 1',
+    );
+    strictEqual(kp.__state.failures[1], 'http', 'slot 1 must be marked failed with the http kind');
+  });
+
+  it('does NOT promote the fallback winner when auto-rotation is disabled (no sticky fallback under manual control)', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    let attempt = 0;
+    const failThenRecoverClient: MiniMaxClient = {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new MiniMaxClientError('rate-limit', '429', { status: 429, retriable: true });
+        }
+        // Second attempt with auto-rotation disabled should never fire —
+        // the failure must surface on attempt 1.
+        return (async function* () {
+          yield { textDelta: 'should-not-be-reached' };
+          yield { stopReason: 'stop' } as MiniMaxStreamEvent;
+        })();
+      },
+    };
+
+    const secretStore = makeSecretStore({ has: false });
+    const kp = makeTestKeyProvider(secretStore, { activeSlot: 1 });
+    await kp.setKey(1, 'sk-key-1');
+    await kp.setKey(2, 'sk-key-2');
+
+    const provider = new ChatProvider(logger, kp, failThenRecoverClient, catalog, (key) =>
+      key === 'enableAutoKeyRotation' ? false : undefined,
+    );
+    const { progress } = makeProgress();
+    let caughtError: Error | undefined;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caughtError = err as Error;
+    }
+
+    strictEqual(attempt, 1, 'should have made exactly ONE attempt under disabled rotation');
+    ok(caughtError !== undefined, 'rate-limit error must surface when rotation is off');
+    strictEqual(
+      await kp.getActiveSlot(),
+      1,
+      'active slot must remain on slot 1 — no sticky promotion under disabled rotation',
+    );
+  });
+
+  it('does NOT call markFailed for rate-limit, network, or http when auto-rotation is disabled', async () => {
+    const logger = makeRecordingLogger();
+    const catalog = makeCatalog([M3]);
+
+    for (const kind of ['rate-limit', 'network', 'http'] as const) {
+      const kp = makeTestKeyProvider(makeSecretStore({ has: false }), { activeSlot: 1 });
+      await kp.setKey(1, 'sk-key-1');
+      await kp.setKey(2, 'sk-key-2');
+
+      const failingClient: MiniMaxClient = {
+        streamCompletion() {
+          throw new MiniMaxClientError(kind, `${kind} failure`, {
+            status: kind === 'rate-limit' ? 429 : 500,
+            retriable: true,
+          });
+        },
+      };
+
+      const provider = new ChatProvider(logger, kp, failingClient, catalog, (key) =>
+        key === 'enableAutoKeyRotation' ? false : undefined,
+      );
+      try {
+        await provider.provideLanguageModelChatResponse(
+          makeModelInfo('MiniMax-M3'),
+          [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+          { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+          { report: () => undefined },
+          new vscode.CancellationTokenSource().token,
+        );
+      } catch {
+        // expected — the error must surface to the user
+      }
+
+      const failedSlots = Object.entries(kp.__state.failures).filter(([, v]) => v !== undefined);
+      strictEqual(
+        failedSlots.length,
+        0,
+        `kind=${kind}: no slot should be marked failed under disabled rotation`,
+      );
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

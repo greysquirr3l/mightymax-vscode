@@ -75,6 +75,19 @@ export interface KeyProvider {
    */
   listHealthySlots(): Promise<ReadonlyArray<KeySlot>>;
 
+  /**
+   * T32 — record a successful fallback (active slot failed, the
+   * adapter promoted a different healthy slot to active). The
+   * status bar reads this to surface the most-recent fallback in
+   * the flight-deck dashboard. In-memory only — same lifecycle as
+   * the cooldown state. The latest call wins.
+   */
+  recordFallback(slot: KeySlot, fellBackFrom: KeySlot, atMs: number): void;
+
+  /** T32 — most-recent fallback. `undefined` when no fallback has happened. */
+  readonly lastFallback:
+    { readonly slot: KeySlot; readonly fellBackFrom: KeySlot; readonly atMs: number } | undefined;
+
   /** Expose the underlying cooldown state for tests/diagnostics. */
   readonly __testOnlyCooldown?: CooldownState;
 }

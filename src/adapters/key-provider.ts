@@ -68,6 +68,11 @@ export class KeyProviderAdapter implements KeyProvider {
   private cooldown: CooldownState = emptyCooldownState();
   /** Snapshot of the persisted active-slot preference so we can fall back to a sensible default. */
   private cachedActiveSlot: KeySlot | undefined;
+  /** T32 — most-recent successful fallback. In-memory only; same lifecycle
+   * as the cooldown state. Set by the chat-provider via
+   * `recordFallback` after every sticky promotion. */
+  private lastFallbackRecord:
+    { readonly slot: KeySlot; readonly fellBackFrom: KeySlot; readonly atMs: number } | undefined;
 
   constructor(deps: KeyProviderDeps) {
     this.secretStore = deps.secretStore;
@@ -149,5 +154,14 @@ export class KeyProviderAdapter implements KeyProvider {
       }
     }
     return healthy;
+  }
+
+  recordFallback(slot: KeySlot, fellBackFrom: KeySlot, atMs: number): void {
+    this.lastFallbackRecord = { slot, fellBackFrom, atMs };
+  }
+
+  get lastFallback():
+    { readonly slot: KeySlot; readonly fellBackFrom: KeySlot; readonly atMs: number } | undefined {
+    return this.lastFallbackRecord;
   }
 }

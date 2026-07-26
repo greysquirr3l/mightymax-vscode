@@ -17,10 +17,15 @@ import { createHash } from 'node:crypto';
 import * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
-import type { MiniMaxClient, MiniMaxCompletionRequest } from '../ports/minimax-client.js';
+import type {
+  MiniMaxClient,
+  MiniMaxClientErrorKind,
+  MiniMaxCompletionRequest,
+} from '../ports/minimax-client.js';
 import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import type { KeyProvider, KeyPick, KeySlot } from '../ports/key-provider.js';
+import type { FailureKind } from '../lib/domain/key-pool.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 
 import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
@@ -295,7 +300,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       // because TS narrows the type from `initialPick` (a let-bound
       // union) to `KeyPick` after the first non-undefined assignment.
       let pick: KeyPick | undefined = initialPick;
-      let lastAuthError: MiniMaxClientError | undefined;
+      let lastError: MiniMaxClientError | undefined;
       while (pick !== undefined) {
         const attemptController = new AbortController();
         const onCancel = token.onCancellationRequested(() => attemptController.abort());
@@ -320,68 +325,104 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           // Success: clear any pending cooldown for this slot.
           this.keyProvider.markSucceeded(pick.slot);
           if (pick.fellBack) {
+            // T27 sticky fallback: promote the winner so the next
+            // turn hits it instead of reverting to the failed slot.
+            await this.keyProvider.setActiveSlot(pick.slot);
+            // T32 — record the most-recent successful fallback so the
+            // status-bar dashboard can surface "Last fallback: slot X
+            // · Ym ago" in its tooltip. `attemptedSlots` already
+            // contains the failed slot(s) we tried before this one
+            // succeeded; the most-recent failed slot is its penultimate
+            // entry. If only one slot was tried (the active one
+            // succeeded with `fellBack:false` we wouldn't be here) the
+            // invariant is `attemptedSlots.length >= 2`.
+            const fellBackFrom = attemptedSlots[attemptedSlots.length - 2];
+            if (fellBackFrom !== undefined) {
+              this.keyProvider.recordFallback(pick.slot, fellBackFrom, Date.now());
+            }
             this.logger.info('Key fallback succeeded', {
               triedSlots: attemptedSlots,
               winningSlot: pick.slot,
+              newActiveSlot: pick.slot,
             });
           }
-          lastAuthError = undefined;
+          lastError = undefined;
           break;
         } catch (err) {
-          if (
-            err instanceof MiniMaxClientError &&
-            err.kind === 'auth' &&
-            !attemptController.signal.aborted &&
-            this.isAutoRotationEnabled()
-          ) {
-            this.keyProvider.markFailed(pick.slot, 'auth');
-            this.logger.warn('API key rejected by MiniMax, falling back', {
-              failedSlot: pick.slot,
-              status: err.status,
-            });
-            lastAuthError = err;
-            const nextPick = await this.keyProvider.pickKey();
-            if (nextPick === undefined) {
-              // No more healthy slots — surface the auth error to
-              // the user. Marking the loop as "exhausted" via
-              // `pick = undefined` so the post-loop block runs.
-              pick = undefined;
-              break;
+          // Cancellation: never mark or rotate, just propagate.
+          if (attemptController.signal.aborted) {
+            throw err;
+          }
+          // Non-MiniMax errors: re-throw (caller-visible programming
+          // error, not a transport-class issue).
+          if (!(err instanceof MiniMaxClientError)) {
+            throw err;
+          }
+          if (!this.isAutoRotationEnabled()) {
+            // Auto-rotation is off (T25 setting). Surface the failure
+            // directly to the user. Auth failures get an actionable
+            // hint that points at the manage command; other kinds
+            // surface with their raw envelope so the user can see
+            // the 429 / network / 5xx message verbatim.
+            if (err.kind === 'auth') {
+              this.logger.warn('Auth failure with auto-rotation disabled — surfacing to user', {
+                failedSlot: pick.slot,
+                status: err.status,
+              });
+              throw new Error(
+                'MiniMax rejected the active API key (auth). Auto-rotation is disabled ' +
+                  '(mightyMax.enableAutoKeyRotation = false); run "Mighty Max: Manage" ' +
+                  'and either pick a different slot under "Manage API keys > Active slot" ' +
+                  'or set a new key, then retry.',
+              );
             }
-            pick = nextPick;
-            continue;
-          }
-          if (
-            err instanceof MiniMaxClientError &&
-            err.kind === 'auth' &&
-            !attemptController.signal.aborted &&
-            !this.isAutoRotationEnabled()
-          ) {
-            // Auto-rotation is off (T25 setting). Surface the
-            // auth failure directly to the user with a hint that
-            // points at the manage command. No `markFailed`, no
-            // looping — the user explicitly wants manual key
-            // control, so we honor that.
-            this.logger.warn('Auth failure with auto-rotation disabled — surfacing to user', {
-              failedSlot: pick.slot,
-              status: err.status,
-            });
-            throw new Error(
-              'MiniMax rejected the active API key (auth). Auto-rotation is disabled ' +
-                '(mightyMax.enableAutoKeyRotation = false); run "Mighty Max: Manage" ' +
-                'and either pick a different slot under "Manage API keys > Active slot" ' +
-                'or set a new key, then retry.',
+            this.logger.warn(
+              `MiniMax ${err.kind} with auto-rotation disabled — surfacing to user`,
+              {
+                failedSlot: pick.slot,
+                kind: err.kind,
+                status: err.status,
+              },
             );
+            throw err;
           }
-          throw err;
+          // T27 — auto-rotation on: markFailed for ANY MiniMax failure
+          // kind (auth / rate-limit / network / http / other), then
+          // try the next healthy slot. The cooldown durations in
+          // `key-pool.ts` are kind-specific, so a 429 gets the
+          // rate-limit cooldown and a network blip gets the
+          // short network cooldown. MiniMax kinds without a direct
+          // FailureKind counterpart (`parse` / `abandoned`) collapse
+          // to `'other'` for cooldown accounting.
+          if (err.kind === 'abort') {
+            // Cancellation is intentional — never penalize the slot.
+            throw err;
+          }
+          this.keyProvider.markFailed(pick.slot, mapErrorKindToFailureKind(err.kind));
+          this.logger.warn(`API key failed (${err.kind}), falling back`, {
+            failedSlot: pick.slot,
+            kind: err.kind,
+            status: err.status,
+          });
+          lastError = err;
+          const nextPick = await this.keyProvider.pickKey();
+          if (nextPick === undefined) {
+            // No more healthy slots — mark the loop as "exhausted"
+            // so the post-loop surface block runs with `lastError`
+            // set to the most recent failure.
+            pick = undefined;
+            break;
+          }
+          pick = nextPick;
+          continue;
         } finally {
           onCancel.dispose();
         }
       }
 
       if (pumpResult === undefined) {
-        if (lastAuthError !== undefined) {
-          throw lastAuthError;
+        if (lastError !== undefined) {
+          throw lastError;
         }
         throw new Error(
           'All stored MiniMax API keys are in cooldown. ' +
@@ -910,6 +951,43 @@ function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string
   }
 
   return textParts.join('\n');
+}
+
+/**
+ * T27 — collapse MiniMax transport error kinds that have no direct
+ * counterpart in the key-pool's `FailureKind` enum onto `'other'`
+ * for cooldown accounting. The auth / rate-limit / http / network
+ * kinds pass through verbatim so the kind-specific cooldown durations
+ * in `key-pool.ts` (auth 60s / rate-limit 30s / http 15s / network
+ * 10s / other 5s) are honored.
+ *
+ * `abort` is intentionally not handled here — the caller checks for it
+ * before calling this mapper so cancellation never marks a slot.
+ */
+function mapErrorKindToFailureKind(kind: MiniMaxClientErrorKind): FailureKind {
+  switch (kind) {
+    case 'auth':
+    case 'rate-limit':
+    case 'http':
+    case 'network':
+      return kind;
+    case 'parse':
+    case 'abandoned':
+    case 'stall':
+    case 'abort':
+      // `abort` is handled by the caller before this mapper runs;
+      // the case is included here only so the switch stays
+      // exhaustive over `MiniMaxClientErrorKind`. `parse`,
+      // `abandoned`, and `stall` are transport-level failures with
+      // no dedicated cooldown tier; use the shortest `'other'`
+      // cooldown so the slot can recover quickly.
+      return 'other';
+    default: {
+      const _exhaustive: never = kind;
+      void _exhaustive;
+      return 'other';
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

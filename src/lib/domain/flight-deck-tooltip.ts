@@ -197,7 +197,10 @@ export function buildFlightDeckTooltip(input: FlightDeckTooltipInput): string {
     lines.push(line);
   }
   lines.push(`as of ${fmtClock(input.nowMs)} · click for details`);
-  return lines.join('\n');
+  // A plain '\n' is a markdown *soft* break — VS Code's renderer
+  // collapses it to a space, so the whole tooltip reflows into one
+  // paragraph. Two trailing spaces force a CommonMark hard break.
+  return lines.join('  \n');
 }
 
 export interface FlightDeckTextInput {

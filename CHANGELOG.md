@@ -4,6 +4,73 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-08-21
+
+### Added
+
+- **Native MiniMax M3 token counting.** The Copilot Chat provider
+  now uses MiniMax's Anthropic-compatible token-count endpoint for
+  M3 prompts when it is available. Results are cached for 30 seconds,
+  concurrent matching requests are coalesced, and a local heuristic
+  preserves context estimates if the native endpoint, selected key,
+  or response is unavailable. The new
+  `mightyMax.enableNativeTokenCounting` setting defaults to `true`.
+
+- **Configurable M3 thinking.** `mightyMax.m3ThinkingMode` now
+  lets users choose MiniMax M3's `adaptive` thinking (the default)
+  or `disabled` thinking for more direct, lower-latency responses.
+  The setting is read on each request, so a configuration change does
+  not require an extension-host restart.
+
+- **Configurable tool-result budget.**
+  `mightyMax.toolResultMaxChars` controls the maximum retained
+  characters for each tool result included in the next MiniMax
+  request. It defaults to 4,096 characters and accepts values from
+  512 through 65,536, preserving a clear truncation marker when a
+  result is shortened.
+
+- **Video input mapping for M3.** Supported VS Code video data parts
+  are now serialized for MiniMax M3 alongside existing text and image
+  content. MP4, WebM, QuickTime, and MPEG are accepted for inline
+  input; empty, unsupported, and oversized attachments are skipped
+  with a structured mapping warning instead of aborting the turn.
+
+- **Integration diagnostics.** The new **Mighty Max: Show Integration
+  Diagnostics** command reports the configured endpoint origin,
+  host thinking support, model count, safe key-health state, and the
+  active MiniMax settings. It never displays API-key values,
+  authorization headers, or prompt content.
+
+- **Per-turn MiniMax usage in the Flight Deck.** When MiniMax returns
+  usage metadata, the status-bar tooltip now displays the final input,
+  output, prompt-cache read, and prompt-cache write token figures for
+  the most recent turn. This operational telemetry is held only in
+  memory and does not trigger another quota request.
+
+### Changed
+
+- **Multi-key labels are fully wired into the live extension.** The
+  existing Rename action in **Mighty Max: Manage → Manage keys** now
+  persists non-secret slot labels in global state and refreshes the
+  Flight Deck immediately. Labels survive extension-host restarts and
+  make stored keys easier to distinguish in multi-key setups.
+
+- **Provider management integration.** The extension now declares
+  **Mighty Max: Manage** as its standard Copilot Chat provider
+  management command, making the existing key and configuration flow
+  discoverable through the host's provider surface.
+
+### Notes
+
+- Release preflight is clean: TypeScript type checking, ESLint,
+  extension-host unit tests, VSIX packaging, archive-integrity checks,
+  and the production dependency audit all pass. The packaged manifest
+  includes the new command and configuration contributions.
+
+- A live MiniMax M3 smoke test with a non-production key remains the
+  final release-publication gate for validating the provider endpoint,
+  native token-count behavior, and video input against the live API.
+
 ## [0.6.1] — 2026-07-26
 
 ### Fixed

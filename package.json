@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -64,12 +64,18 @@
         "title": "Mighty Max: Show MiniMax Usage",
         "category": "Mighty Max",
         "icon": "$(mightymax-head)"
+      },
+      {
+        "command": "mightyMax.showDiagnostics",
+        "title": "Mighty Max: Show Integration Diagnostics",
+        "category": "Mighty Max"
       }
     ],
     "languageModelChatProviders": [
       {
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
+        "managementCommand": "mightyMax.manage",
         "configuration": {
           "properties": {
             "apiKey": {
@@ -221,6 +227,34 @@
           "description": "Optional system prompt sent on every M3 request. When empty, Mighty Max uses a short preamble that nudges M3 to plan before the first tool call. The prompt is sanitized for UTF-16 surrogate code points and sent with `cache_control: ephemeral` so it is reused across requests.",
           "scope": "window"
         },
+        "mightyMax.enableNativeTokenCounting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use MiniMax M3's native Anthropic-compatible token-count endpoint for Copilot Chat context estimates. Requests are short-lived cached and automatically fall back to a local heuristic if the endpoint is unavailable.",
+          "scope": "window"
+        },
+        "mightyMax.m3ThinkingMode": {
+          "type": "string",
+          "enum": [
+            "adaptive",
+            "disabled"
+          ],
+          "default": "adaptive",
+          "enumDescriptions": [
+            "Enable MiniMax M3 adaptive thinking for stronger planning and interleaved tool use.",
+            "Disable visible MiniMax M3 thinking for lower-latency, direct responses."
+          ],
+          "description": "Controls MiniMax M3 thinking on the Anthropic-compatible endpoint. M2-family models retain their native reasoning behavior.",
+          "scope": "window"
+        },
+        "mightyMax.toolResultMaxChars": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 512,
+          "maximum": 65536,
+          "description": "Maximum characters retained for each tool result sent back to MiniMax. Larger values preserve more terminal/search output but consume more context and may increase latency.",
+          "scope": "window"
+        },
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,
@@ -268,8 +302,8 @@
     "@types/mocha": "10.0.10",
     "@types/node": "26.1.1",
     "@types/vscode": "1.125.0",
-    "@vscode/test-cli": "0.0.11",
-    "@vscode/test-electron": "2.4.1",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "3.9.2",
     "esbuild": "0.28.1",
     "eslint": "9.39.5",

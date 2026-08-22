@@ -96,6 +96,7 @@ function makeAdapterHarness(opts: {
   usage?: TokenPlanUsage | 'unavailable' | 'throw';
   autoRotationEnabled?: boolean;
   slotLabelsRaw?: unknown;
+  getSlotLabelsRaw?: () => unknown;
   nowMs?: number;
 }): { adapter: StatusBarAdapter; item: FakeStatusBarItem } {
   const items: FakeStatusBarItem[] = [];
@@ -106,6 +107,9 @@ function makeAdapterHarness(opts: {
     usageClient: makeUsageClient(opts.usage ?? SAMPLE_USAGE),
     isAutoRotationEnabled: () => opts.autoRotationEnabled ?? true,
     slotLabelsRaw: opts.slotLabelsRaw,
+    ...(opts.getSlotLabelsRaw !== undefined
+      ? { getSlotLabelsRaw: opts.getSlotLabelsRaw }
+      : {}),
     now: () => opts.nowMs ?? Date.UTC(2025, 0, 1, 16, 24, 3),
     createItem: ((_id: string, _alignment: unknown, _priority: number) => {
       const item: FakeStatusBarItem = {
@@ -182,6 +186,24 @@ describe('StatusBarAdapter — T32 flight-deck render states', () => {
       item.text.endsWith(' $(error)'),
       'item text should have $(error) suffix when active slot is in cooldown',
     );
+  });
+
+  it('reads a renamed key label again on each refresh', async () => {
+    let labels: unknown = { '2': 'work' };
+    const { adapter, item } = makeAdapterHarness({
+      keyProvider: kp,
+      nowMs: NOW,
+      getSlotLabelsRaw: () => labels,
+    });
+
+    await adapter.refresh();
+    ok(tooltipText(item).includes('Slot 2 ● healthy   work'));
+
+    labels = { '2': 'personal' };
+    await adapter.refresh();
+    const md = tooltipText(item);
+    ok(md.includes('Slot 2 ● healthy   personal'));
+    ok(!md.includes('Slot 2 ● healthy   work'));
   });
 
   it('last-fallback-set: shows "Last fallback: slot N · Mm ago"', async () => {

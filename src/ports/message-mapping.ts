@@ -85,6 +85,11 @@ export type ChatMessageContentPart =
       readonly mimeType: string;
       readonly data: Uint8Array;
     }
+  | {
+      readonly type: 'video';
+      readonly mimeType: string;
+      readonly data: Uint8Array;
+    }
   | { readonly type: 'tool-call'; readonly toolCall: ChatToolCallPart }
   | { readonly type: 'tool-result'; readonly toolResult: ChatToolResultPart }
   | {

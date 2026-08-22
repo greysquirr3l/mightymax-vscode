@@ -1005,3 +1005,42 @@ describe('server-terminated connections — retry behavior', () => {
     strictEqual(calls, 2);
   });
 });
+
+
+describe('MiniMaxClientAdapter — native token counting', () => {
+  it('uses the Anthropic M3 count_tokens endpoint and returns input_tokens', async () => {
+    let requestedUrl = '';
+    let requestedInit: RequestInit | undefined;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io/',
+      fetchImpl: (async (url: string | URL, init?: RequestInit) => {
+        requestedUrl = String(url);
+        requestedInit = init;
+        return new Response(JSON.stringify({ input_tokens: 321 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const count = await adapter.countTokens(
+      {
+        model: 'MiniMax-M3',
+        messages: [{ role: 'user', content: 'Count this prompt.' }],
+        systemPrompt: 'You are concise.',
+      },
+      SENTINEL_API_KEY,
+      new AbortController().signal,
+      makeCapturingLogger(),
+    );
+
+    strictEqual(count, 321);
+    strictEqual(requestedUrl, 'https://api.minimax.io/anthropic/v1/messages/count_tokens');
+    strictEqual(requestedInit?.method, 'POST');
+    const rawBody = requestedInit?.body;
+    if (typeof rawBody !== 'string') throw new Error('expected a JSON string request body');
+    const body = JSON.parse(rawBody) as Record<string, unknown>;
+    strictEqual(body.model, 'MiniMax-M3');
+    ok(Array.isArray(body.messages));
+    ok('system' in body);
+  });
+});

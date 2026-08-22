@@ -7,14 +7,25 @@ import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
 import { StatusBarAdapter } from './adapters/status-bar.js';
 import { UsageTransportAdapter } from './adapters/usage-transport.js';
-import { runManageCommand, type ManageUi } from './commands/manage-command.js';
+import {
+  runManageCommand,
+  type ManageUi,
+  type SlotLabelsStore,
+} from './commands/manage-command.js';
 import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
 import { runShowUsageCommand } from './commands/show-usage.js';
+import { runShowDiagnosticsCommand } from './commands/show-diagnostics.js';
 import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
 import type { KeyProvider } from './ports/key-provider.js';
+import {
+  parseLabelsFromGlobalState,
+  serializeLabelsToGlobalState,
+} from './lib/domain/slot-labels.js';
+import { RecentTurnUsageStore } from './lib/domain/recent-turn-usage.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
 
 function isLogLevel(value: unknown): value is LogLevel {
   return typeof value === 'string' && (LOG_LEVELS as readonly string[]).includes(value);
@@ -83,6 +94,22 @@ export function activate(context: vscode.ExtensionContext): void {
     secretStore,
     globalState: context.globalState,
   });
+  // Labels identify a stored key without ever exposing its secret. They
+  // live in globalState rather than SecretStorage and are deliberately
+  // read fresh so changes persist and surface without an extension-host
+  // restart.
+  const slotLabels: SlotLabelsStore = {
+    getAll: () =>
+      Promise.resolve(
+        parseLabelsFromGlobalState(context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY)),
+      ),
+    set: async (labels) => {
+      await context.globalState.update(
+        SLOT_LABELS_STATE_KEY,
+        serializeLabelsToGlobalState(labels),
+      );
+    },
+  };
   // Watchdog timeouts are callbacks (like baseUrl) so settings
   // changes apply on the next request without an extension-host
   // restart. Out-of-range values are clamped to the transport's
@@ -95,7 +122,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.getConfiguration('mightyMax').get<number>('idleTimeoutMs') ?? 60_000,
   });
   const catalog = new CatalogAdapter(logger);
-  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog);
+  const recentTurnUsage = new RecentTurnUsageStore();
+  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog, undefined, recentTurnUsage);
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes
@@ -104,7 +132,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // tick. A PAYG key or network failure surfaces as a neutral icon,
   // never a red one, matching the "click for details" affordance.
   const usageClient = new UsageTransportAdapter({ logger });
-  const statusBar = new StatusBarAdapter({ logger, keyProvider, secretStore, usageClient });
+  const statusBar = new StatusBarAdapter({
+    logger,
+    keyProvider,
+    secretStore,
+    usageClient,
+    getSlotLabelsRaw: () => context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY),
+    recentTurnUsage,
+  });
   context.subscriptions.push(statusBar);
 
   // T06 — when the user clears (or another extension overwrites) the
@@ -137,7 +172,11 @@ export function activate(context: vscode.ExtensionContext): void {
         keyProvider,
         baseUrl: baseUrl(),
         ui,
-        fireChange: () => chatProvider.fireChange(),
+        fireChange: () => {
+          chatProvider.fireChange();
+          void statusBar.refresh();
+        },
+        slotLabels,
         getConfig: () => ({
           get: (key) => configProvider().get(key),
           update: (key, value) => Promise.resolve(configProvider().update(key, value)),
@@ -163,6 +202,24 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mightyMax.showUsage', () => {
       logger.info('Mighty Max show-usage command invoked');
       return runShowUsageCommand(context, statusBar);
+    }),
+    vscode.commands.registerCommand('mightyMax.showDiagnostics', () => {
+      logger.info('Mighty Max diagnostics command invoked');
+      return runShowDiagnosticsCommand({
+        logger,
+        keyProvider,
+        catalog,
+        ui: createVsCodeUi(),
+        baseUrl: baseUrl(),
+        vscodeVersion: vscode.version,
+        hasLanguageModelThinkingPart:
+          typeof (
+            vscode as unknown as {
+              LanguageModelThinkingPart?: unknown;
+            }
+          ).LanguageModelThinkingPart === 'function',
+        getConfig: () => ({ get: (key) => vscode.workspace.getConfiguration('mightyMax').get(key) }),
+      });
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('mightyMax.logLevel')) {

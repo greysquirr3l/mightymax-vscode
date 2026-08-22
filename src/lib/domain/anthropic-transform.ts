@@ -615,10 +615,13 @@ export interface ThinkingConfig {
  * needs the opt-in; M2.x emit reasoning through the
  * Chat-Completions `reasoning_content` field instead.
  */
+export type M3ThinkingMode = 'adaptive' | 'disabled';
+
 export function getThinkingConfig(
   modelId: string,
   thinkingStyle: ThinkingStyle,
   _maxTokens: number,
+  mode: M3ThinkingMode = 'adaptive',
 ): ThinkingConfig | undefined {
   if (thinkingStyle !== 'anthropic') return undefined;
   const id = modelId.toLowerCase();
@@ -629,7 +632,7 @@ export function getThinkingConfig(
   void _maxTokens;
   return {
     thinking: {
-      type: 'adaptive',
+      type: mode,
     },
   };
 }

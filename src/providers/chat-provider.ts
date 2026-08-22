@@ -21,6 +21,7 @@ import type {
   MiniMaxClient,
   MiniMaxClientErrorKind,
   MiniMaxCompletionRequest,
+  MiniMaxTokenCountRequest,
 } from '../ports/minimax-client.js';
 import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
@@ -37,8 +38,10 @@ import {
   getMaxTokensForModel,
   getModelSampler,
   getThinkingConfig,
+  type M3ThinkingMode,
 } from '../lib/domain/anthropic-transform.js';
 import { LruMap } from '../lib/domain/lru.js';
+import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
 import type { ChatTool, ChatToolMode } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
 
@@ -60,6 +63,17 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readonly thinkingCache = new LruMap<string, { thinking: string; signature?: string }>(
     128,
   );
+  /**
+   * Native M3 token-count results are short-lived because VS Code may ask
+   * repeatedly while preparing a single prompt. The cache avoids turning
+   * those probes into duplicate API calls; it stores only a request hash
+   * and count, never message text or an API key.
+   */
+  private readonly nativeTokenCountCache = new LruMap<string, { count: number; expiresAt: number }>(
+    128,
+  );
+  private readonly nativeTokenCountInFlight = new Map<string, Promise<number>>();
+  private static readonly NATIVE_TOKEN_COUNT_TTL_MS = 30_000;
   /**
    * Tool usage tracking for smart filtering. Maps tool names to call counts.
    * Used to prioritize frequently-used tools when filtering is enabled.
@@ -88,6 +102,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
      *  Tests inject a stable callback so they don't have to monkey-patch
      *  the host's `vscode.workspace` getter. */
     private readonly configReader?: (key: string) => unknown,
+    /** In-memory per-turn usage bridge for the flight-deck status bar. */
+    private readonly recentTurnUsage?: RecentTurnUsageStore,
   ) {
     // Forward catalog change events to the chat-provider change emitter
     // so the VS Code model picker refreshes when a new model lands in
@@ -186,7 +202,9 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
     // Map messages to MiniMax wire format (model first, then messages)
-    const mappingResult = mapRequestToMiniMax({ id: model.id, thinkingStyle }, enrichedMessages);
+    const mappingResult = mapRequestToMiniMax({ id: model.id, thinkingStyle }, enrichedMessages, {
+      toolResultMaxChars: this.readToolResultMaxChars(),
+    });
 
     // Log any mapping warnings, deduplicated. A long history
     // re-maps in full every request, so one structural quirk can
@@ -243,7 +261,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // M3 native thinking: opt the model in to its reasoning block
     // (Anthropic interface defaults thinking OFF, unlike Chat
     // Completions). Without this, M3 rushes the first tool call.
-    const thinkingConfig = getThinkingConfig(model.id, thinkingStyle, maxTokens);
+    const thinkingConfig = getThinkingConfig(
+      model.id,
+      thinkingStyle,
+      maxTokens,
+      this.readM3ThinkingMode(),
+    );
     // User-overridable system prompt.
     const systemPrompt = this.readSystemPromptOverride();
 
@@ -430,6 +453,10 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         );
       }
 
+      if (pumpResult.usage !== undefined) {
+        this.recentTurnUsage?.record(pumpResult.usage);
+      }
+
       // Cache the thinking block if we captured one, keyed by message content hash.
       if (pumpResult.thinking && (pumpResult.text || pumpResult.toolCallIds.length > 0)) {
         const cacheKey = this.generateMessageHash(
@@ -511,33 +538,45 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   async provideTokenCount(
     model: vscode.LanguageModelChatInformation,
     text: string | vscode.LanguageModelChatRequestMessage,
-    _token: vscode.CancellationToken,
+    token: vscode.CancellationToken,
   ): Promise<number> {
     try {
       const content = typeof text === 'string' ? text : extractMessageText(text);
-      if (content.length === 0) {
+      if (typeof text === 'string' && content.length === 0) {
         return 0;
       }
 
-      // Model-aware heuristic: `Math.ceil(chars / 4)` matches the
-      // convention used by opencode's MiniMax path, llama.vscode,
-      // and most BYOK providers. We pick slightly tighter numbers
-      // for the M3 family (cl100k-style BPE) and the default 4.0
-      // for everything else; both stay inside ±15% of the real
-      // token count and never undercount enough to under-report
-      // the context window. A real tokenizer (gpt-tokenizer for
-      // OpenAI families, a cl100k-style BPE for M3) would be more
-      // accurate; this heuristic is the next-best pure-runtime
-      // approximation that doesn't ship a tokenizer to the host.
       const modelInfo = await this.catalog.getModel(model.id);
-      const isAnthropic = modelInfo?.thinkingStyle === 'anthropic';
-      const charsPerToken = isAnthropic ? 3.7 : 4.0;
-      return Math.ceil(content.length / charsPerToken);
+      const fallback = estimateTokenCount(content, modelInfo?.thinkingStyle === 'anthropic');
+      if (!this.canUseNativeTokenCount(model.id)) {
+        return fallback;
+      }
+
+      const domainMessage =
+        typeof text === 'string'
+          ? ({ role: 'user', content: [{ type: 'text', value: text }] } satisfies ChatMessage)
+          : vscodeToDomainMessage(text);
+      const mapped = mapRequestToMiniMax(
+        { id: model.id, thinkingStyle: modelInfo?.thinkingStyle ?? 'anthropic' },
+        [domainMessage],
+        { toolResultMaxChars: this.readToolResultMaxChars() },
+      );
+      if (mapped.messages.length === 0) {
+        return fallback;
+      }
+      const request: MiniMaxTokenCountRequest = {
+        model: model.id,
+        messages: mapped.messages,
+        systemPrompt: this.readSystemPromptOverride(),
+        ...(mapped.cacheMarkers.length > 0 ? { cacheMarkers: mapped.cacheMarkers } : {}),
+      };
+      const cacheKey = this.nativeTokenCountCacheKey(request);
+      return await this.getNativeTokenCount(cacheKey, request, token, fallback);
     } catch (err) {
       // Defensive: VS Code's chat host swallows errors from
       // `provideTokenCount` and surfaces 0 to every consumer. A
-      // catch here means we degrade to a single-token estimate
-      // instead of disappearing entirely.
+      // catch here means we degrade to a non-zero estimate instead
+      // of disappearing entirely.
       this.logger.warn('provideTokenCount failed; falling back to 1', {
         error: String(err),
         modelId: model.id,
@@ -550,7 +589,113 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     for (const d of this.disposables.splice(0)) d.dispose();
     this.changeEmitter.dispose();
     this.thinkingCache.clear();
+    this.nativeTokenCountCache.clear();
+    this.nativeTokenCountInFlight.clear();
+    this.recentTurnUsage?.clear();
     this.toolUsageStats.clear();
+  }
+
+  private readM3ThinkingMode(): M3ThinkingMode {
+    const raw = this.readMightyMaxSetting('m3ThinkingMode');
+    return raw === 'disabled' ? 'disabled' : 'adaptive';
+  }
+
+  private readToolResultMaxChars(): number {
+    const raw = this.readMightyMaxSetting('toolResultMaxChars');
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) return 4096;
+    // Keep malformed user configuration from either disabling the safety
+    // cap or creating a payload so tiny it consists only of the marker.
+    return Math.min(65_536, Math.max(512, Math.floor(raw)));
+  }
+
+  private readMightyMaxSetting(key: string): unknown {
+    if (this.configReader !== undefined) return this.configReader(key);
+    const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
+    const config = ws?.getConfiguration?.('mightyMax') as { get?: (k: string) => unknown } | undefined;
+    return config?.get?.(key);
+  }
+
+  /** True only when the native M3 counter is configured and available. */
+  private canUseNativeTokenCount(modelId: string): boolean {
+    if (this.client.countTokens === undefined || !modelId.toLowerCase().includes('minimax-m3')) {
+      return false;
+    }
+    return this.readMightyMaxSetting('enableNativeTokenCounting') !== false;
+  }
+
+  private nativeTokenCountCacheKey(request: MiniMaxTokenCountRequest): string {
+    const hasher = createHash('sha256');
+    hasher.update(request.model);
+    hasher.update('\u0000');
+    // Wire messages contain plain JSON data after the provider mapping;
+    // JSON.stringify can therefore be used without retaining the prompt.
+    hasher.update(JSON.stringify(request));
+    return hasher.digest('hex');
+  }
+
+  private async getNativeTokenCount(
+    cacheKey: string,
+    request: MiniMaxTokenCountRequest,
+    token: vscode.CancellationToken,
+    fallback: number,
+  ): Promise<number> {
+    const cached = this.nativeTokenCountCache.get(cacheKey);
+    if (cached !== undefined) {
+      if (cached.expiresAt > Date.now()) {
+        this.nativeTokenCountCache.touch(cacheKey);
+        return cached.count;
+      }
+      this.nativeTokenCountCache.delete(cacheKey);
+    }
+
+    const existing = this.nativeTokenCountInFlight.get(cacheKey);
+    if (existing !== undefined) {
+      try {
+        return await existing;
+      } catch {
+        return fallback;
+      }
+    }
+
+    const operation = this.fetchNativeTokenCount(cacheKey, request, token);
+    this.nativeTokenCountInFlight.set(cacheKey, operation);
+    try {
+      return await operation;
+    } catch (err) {
+      this.logger.debug('Native MiniMax token count unavailable; using heuristic', {
+        model: request.model,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return fallback;
+    } finally {
+      this.nativeTokenCountInFlight.delete(cacheKey);
+    }
+  }
+
+  private async fetchNativeTokenCount(
+    cacheKey: string,
+    request: MiniMaxTokenCountRequest,
+    token: vscode.CancellationToken,
+  ): Promise<number> {
+    const pick = await this.keyProvider.pickKey();
+    if (pick === undefined || this.client.countTokens === undefined) {
+      throw new Error('No healthy MiniMax API key is available for token counting');
+    }
+    const controller = new AbortController();
+    const onCancel = token.onCancellationRequested(() => controller.abort());
+    try {
+      const count = await this.client.countTokens(request, pick.key, controller.signal, this.logger);
+      if (!Number.isFinite(count) || count < 0) {
+        throw new Error('MiniMax returned an invalid token count');
+      }
+      this.nativeTokenCountCache.set(cacheKey, {
+        count: Math.floor(count),
+        expiresAt: Date.now() + ChatProvider.NATIVE_TOKEN_COUNT_TTL_MS,
+      });
+      return Math.floor(count);
+    } finally {
+      onCancel.dispose();
+    }
   }
 
   /**
@@ -902,6 +1047,8 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
       const dataPart = asDataPart(part);
       if (dataPart !== undefined && dataPart.mimeType.toLowerCase().startsWith('image/')) {
         content.push({ type: 'image', mimeType: dataPart.mimeType, data: dataPart.data });
+      } else if (dataPart !== undefined && dataPart.mimeType.toLowerCase().startsWith('video/')) {
+        content.push({ type: 'video', mimeType: dataPart.mimeType, data: dataPart.data });
       }
     }
   }
@@ -933,6 +1080,17 @@ function vscodeToDomainTool(tool: vscode.LanguageModelChatTool): ChatTool {
  * than a slight underestimate). A circular `JSON.stringify` on
  * a tool-call input collapses to a marker rather than aborting.
  */
+/**
+ * Pure, non-network fallback for models or environments where MiniMax's
+ * M3 token-count endpoint is unavailable. The Anthropic-compatible M3
+ * tokenizer tends to use slightly fewer characters per token than the
+ * older OpenAI-compatible families.
+ */
+function estimateTokenCount(content: string, isAnthropic: boolean): number {
+  if (content.length === 0) return 0;
+  return Math.ceil(content.length / (isAnthropic ? 3.7 : 4.0));
+}
+
 function extractMessageText(msg: vscode.LanguageModelChatRequestMessage): string {
   const msgContent =
     typeof msg.content === 'string' ? [new vscode.LanguageModelTextPart(msg.content)] : msg.content;

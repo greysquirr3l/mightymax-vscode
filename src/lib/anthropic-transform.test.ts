@@ -455,6 +455,12 @@ describe('getThinkingConfig', () => {
     );
   });
 
+  it('honors an explicit disabled M3 thinking mode', () => {
+    const cfg = getThinkingConfig('MiniMax-M3', 'anthropic', 32_000, 'disabled');
+    ok(cfg, 'expected a thinking config for M3 on anthropic dialect');
+    equal(cfg?.thinking.type, 'disabled');
+  });
+
   it('returns undefined for an M2.x model even on the anthropic dialect', () => {
     equal(getThinkingConfig('MiniMax-M2.5', 'anthropic', 32_000), undefined);
   });

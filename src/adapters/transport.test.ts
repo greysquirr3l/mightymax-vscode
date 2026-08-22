@@ -1043,4 +1043,70 @@ describe('MiniMaxClientAdapter — native token counting', () => {
     ok(Array.isArray(body.messages));
     ok('system' in body);
   });
+
+  it('a server that never responds is cut by the watchdog instead of hanging forever', async () => {
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: hangingFetch(),
+      firstByteTimeoutMs: 20,
+    });
+    let thrown: unknown;
+    try {
+      await withTimeout(
+        adapter.countTokens(
+          { model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }] },
+          SENTINEL_API_KEY,
+          new AbortController().signal,
+          makeCapturingLogger(),
+        ),
+        5_000,
+        'countTokens watchdog never fired — request hung',
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
+    strictEqual(thrown.kind, 'stall');
+    ok(thrown.retriable, 'a stalled token count should be retriable by the caller heuristic fallback');
+  });
+
+  it('releases its semaphore permit after a watchdog timeout so a later completion is not blocked', async () => {
+    // Regression for the 0.7.0/0.7.1 stall: a hung native token-count
+    // probe must not permanently hold the permit a real completion
+    // needs next. With maxConcurrentRequests: 1, the pre-fix code
+    // (no watchdog, permit held until the fetch itself settled) leaves
+    // this second call queued forever.
+    const logger = makeCapturingLogger();
+    let call = 0;
+    const adapter = new MiniMaxClientAdapter({
+      baseUrl: () => 'https://api.minimax.io',
+      fetchImpl: async (url: unknown, init?: RequestInit) => {
+        call += 1;
+        if (call === 1) return hangingFetch()(url as string, init);
+        return sseOkResponse();
+      },
+      firstByteTimeoutMs: 20,
+      maxConcurrentRequests: 1,
+    });
+
+    await withTimeout(
+      adapter
+        .countTokens(
+          { model: 'MiniMax-M3', messages: [{ role: 'user', content: 'hi' }] },
+          SENTINEL_API_KEY,
+          new AbortController().signal,
+          logger,
+        )
+        .catch(() => undefined),
+      5_000,
+      'countTokens watchdog never fired — request hung',
+    );
+
+    const eventCount = await withTimeout(
+      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', new AbortController().signal, logger)),
+      2_000,
+      'completion blocked on the semaphore — countTokens leaked its permit on watchdog timeout',
+    );
+    ok(eventCount > 0, 'the completion behind the stalled probe should still yield events');
+  });
 });

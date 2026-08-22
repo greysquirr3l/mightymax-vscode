@@ -383,6 +383,14 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
    * transport semaphore with streaming completions so frequent host token
    * probes cannot bypass the extension-wide concurrency cap. The caller
    * retains a local heuristic fallback for unavailable endpoints or errors.
+   *
+   * Wrapped in the same first-byte watchdog as `streamCompletion` — a
+   * server that accepts the socket and never responds throws nothing, so
+   * `fetch` stays pending forever. Without a local timeout, a single stuck
+   * probe holds its semaphore permit indefinitely and every later
+   * completion request queues behind it forever with no error logged
+   * (observed 2026-08-22: fresh VS Code windows stalled on the first chat
+   * turn with no error, only the host-capabilities log line).
    */
   async countTokens(
     request: MiniMaxTokenCountRequest,
@@ -398,6 +406,15 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     }
 
     const permit = await this.semaphore.acquire(signal);
+    const attemptController = new AbortController();
+    const onCallerAbort = (): void => attemptController.abort(signal.reason);
+    signal.addEventListener('abort', onCallerAbort, { once: true });
+    let timedOut = false;
+    const firstByteTimeoutMs = this.firstByteTimeoutMs();
+    const timer = setTimeout(() => {
+      timedOut = true;
+      attemptController.abort(new Error(`no response after ${firstByteTimeoutMs}ms`));
+    }, firstByteTimeoutMs);
     try {
       const baseUrl = this.baseUrl().replace(/\/+$/, '');
       const response = await this.fetchImpl(`${baseUrl}/anthropic/v1/messages/count_tokens`, {
@@ -409,7 +426,7 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
           'anthropic-version': ANTHROPIC_VERSION,
         },
         body: JSON.stringify(serializeAnthropicTokenCountRequest(request)),
-        signal,
+        signal: attemptController.signal,
       });
 
       if (!response.ok) {
@@ -442,11 +459,20 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       return count;
     } catch (err) {
       if (err instanceof MiniMaxClientError) throw err;
+      if (timedOut && !signal.aborted) {
+        throw new MiniMaxClientError(
+          'stall',
+          `MiniMax token-count request timed out after ${firstByteTimeoutMs}ms`,
+          { cause: err, retriable: true },
+        );
+      }
       if (signal.aborted) {
         throw new MiniMaxClientError('abort', 'token count aborted', { cause: err });
       }
       throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
     } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onCallerAbort);
       permit.release();
     }
   }

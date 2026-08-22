@@ -4,6 +4,37 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-08-21
+
+### Changed
+
+- **Developer toolchain maintenance.** Updated `@types/node` to
+  26.2.0, esbuild to 0.28.2, ESLint to 10.8.1, Mocha to 11.8.0,
+  Prettier to 3.9.6, and `typescript-eslint` to 8.67.0. The
+  repository retains the 0.7.0-compatible `@vscode/test-cli` 0.0.15
+  and `@vscode/test-electron` 3.1.0 pair that supports current VS
+  Code test hosts on macOS.
+
+- **Pinned CI action maintenance.** Updated every `actions/checkout`
+  workflow pin from v7.0.0 to v7.0.1, retaining full-commit-SHA
+  pinning across CI, security, dependency review, scorecard, and
+  release workflows.
+
+- **Transitive dependency refresh.** Updated lockfile-resolved
+  `fast-uri` to 3.1.5 and `undici` to 7.29.0.
+
+### Security
+
+- **js-yaml 4.3.1.** Updated the lockfile resolution from 4.3.0 to
+  4.3.1, which includes the upstream quadratic-complexity fix for
+  duplicate `!!omap` key detection.
+
+### Notes
+
+- This is a maintenance-only patch release. There are no changes to
+  the MiniMax Copilot Chat provider's user-facing behavior or
+  configuration surface.
+
 ## [0.7.0] — 2026-08-21
 
 ### Added

@@ -275,6 +275,10 @@ async function runFlightDeckForManage(deps: ManageDeps): Promise<void> {
   // Persist any label changes the user made during the flow.
   if (deps.slotLabels !== undefined && !mapsEqual(initialLabels, workingLabels)) {
     await deps.slotLabels.set(workingLabels);
+    // Labels are non-secret metadata, so changing one does not fire the
+    // SecretStorage listener. Refresh explicitly so the flight-deck
+    // tooltip shows the new key name immediately.
+    deps.fireChange();
   }
 }
 

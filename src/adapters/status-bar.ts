@@ -59,11 +59,18 @@ export interface StatusBarDeps {
    */
   readonly isAutoRotationEnabled?: () => boolean;
   /**
-   * T32 — per-slot labels persisted by the flight-deck view's Rename
-   * action. Raw globalState value; the renderer parses it via the
-   * pure `parseLabelsFromGlobalState` helper.
+   * Per-slot labels persisted by the flight-deck view's Rename action.
+   * This static value preserves the existing test seam; production should
+   * prefer `getSlotLabelsRaw` so labels changed while the extension is
+   * running appear on the very next refresh.
    */
   readonly slotLabelsRaw?: unknown;
+  /**
+   * Live accessor for the raw Memento value that holds user-chosen slot
+   * labels. It avoids capturing a startup snapshot, so renamed keys are
+   * reflected in the tooltip without restarting the extension host.
+   */
+  readonly getSlotLabelsRaw?: () => unknown;
   /** T32 — clock seam for tests; defaults to `Date.now()`. */
   readonly now?: () => number;
   /** Injected for tests. Defaults to `vscode.window.createStatusBarItem`. */
@@ -82,7 +89,7 @@ export class StatusBarAdapter implements vscode.Disposable {
   private readonly keyProvider: KeyProvider;
   private readonly usageClient: UsageClient;
   private readonly isAutoRotationEnabled: () => boolean;
-  private readonly slotLabelsRaw: unknown;
+  private readonly getSlotLabelsRaw: () => unknown;
   private readonly now: () => number;
   private readonly item: vscode.StatusBarItem;
   private readonly setIntervalImpl: (
@@ -100,7 +107,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     this.usageClient = deps.usageClient;
     this.isAutoRotationEnabled =
       deps.isAutoRotationEnabled ?? (() => StatusBarAdapter.readAutoRotationDefault());
-    this.slotLabelsRaw = deps.slotLabelsRaw;
+    this.getSlotLabelsRaw = deps.getSlotLabelsRaw ?? (() => deps.slotLabelsRaw);
     this.now = deps.now ?? Date.now;
     const createItem = deps.createItem ?? vscode.window.createStatusBarItem;
     this.setIntervalImpl = deps.setIntervalImpl ?? setInterval;
@@ -212,7 +219,7 @@ export class StatusBarAdapter implements vscode.Disposable {
 
     // Slot labels — fall back to the empty default if globalState is
     // empty / malformed (the helper tolerates both).
-    const labelsMap = parseLabelsFromGlobalState(this.slotLabelsRaw);
+    const labelsMap = parseLabelsFromGlobalState(this.getSlotLabelsRaw());
     const labels = new Map<KeySlot, string>();
     for (const slot of [1, 2, 3] as KeySlotType[]) {
       const userLabel = getLabel(labelsMap, slot, '');

@@ -7,14 +7,23 @@ import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
 import { StatusBarAdapter } from './adapters/status-bar.js';
 import { UsageTransportAdapter } from './adapters/usage-transport.js';
-import { runManageCommand, type ManageUi } from './commands/manage-command.js';
+import {
+  runManageCommand,
+  type ManageUi,
+  type SlotLabelsStore,
+} from './commands/manage-command.js';
 import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
 import { runShowUsageCommand } from './commands/show-usage.js';
 import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
 import type { KeyProvider } from './ports/key-provider.js';
+import {
+  parseLabelsFromGlobalState,
+  serializeLabelsToGlobalState,
+} from './lib/domain/slot-labels.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
+const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
 
 function isLogLevel(value: unknown): value is LogLevel {
   return typeof value === 'string' && (LOG_LEVELS as readonly string[]).includes(value);
@@ -83,6 +92,22 @@ export function activate(context: vscode.ExtensionContext): void {
     secretStore,
     globalState: context.globalState,
   });
+  // Labels identify a stored key without ever exposing its secret. They
+  // live in globalState rather than SecretStorage and are deliberately
+  // read fresh so changes persist and surface without an extension-host
+  // restart.
+  const slotLabels: SlotLabelsStore = {
+    getAll: () =>
+      Promise.resolve(
+        parseLabelsFromGlobalState(context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY)),
+      ),
+    set: async (labels) => {
+      await context.globalState.update(
+        SLOT_LABELS_STATE_KEY,
+        serializeLabelsToGlobalState(labels),
+      );
+    },
+  };
   // Watchdog timeouts are callbacks (like baseUrl) so settings
   // changes apply on the next request without an extension-host
   // restart. Out-of-range values are clamped to the transport's
@@ -104,7 +129,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // tick. A PAYG key or network failure surfaces as a neutral icon,
   // never a red one, matching the "click for details" affordance.
   const usageClient = new UsageTransportAdapter({ logger });
-  const statusBar = new StatusBarAdapter({ logger, keyProvider, secretStore, usageClient });
+  const statusBar = new StatusBarAdapter({
+    logger,
+    keyProvider,
+    secretStore,
+    usageClient,
+    getSlotLabelsRaw: () => context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY),
+  });
   context.subscriptions.push(statusBar);
 
   // T06 — when the user clears (or another extension overwrites) the
@@ -137,7 +168,11 @@ export function activate(context: vscode.ExtensionContext): void {
         keyProvider,
         baseUrl: baseUrl(),
         ui,
-        fireChange: () => chatProvider.fireChange(),
+        fireChange: () => {
+          chatProvider.fireChange();
+          void statusBar.refresh();
+        },
+        slotLabels,
         getConfig: () => ({
           get: (key) => configProvider().get(key),
           update: (key, value) => Promise.resolve(configProvider().update(key, value)),

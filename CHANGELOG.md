@@ -4,6 +4,34 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] — 2026-08-22
+
+### Fixed
+
+- **Fresh VS Code windows could stall on the first chat turn with no
+  error.** The native M3 token-count request added in 0.7.0 made a raw
+  network call with no timeout. If MiniMax's `/messages/count_tokens`
+  endpoint stalled, the request never returned, permanently holding a
+  concurrency-control permit that a real completion request then queued
+  behind forever — with nothing to log or surface, since nothing ever
+  failed. `countTokens` now uses the same first-byte watchdog as
+  streaming completions, so a non-responding server is cut loose after
+  a bounded timeout and the chat provider falls back to its heuristic
+  token estimate instead of hanging.
+
+- **Native token counting could starve real completions and surface
+  429s.** VS Code calls `provideTokenCount` very frequently while the
+  chat UI is composing a prompt, and the per-request cache added in
+  0.7.0 did nothing to reduce that traffic because the composed text
+  changes on every keystroke. In practice this meant a live network
+  request to MiniMax on nearly every UI update, competing with the
+  actual completion request for the same per-key rate-limit budget and
+  occasionally causing genuine `429` failures on real chat turns. A 2
+  second floor between real native token-count network attempts now
+  keeps this traffic in line with pre-0.7.0 behavior; probes inside the
+  floor fall back to the local heuristic, matching what the extension
+  did before native counting existed.
+
 ## [0.7.1] — 2026-08-21
 
 ### Changed

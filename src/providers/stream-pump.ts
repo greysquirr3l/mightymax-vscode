@@ -29,6 +29,7 @@ import * as vscode from 'vscode';
 import type { Logger } from '../ports/logger.js';
 import type { MiniMaxStreamEvent } from '../ports/minimax-client.js';
 import { mapStreamDeltaToResponseParts, isMessageMappingError } from '../lib/domain/messages.js';
+import type { ChatUsageData } from '../ports/message-mapping.js';
 import {
   accumulatorSeed,
   accumulateToolCallDelta,
@@ -51,6 +52,8 @@ export interface StreamPumpResult {
   toolCallIds: ReadonlyArray<string>;
   /** Final accumulator state after every flush. Empty for normal streams. */
   accumulatorState: ToolCallAccumulatorState;
+  /** Final normalized provider usage block, when MiniMax sent one. */
+  usage: ChatUsageData | undefined;
 }
 
 export interface StreamPumpDeps {
@@ -86,6 +89,7 @@ export interface StreamPumpDeps {
 export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPumpResult> {
   let accumulatorState = accumulatorSeed();
   let currentThinking: { thinking: string; signature?: string } | undefined;
+  let latestUsage: ChatUsageData | undefined;
   let currentText = '';
   const currentToolCallIds: string[] = [];
 
@@ -144,6 +148,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
             if (typed.signature) currentThinking.signature = typed.signature;
           }
         } else if (typed.type === 'usage') {
+          latestUsage = typed.usage;
           deps.logger.debug('Usage received', {
             promptTokens: typed.usage.promptTokens,
             completionTokens: typed.usage.completionTokens,
@@ -238,6 +243,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
     thinking: currentThinking,
     toolCallIds: currentToolCallIds,
     accumulatorState,
+    usage: latestUsage,
   };
 }
 

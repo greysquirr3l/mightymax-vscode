@@ -1164,3 +1164,59 @@ describe('countMessageMappingErrors', () => {
     ]);
   });
 });
+
+
+describe('mapRequestToMiniMax — video', () => {
+  it('encodes a supported MP4 attachment to a video_url data URI', () => {
+    const msg: ChatMessage = {
+      role: 'user',
+      content: [
+        { type: 'text', value: 'Summarize this clip.' },
+        { type: 'video', mimeType: 'video/mp4', data: new Uint8Array([0x00, 0x01, 0x02]) },
+      ],
+    };
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [msg]);
+    equal(result.warnings.length, 0);
+    const content = result.messages[0]?.content;
+    ok(Array.isArray(content));
+    if (!Array.isArray(content)) fail('expected rich video content');
+    const video = content.find((part) => part.type === 'video_url');
+    deepStrictEqual(video, {
+      type: 'video_url',
+      video_url: { url: 'data:video/mp4;base64,AAEC' },
+    });
+  });
+
+  it('warns and skips unsupported video types', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M3', thinkingStyle: 'anthropic' },
+      [{ role: 'user', content: [{ type: 'video', mimeType: 'video/avi', data: new Uint8Array([1]) }] }],
+    );
+    equal(result.messages.length, 0);
+    ok(result.warnings.some((warning) => warning.kind === 'unsupported-content'));
+  });
+});
+
+describe('mapRequestToMiniMax — configured tool-result limit', () => {
+  it('applies a caller-provided per-result truncation budget', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M3', thinkingStyle: 'anthropic' },
+      [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool-result',
+              toolResult: { callId: 'call_limit', content: ['abcdefghijklmnopqrstuvwxyz'] },
+            },
+          ],
+        },
+      ],
+      { toolResultMaxChars: 8 },
+    );
+    const tool = result.messages.find((message) => message.role === 'tool');
+    equal(typeof tool?.content, 'string');
+    ok((tool?.content as string).startsWith('abcdefgh'));
+    ok(result.warnings.some((warning) => warning.kind === 'unsupported-content'));
+  });
+});

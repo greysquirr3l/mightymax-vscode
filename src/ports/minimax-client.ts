@@ -23,6 +23,11 @@ export type MiniMaxWireContentPart =
       readonly type: 'thinking';
       readonly thinking: string;
       readonly signature?: string;
+    }
+  | {
+      /** OpenAI-compatible data-URI video input; lowered for Anthropic by transport. */
+      readonly type: 'video_url';
+      readonly video_url: { readonly url: string };
     };
 
 /**
@@ -109,6 +114,21 @@ export interface MiniMaxCompletionRequest {
   cacheMarkers?: ReadonlyArray<number>;
 }
 
+/**
+ * Minimal request shape for MiniMax's native input-token estimator.
+ *
+ * The endpoint is currently available for M3 on the Anthropic-compatible
+ * API. It accepts the same conversation history, system content, and tool
+ * definitions that influence prompt size, but never generates model output.
+ */
+export interface MiniMaxTokenCountRequest {
+  readonly model: string;
+  readonly messages: ReadonlyArray<MiniMaxWireMessage>;
+  readonly tools?: ReadonlyArray<MiniMaxToolDefinition>;
+  readonly systemPrompt?: string;
+  readonly cacheMarkers?: ReadonlyArray<number>;
+}
+
 export interface MiniMaxUsageDelta {
   promptTokens?: number;
   completionTokens?: number;
@@ -174,6 +194,19 @@ export interface MiniMaxClient {
     signal: AbortSignal,
     logger: Logger,
   ): AsyncIterable<MiniMaxStreamEvent>;
+
+  /**
+   * Estimate input tokens without running a completion. Optional so
+   * lightweight test doubles and alternate MiniMax-compatible transports
+   * can continue to provide streaming-only behavior; callers must retain a
+   * local heuristic fallback.
+   */
+  countTokens?(
+    request: MiniMaxTokenCountRequest,
+    apiKey: string,
+    signal: AbortSignal,
+    logger: Logger,
+  ): Promise<number>;
 }
 
 /**

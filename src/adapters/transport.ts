@@ -5,6 +5,7 @@ import {
   type MiniMaxCompletionRequest,
   type MiniMaxDialect,
   type MiniMaxStreamEvent,
+  type MiniMaxTokenCountRequest,
   type MiniMaxWireContentPart,
   type MiniMaxWireMessage,
   type MiniMaxWireToolCall,
@@ -374,6 +375,80 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     this.firstByteTimeoutMs = timeoutGetter(options.firstByteTimeoutMs, FIRST_BYTE_TIMEOUT_MS);
     this.idleTimeoutMs = timeoutGetter(options.idleTimeoutMs, IDLE_TIMEOUT_MS);
     this.semaphore = new Semaphore(options.maxConcurrentRequests ?? DEFAULTS.maxConcurrentRequests);
+  }
+
+  /**
+   * Count M3 input tokens through MiniMax's Anthropic-compatible
+   * `/messages/count_tokens` endpoint. This deliberately shares the
+   * transport semaphore with streaming completions so frequent host token
+   * probes cannot bypass the extension-wide concurrency cap. The caller
+   * retains a local heuristic fallback for unavailable endpoints or errors.
+   */
+  async countTokens(
+    request: MiniMaxTokenCountRequest,
+    apiKey: string,
+    signal: AbortSignal,
+    logger: Logger,
+  ): Promise<number> {
+    if (!apiKey) {
+      throw new MiniMaxClientError('auth', 'API key is required');
+    }
+    if (signal.aborted) {
+      throw new MiniMaxClientError('abort', 'token count aborted before start');
+    }
+
+    const permit = await this.semaphore.acquire(signal);
+    try {
+      const baseUrl = this.baseUrl().replace(/\/+$/, '');
+      const response = await this.fetchImpl(`${baseUrl}/anthropic/v1/messages/count_tokens`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json',
+          authorization: `Bearer ${apiKey}`,
+          'anthropic-version': ANTHROPIC_VERSION,
+        },
+        body: JSON.stringify(serializeAnthropicTokenCountRequest(request)),
+        signal,
+      });
+
+      if (!response.ok) {
+        const status = response.status;
+        if (status === 401 || status === 403) {
+          throw new MiniMaxClientError('auth', `MiniMax returned ${status}`, { status });
+        }
+        if (status === 429) {
+          throw new MiniMaxClientError('rate-limit', 'MiniMax returned 429', {
+            status,
+            retriable: true,
+          });
+        }
+        throw new MiniMaxClientError('http', `MiniMax returned ${status}`, { status });
+      }
+
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch (err) {
+        throw new MiniMaxClientError('parse', 'MiniMax token-count response was not JSON', {
+          cause: err,
+        });
+      }
+      const count = extractNativeInputTokenCount(payload);
+      if (count === undefined) {
+        throw new MiniMaxClientError('parse', 'MiniMax token-count response omitted input_tokens');
+      }
+      logger.debug('MiniMax native token count complete', { model: request.model, inputTokens: count });
+      return count;
+    } catch (err) {
+      if (err instanceof MiniMaxClientError) throw err;
+      if (signal.aborted) {
+        throw new MiniMaxClientError('abort', 'token count aborted', { cause: err });
+      }
+      throw new MiniMaxClientError('network', errorMessage(err), { cause: err, retriable: true });
+    } finally {
+      permit.release();
+    }
   }
 
   async *streamCompletion(
@@ -980,6 +1055,14 @@ interface AnthropicRequest {
   thinking?: { type: 'enabled' | 'adaptive' | 'disabled'; budget_tokens?: number };
 }
 
+/** The subset of an Anthropic request accepted by the token-count endpoint. */
+interface AnthropicTokenCountRequest {
+  model: string;
+  system?: string | ReadonlyArray<{ type: 'text'; text: string; cache_control?: unknown }>;
+  messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: unknown }>;
+  tools?: ReadonlyArray<unknown>;
+}
+
 function serializeAnthropicRequest(request: MiniMaxCompletionRequest): AnthropicRequest {
   const systemParts: string[] = [];
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> = [];
@@ -1223,6 +1306,38 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
   return out;
 }
 
+/**
+ * Reuse the completion serializer for all history normalization (tool-result
+ * batching, system hoisting, cache markers, and schema lowering), then omit
+ * generation-only fields before calling the native counter.
+ */
+export function serializeAnthropicTokenCountRequest(
+  request: MiniMaxTokenCountRequest,
+): AnthropicTokenCountRequest {
+  const serialized = serializeAnthropicRequest({
+    model: request.model,
+    messages: request.messages,
+    stream: true,
+    dialect: 'anthropic',
+    ...(request.tools !== undefined ? { tools: request.tools } : {}),
+    ...(request.systemPrompt !== undefined ? { systemPrompt: request.systemPrompt } : {}),
+    ...(request.cacheMarkers !== undefined ? { cacheMarkers: request.cacheMarkers } : {}),
+  });
+  const out: AnthropicTokenCountRequest = {
+    model: serialized.model,
+    messages: serialized.messages,
+  };
+  if (serialized.system !== undefined) out.system = serialized.system;
+  if (serialized.tools !== undefined) out.tools = serialized.tools;
+  return out;
+}
+
+function extractNativeInputTokenCount(payload: unknown): number | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const count = (payload as { input_tokens?: unknown }).input_tokens;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
+}
+
 function convertAnthropicContentPart(part: MiniMaxWireContentPart): unknown {
   if (part.type === 'text') {
     return { type: 'text', text: part.text };
@@ -1234,6 +1349,16 @@ function convertAnthropicContentPart(part: MiniMaxWireContentPart): unknown {
     };
     if (part.signature) block.signature = part.signature;
     return block;
+  }
+  if (part.type === 'video_url') {
+    const dataUri = /^data:([^;]+);base64,([A-Za-z0-9+/=]+)$/.exec(part.video_url.url);
+    if (dataUri?.[1] !== undefined && dataUri[2] !== undefined) {
+      return {
+        type: 'video',
+        source: { type: 'base64', media_type: dataUri[1], data: dataUri[2] },
+      };
+    }
+    return { type: 'video', source: { type: 'url', url: part.video_url.url } };
   }
   return {
     type: 'image',

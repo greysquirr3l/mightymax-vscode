@@ -1336,6 +1336,33 @@ describe('ChatProvider.provideTokenCount', () => {
     ok(count > 0, 'multimodal count must be > 0 because the text part has length');
   });
 
+  it('uses and caches MiniMax native M3 token counts when the transport supports them', async () => {
+    const logger = makeRecordingLogger();
+    let countCalls = 0;
+    const nativeCountingClient: MiniMaxClient = {
+      streamCompletion: () =>
+        (async function* (): AsyncIterable<MiniMaxStreamEvent> {
+          yield { finishReason: 'stop' };
+        })(),
+      countTokens: async () => {
+        countCalls += 1;
+        return 777;
+      },
+    };
+    const provider = new ChatProvider(
+      logger,
+      makeProvider({ has: true, value: 'token-count-test-key' }),
+      nativeCountingClient,
+      makeCatalog([M3]),
+      (key) => (key === 'enableNativeTokenCounting' ? true : undefined),
+    );
+    const model = makeModelInfo('MiniMax-M3');
+    const source = new vscode.CancellationTokenSource();
+    strictEqual(await provider.provideTokenCount(model, 'cache this prompt', source.token), 777);
+    strictEqual(await provider.provideTokenCount(model, 'cache this prompt', source.token), 777);
+    strictEqual(countCalls, 1, 'identical host probes should share the native count cache');
+  });
+
   it('tokenizes a tool-call message without throwing on circular input (T26 invariant)', async () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(

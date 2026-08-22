@@ -42,6 +42,7 @@
  */
 import type { KeySlot } from './key-pool.js';
 import type { TokenPlanUsage } from './usage-normalization.js';
+import type { RecentTurnUsage } from './recent-turn-usage.js';
 
 export interface FlightDeckTooltipInput {
   /** The user's preferred slot. */
@@ -61,6 +62,8 @@ export interface FlightDeckTooltipInput {
     { readonly slot: KeySlot; readonly fellBackFrom: KeySlot; readonly atMs: number } | undefined;
   /** Token plan usage from the UsageClient; undefined on fetch failure. */
   readonly usage: TokenPlanUsage | undefined;
+  /** Final normalized usage from the most recent streamed MiniMax turn. */
+  readonly recentTurnUsage?: RecentTurnUsage;
   /** Wall-clock ms for the "as of HH:MM:SS" line + relative time math. */
   readonly nowMs: number;
   /** True when no key is stored at all (noKey takes precedence over usage). */
@@ -149,6 +152,19 @@ function usageLine(windowLabel: string, pct: number): string {
   return `${padded}${String(pct)}% used ${bar(pct)}`;
 }
 
+function recentTurnUsageLine(recent: RecentTurnUsage | undefined): string | undefined {
+  if (recent === undefined) return undefined;
+  const { usage } = recent;
+  const parts: string[] = [];
+  if (usage.promptTokens !== undefined) parts.push(`input ${String(usage.promptTokens)}`);
+  if (usage.completionTokens !== undefined) parts.push(`output ${String(usage.completionTokens)}`);
+  if (usage.cacheReadTokens !== undefined) parts.push(`cache read ${String(usage.cacheReadTokens)}`);
+  if (usage.cacheCreateTokens !== undefined) {
+    parts.push(`cache write ${String(usage.cacheCreateTokens)}`);
+  }
+  return parts.length > 0 ? `Last turn: ${parts.join(' · ')}` : undefined;
+}
+
 function usageSection(input: FlightDeckTooltipInput): readonly string[] {
   if (input.usageUnavailable) {
     return ['_usage unavailable (pay-as-you-go keys have no Token Plan bar)_'];
@@ -193,6 +209,8 @@ export function buildFlightDeckTooltip(input: FlightDeckTooltipInput): string {
     lines.push('Last fallback: (none yet)');
   }
   lines.push(SEPARATOR);
+  const recentUsage = recentTurnUsageLine(input.recentTurnUsage);
+  if (recentUsage !== undefined) lines.push(recentUsage);
   for (const line of usageSection(input)) {
     lines.push(line);
   }

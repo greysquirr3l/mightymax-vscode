@@ -14,6 +14,7 @@ import {
 } from './commands/manage-command.js';
 import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
 import { runShowUsageCommand } from './commands/show-usage.js';
+import { runShowDiagnosticsCommand } from './commands/show-diagnostics.js';
 import { runUtilityNudge } from './commands/utility-nudge.js';
 import type { Logger } from './ports/logger.js';
 import type { KeyProvider } from './ports/key-provider.js';
@@ -21,6 +22,7 @@ import {
   parseLabelsFromGlobalState,
   serializeLabelsToGlobalState,
 } from './lib/domain/slot-labels.js';
+import { RecentTurnUsageStore } from './lib/domain/recent-turn-usage.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -120,7 +122,8 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.getConfiguration('mightyMax').get<number>('idleTimeoutMs') ?? 60_000,
   });
   const catalog = new CatalogAdapter(logger);
-  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog);
+  const recentTurnUsage = new RecentTurnUsageStore();
+  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog, undefined, recentTurnUsage);
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes
@@ -135,6 +138,7 @@ export function activate(context: vscode.ExtensionContext): void {
     secretStore,
     usageClient,
     getSlotLabelsRaw: () => context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY),
+    recentTurnUsage,
   });
   context.subscriptions.push(statusBar);
 
@@ -198,6 +202,24 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mightyMax.showUsage', () => {
       logger.info('Mighty Max show-usage command invoked');
       return runShowUsageCommand(context, statusBar);
+    }),
+    vscode.commands.registerCommand('mightyMax.showDiagnostics', () => {
+      logger.info('Mighty Max diagnostics command invoked');
+      return runShowDiagnosticsCommand({
+        logger,
+        keyProvider,
+        catalog,
+        ui: createVsCodeUi(),
+        baseUrl: baseUrl(),
+        vscodeVersion: vscode.version,
+        hasLanguageModelThinkingPart:
+          typeof (
+            vscode as unknown as {
+              LanguageModelThinkingPart?: unknown;
+            }
+          ).LanguageModelThinkingPart === 'function',
+        getConfig: () => ({ get: (key) => vscode.workspace.getConfiguration('mightyMax').get(key) }),
+      });
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('mightyMax.logLevel')) {

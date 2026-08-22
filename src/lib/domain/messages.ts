@@ -83,6 +83,17 @@ const ALLOWED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
   'image/webp',
 ]);
 
+/** MiniMax M3's documented, common video input formats. */
+const ALLOWED_VIDEO_MIME_TYPES: ReadonlySet<string> = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/mpeg',
+]);
+// Base64 expands raw bytes by about one third. Stay under MiniMax's 64 MB
+// request-body ceiling while supporting the documented 50 MB source limit.
+const MAX_INLINE_VIDEO_BYTES = 48 * 1024 * 1024;
+
 /**
  * Encode a `Uint8Array` to base64 using the `btoa` global. We
  * use the `btoa` path (not `Buffer`) so the file is portable
@@ -120,6 +131,32 @@ function buildImageContentPart(
   }
   const dataUri = `data:${normalized};base64,${bytesToBase64(data)}`;
   return { type: 'image_url', image_url: { url: dataUri } };
+}
+
+function buildVideoContentPart(
+  mimeType: string,
+  data: Uint8Array,
+): MiniMaxWireContentPart | MessageMappingError {
+  const normalized = mimeType.toLowerCase();
+  if (!ALLOWED_VIDEO_MIME_TYPES.has(normalized)) {
+    return {
+      kind: 'unsupported-content',
+      reason: `unsupported video MIME type: ${mimeType}`,
+    };
+  }
+  if (data.byteLength === 0) {
+    return { kind: 'unsupported-content', reason: 'video data is empty' };
+  }
+  if (data.byteLength > MAX_INLINE_VIDEO_BYTES) {
+    return {
+      kind: 'unsupported-content',
+      reason: `video is too large for inline input (${String(data.byteLength)} bytes; max ${String(MAX_INLINE_VIDEO_BYTES)})`,
+    };
+  }
+  return {
+    type: 'video_url',
+    video_url: { url: `data:${normalized};base64,${bytesToBase64(data)}` },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +201,12 @@ export interface MessageMappingResult {
  * default value lets the test file call the function without
  * passing `{}` explicitly.
  */
-const EMPTY_OPTIONS: Record<string, unknown> = Object.freeze({});
+export interface MessageMappingOptions {
+  /** Optional per-tool-result character budget; default remains 4096. */
+  readonly toolResultMaxChars?: number;
+}
+
+const EMPTY_OPTIONS: MessageMappingOptions = Object.freeze({});
 
 /**
  * Convert a list of VS Code chat request messages to MiniMax wire
@@ -202,7 +244,7 @@ export function mapRequestToMiniMax(
   // Reserved for future tool-mode wiring (T05). Kept as a positional
   // arg so the chat-provider can pass a fresh options object per
   // request.
-  _options: Record<string, unknown> = EMPTY_OPTIONS,
+  options: MessageMappingOptions = EMPTY_OPTIONS,
 ): MessageMappingResult {
   void model;
   const wireMessages: MiniMaxWireMessage[] = [];
@@ -255,6 +297,15 @@ export function mapRequestToMiniMax(
       }
       if (part.type === 'image') {
         const encoded = buildImageContentPart(part.mimeType, part.data);
+        if (isMessageMappingError(encoded)) {
+          warnings.push(encoded);
+        } else {
+          richParts.push(encoded);
+        }
+        continue;
+      }
+      if (part.type === 'video') {
+        const encoded = buildVideoContentPart(part.mimeType, part.data);
         if (isMessageMappingError(encoded)) {
           warnings.push(encoded);
         } else {
@@ -441,7 +492,10 @@ export function mapRequestToMiniMax(
   // history can't bloat the wire. Done before the orphan
   // reconciliation so synthesized tool_use adoptions are never
   // themselves truncated.
-  const truncation = truncateToolResults(wireMessages);
+  const truncation = truncateToolResults(
+    wireMessages,
+    options.toolResultMaxChars !== undefined ? { maxChars: options.toolResultMaxChars } : {},
+  );
   if (truncation.truncatedCount > 0) {
     warnings.push({
       kind: 'unsupported-content',

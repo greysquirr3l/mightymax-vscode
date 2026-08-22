@@ -40,6 +40,7 @@ import {
 } from '../lib/domain/flight-deck-tooltip.js';
 import { cooldownRemainingMs, type KeySlot as KeySlotType } from '../lib/domain/key-pool.js';
 import { getLabel, parseLabelsFromGlobalState } from '../lib/domain/slot-labels.js';
+import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
 
 const REFRESH_MS = 5 * 60 * 1000; // match the console's coarse granularity
 const ICON = FLIGHT_DECK_ICON;
@@ -71,6 +72,8 @@ export interface StatusBarDeps {
    * reflected in the tooltip without restarting the extension host.
    */
   readonly getSlotLabelsRaw?: () => unknown;
+  /** Optional in-memory source for the most recent streamed model usage. */
+  readonly recentTurnUsage?: RecentTurnUsageStore;
   /** T32 — clock seam for tests; defaults to `Date.now()`. */
   readonly now?: () => number;
   /** Injected for tests. Defaults to `vscode.window.createStatusBarItem`. */
@@ -90,6 +93,7 @@ export class StatusBarAdapter implements vscode.Disposable {
   private readonly usageClient: UsageClient;
   private readonly isAutoRotationEnabled: () => boolean;
   private readonly getSlotLabelsRaw: () => unknown;
+  private readonly recentTurnUsage: RecentTurnUsageStore | undefined;
   private readonly now: () => number;
   private readonly item: vscode.StatusBarItem;
   private readonly setIntervalImpl: (
@@ -98,6 +102,7 @@ export class StatusBarAdapter implements vscode.Disposable {
   ) => ReturnType<typeof setInterval>;
   private readonly clearIntervalImpl: (handle: ReturnType<typeof setInterval>) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
+  private recentTurnUsageSubscription: { dispose(): void } | undefined;
   private lastUsage: TokenPlanUsage | undefined;
   private lastUsageUnavailable = false;
 
@@ -108,6 +113,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     this.isAutoRotationEnabled =
       deps.isAutoRotationEnabled ?? (() => StatusBarAdapter.readAutoRotationDefault());
     this.getSlotLabelsRaw = deps.getSlotLabelsRaw ?? (() => deps.slotLabelsRaw);
+    this.recentTurnUsage = deps.recentTurnUsage;
     this.now = deps.now ?? Date.now;
     const createItem = deps.createItem ?? vscode.window.createStatusBarItem;
     this.setIntervalImpl = deps.setIntervalImpl ?? setInterval;
@@ -119,6 +125,9 @@ export class StatusBarAdapter implements vscode.Disposable {
     this.item.text = ICON;
     this.item.tooltip = 'Mighty Max — MiniMax usage';
     this.item.show();
+    this.recentTurnUsageSubscription = this.recentTurnUsage?.onDidChange(() => {
+      void this.refreshAfterTurnUsage();
+    });
   }
 
   /**
@@ -180,6 +189,20 @@ export class StatusBarAdapter implements vscode.Disposable {
     }
   }
 
+  /**
+   * Re-render from the last quota snapshot after a streamed usage update.
+   * This intentionally does not fetch Token Plan data again: each chat turn
+   * should update the tooltip immediately without adding a second API call.
+   */
+  private async refreshAfterTurnUsage(): Promise<void> {
+    const pick = await this.keyProvider.pickKey();
+    if (pick === undefined) {
+      await this.renderNoKey();
+      return;
+    }
+    await this.renderFlightDeck({ usage: this.lastUsage, currentSlot: pick.slot });
+  }
+
   /** Last successfully fetched usage payload, for the webview panel. */
   getLastUsage(): TokenPlanUsage | undefined {
     return this.lastUsage;
@@ -226,6 +249,7 @@ export class StatusBarAdapter implements vscode.Disposable {
       if (userLabel !== '') labels.set(slot, userLabel);
     }
 
+    const recentTurnUsage = this.recentTurnUsage?.snapshot();
     const input: FlightDeckTooltipInput = {
       activeSlot,
       stored,
@@ -235,6 +259,7 @@ export class StatusBarAdapter implements vscode.Disposable {
       autoRotationEnabled: this.isAutoRotationEnabled(),
       lastFallback: this.keyProvider.lastFallback,
       usage: opts.usage,
+      ...(recentTurnUsage !== undefined ? { recentTurnUsage } : {}),
       nowMs,
       noKey: false,
       usageUnavailable: this.lastUsageUnavailable,
@@ -268,6 +293,7 @@ export class StatusBarAdapter implements vscode.Disposable {
 
   private async renderNoKey(): Promise<void> {
     const activeSlot = await this.keyProvider.getActiveSlot();
+    const recentTurnUsage = this.recentTurnUsage?.snapshot();
     const input: FlightDeckTooltipInput = {
       activeSlot,
       stored: [],
@@ -277,6 +303,7 @@ export class StatusBarAdapter implements vscode.Disposable {
       autoRotationEnabled: this.isAutoRotationEnabled(),
       lastFallback: this.keyProvider.lastFallback,
       usage: undefined,
+      ...(recentTurnUsage !== undefined ? { recentTurnUsage } : {}),
       nowMs: this.now(),
       noKey: true,
       usageUnavailable: false,
@@ -298,6 +325,8 @@ export class StatusBarAdapter implements vscode.Disposable {
       this.clearIntervalImpl(this.timer);
       this.timer = undefined;
     }
+    this.recentTurnUsageSubscription?.dispose();
+    this.recentTurnUsageSubscription = undefined;
     this.item.dispose();
   }
 }

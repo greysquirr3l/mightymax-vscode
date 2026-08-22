@@ -75,6 +75,18 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readonly nativeTokenCountInFlight = new Map<string, Promise<number>>();
   private static readonly NATIVE_TOKEN_COUNT_TTL_MS = 30_000;
   /**
+   * Floor between real `countTokens` network attempts, independent of the
+   * content-hash cache above. VS Code calls `provideTokenCount` very
+   * frequently while the user is still composing (see the design note on
+   * `provideTokenCount` itself); the content-hash cache does nothing for
+   * that traffic because the text changes on every keystroke. Without this
+   * floor each keystroke was issuing its own live request to MiniMax,
+   * competing with the real completion request for the same per-key rate
+   * budget and producing genuine 429s (observed 2026-08-22).
+   */
+  private static readonly NATIVE_TOKEN_COUNT_MIN_INTERVAL_MS = 2_000;
+  private nativeTokenCountLastNetworkAttemptMs = 0;
+  /**
    * Tool usage tracking for smart filtering. Maps tool names to call counts.
    * Used to prioritize frequently-used tools when filtering is enabled.
    */
@@ -656,6 +668,15 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         return fallback;
       }
     }
+
+    const now = Date.now();
+    if (
+      now - this.nativeTokenCountLastNetworkAttemptMs <
+      ChatProvider.NATIVE_TOKEN_COUNT_MIN_INTERVAL_MS
+    ) {
+      return fallback;
+    }
+    this.nativeTokenCountLastNetworkAttemptMs = now;
 
     const operation = this.fetchNativeTokenCount(cacheKey, request, token);
     this.nativeTokenCountInFlight.set(cacheKey, operation);

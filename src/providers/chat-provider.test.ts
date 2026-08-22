@@ -1363,6 +1363,44 @@ describe('ChatProvider.provideTokenCount', () => {
     strictEqual(countCalls, 1, 'identical host probes should share the native count cache');
   });
 
+  it('throttles native token-count network attempts across distinct probes (0.7.1 regression)', async () => {
+    // VS Code calls provideTokenCount very frequently while the user is
+    // still composing, and each keystroke produces different text — so
+    // the content-hash cache above never hits for that traffic. Without
+    // a floor on real network attempts, every keystroke fired its own
+    // live request to MiniMax, competing with the real completion
+    // request for the same per-key rate budget (observed as 429s on
+    // real completions in the field, 2026-08-22).
+    const logger = makeRecordingLogger();
+    let countCalls = 0;
+    const nativeCountingClient: MiniMaxClient = {
+      streamCompletion: () =>
+        (async function* (): AsyncIterable<MiniMaxStreamEvent> {
+          yield { finishReason: 'stop' };
+        })(),
+      countTokens: async () => {
+        countCalls += 1;
+        return 777;
+      },
+    };
+    const provider = new ChatProvider(
+      logger,
+      makeProvider({ has: true, value: 'token-count-test-key' }),
+      nativeCountingClient,
+      makeCatalog([M3]),
+      (key) => (key === 'enableNativeTokenCounting' ? true : undefined),
+    );
+    const model = makeModelInfo('MiniMax-M3');
+    const source = new vscode.CancellationTokenSource();
+
+    const first = await provider.provideTokenCount(model, 'first keystroke', source.token);
+    strictEqual(first, 777, 'the first probe should still get a real network count');
+
+    const second = await provider.provideTokenCount(model, 'first keystroke and more', source.token);
+    strictEqual(countCalls, 1, 'a distinct probe inside the throttle window must not hit the network');
+    ok(second !== 777, 'a throttled probe should fall back to the heuristic, not the stale count');
+  });
+
   it('tokenizes a tool-call message without throwing on circular input (T26 invariant)', async () => {
     const logger = makeRecordingLogger();
     const provider = new ChatProvider(

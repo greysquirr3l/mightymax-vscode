@@ -333,6 +333,16 @@ describe('pumpProviderStream — T27 thinking surface', () => {
     // The stub already exposes LanguageModelThinkingPart; this
     // test asserts the happy path so a regression in the
     // primary surface is caught.
+    //
+    // Standalone `signature_delta` (no paired `thinking_delta`)
+    // is captured by the LRU replay accumulator only — it must
+    // NOT be forwarded to the chat widget as an empty
+    // LanguageModelThinkingPart. VS Code 1.128+ renders every
+    // thinking part as a separate collapsible thought bubble;
+    // an empty-value one shows up as an "empty box" stacked on
+    // top of the real reasoning block. Observed regression on
+    // M3 once tool calls started spanning many rounds and
+    // signature_delta started firing per round.
     const progress = makeProgress();
     const deps: StreamPumpDeps = {
       events: asyncIterable([
@@ -346,22 +356,65 @@ describe('pumpProviderStream — T27 thinking surface', () => {
       logger: noopLogger(),
       recordToolUsage: () => undefined,
     };
-    await pumpProviderStream(deps);
+    const result = await pumpProviderStream(deps);
 
     const thinkingParts = progress.parts.filter(
       (p): p is { value: string | string[]; metadata?: { signature?: string } } =>
         (p as { constructor?: { name?: string } }).constructor?.name ===
         'LanguageModelThinkingPart',
     );
-    strictEqual(thinkingParts.length, 2);
+    strictEqual(
+      thinkingParts.length,
+      1,
+      'standalone signature_delta must not emit a second empty thinking part to the chat widget',
+    );
     const deltaPart = thinkingParts[0];
-    const signaturePart = thinkingParts[1];
     ok(deltaPart, 'expected a delta thinking part');
-    ok(signaturePart, 'expected a signature thinking part');
     strictEqual(deltaPart.value, 'planning the next step');
     deepStrictEqual(deltaPart.metadata, {});
-    strictEqual(signaturePart.value, '');
-    deepStrictEqual(signaturePart.metadata, { signature: 'sig_xyz' });
+    // The signature is still captured in the replay accumulator so
+    // the next request's Anthropic `thinking` block carries it.
+    ok(result.thinking, 'pump should surface thinking for the LRU cache');
+    strictEqual(result.thinking?.thinking, 'planning the next step');
+    strictEqual(result.thinking?.signature, 'sig_xyz');
+  });
+
+  it('absorbs a standalone signature_delta into the replay accumulator only', async () => {
+    // Regression test for the "empty thinking box" bug: when
+    // the model emits a signature_delta with no paired
+    // thinking_delta, we must NOT forward an empty
+    // LanguageModelThinkingPart to the chat widget, but the
+    // signature must still land in the LRU replay accumulator
+    // so Anthropic's next request can carry it.
+    const progress = makeProgress();
+    const deps: StreamPumpDeps = {
+      events: asyncIterable([
+        { thinkingSignature: 'sig_only' },
+        { textDelta: 'No reasoning this turn, just an answer.' },
+        { finishReason: 'stop' },
+      ]),
+      progress: progress.progress,
+      thinkingStyle: 'anthropic',
+      logger: noopLogger(),
+      recordToolUsage: () => undefined,
+    };
+    const result = await pumpProviderStream(deps);
+
+    const thinkingParts = progress.parts.filter(
+      (p): p is { value: string | string[]; metadata?: { signature?: string } } =>
+        (p as { constructor?: { name?: string } }).constructor?.name ===
+        'LanguageModelThinkingPart',
+    );
+    strictEqual(
+      thinkingParts.length,
+      0,
+      'standalone signature_delta alone must not produce any thinking part for the chat widget',
+    );
+
+    // Signature is captured for replay.
+    ok(result.thinking, 'pump should still surface the standalone signature for replay');
+    strictEqual(result.thinking?.thinking, '');
+    strictEqual(result.thinking?.signature, 'sig_only');
   });
 
   it('falls back to LanguageModelDataPart when LanguageModelThinkingPart is missing', async () => {
@@ -394,7 +447,7 @@ describe('pumpProviderStream — T27 thinking surface', () => {
         logger: noopLogger(),
         recordToolUsage: () => undefined,
       };
-      await pumpProviderStream(deps);
+      const result = await pumpProviderStream(deps);
 
       // No LanguageModelThinkingPart on hosts without 1.128+.
       const thinkingParts = progress.parts.filter(
@@ -408,9 +461,14 @@ describe('pumpProviderStream — T27 thinking surface', () => {
         'expected no LanguageModelThinkingPart on hosts without the proposed API',
       );
 
-      // Two data-part emissions: one for the delta, one for the
-      // standalone signature (each carrying the same JSON
-      // payload as the pre-T27 stream).
+      // Only ONE data-part emission: the delta. The standalone
+      // signature is absorbed into the LRU replay accumulator
+      // and MUST NOT be forwarded as a second data part — the
+      // pre-T27 surface renders every data part as a separate
+      // inline text block, so an empty-thinking JSON data part
+      // shows up as an "empty box" stacked on top of the real
+      // reasoning. See the matching assertion in the primary
+      // surface test above.
       const dataParts = progress.parts.filter(
         (p) =>
           (p as { constructor?: { name?: string } }).constructor?.name ===
@@ -419,15 +477,12 @@ describe('pumpProviderStream — T27 thinking surface', () => {
       );
       strictEqual(
         dataParts.length,
-        2,
-        'expected one delta data part and one signature data part on the fallback surface',
+        1,
+        'standalone signature_delta must not emit a second empty thinking data part to the chat widget',
       );
 
-      const [deltaPart, signaturePart] = dataParts as Array<{
-        data: Uint8Array;
-      }>;
+      const [deltaPart] = dataParts as Array<{ data: Uint8Array }>;
       ok(deltaPart, 'expected a delta data part');
-      ok(signaturePart, 'expected a signature data part');
       const decodedDelta = JSON.parse(new TextDecoder().decode(deltaPart.data)) as {
         thinking: string;
         signature?: string;
@@ -439,12 +494,11 @@ describe('pumpProviderStream — T27 thinking surface', () => {
         'the delta data part should not carry a signature when the signature is its own chunk',
       );
 
-      const decodedSignature = JSON.parse(new TextDecoder().decode(signaturePart.data)) as {
-        thinking: string;
-        signature?: string;
-      };
-      strictEqual(decodedSignature.thinking, '');
-      strictEqual(decodedSignature.signature, 'sig_xyz');
+      // The signature still lands in the pump's replay accumulator
+      // so Anthropic's next request can carry it.
+      ok(result.thinking, 'pump should still surface the signature for replay');
+      strictEqual(result.thinking?.thinking, 'planning the next step');
+      strictEqual(result.thinking?.signature, 'sig_xyz');
     } finally {
       stubExports['LanguageModelThinkingPart'] = ThinkingCtor;
     }

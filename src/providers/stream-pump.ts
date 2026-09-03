@@ -126,13 +126,21 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
           } else if (typed.signature) {
             // Standalone signature: Anthropic may emit the
             // signature_delta on its own chunk (no `thinking_delta`
-            // paired with it). Emit a zero-length
-            // `LanguageModelThinkingPart` carrying the signature
-            // in `metadata.signature` so the chat widget can
-            // attach it to the prior thinking block — the same
-            // pattern Copilot's Anthropic BYOK provider uses
-            // (`anthropicProvider.ts:762-769`).
-            reportThinkingPart(deps.progress, typed, deps.logger);
+            // paired with it). The signature belongs in our
+            // internal `currentThinking` accumulator so it can be
+            // replayed in the next request's Anthropic `thinking`
+            // block — but it must NOT be forwarded to the chat
+            // widget as a separate `LanguageModelThinkingPart`.
+            // VS Code 1.128+ renders every thinking part as its
+            // own collapsible thought bubble, and an empty-value
+            // part with only `metadata.signature` shows up as a
+            // zero-height "empty box" stacked on top of the real
+            // reasoning block — observed regression on M3 once
+            // tool calls started spanning many rounds and the
+            // standalone-signature path triggered per round.
+            // Compare with `messages.ts:758` where the mapper
+            // emits `{type:'thinking', value:'', signature}` —
+            // the pump absorbs it here and drops the UI emission.
           } else {
             // Truly empty (no value, no signature) — nothing to do.
             continue;

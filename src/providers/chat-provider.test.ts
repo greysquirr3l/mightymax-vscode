@@ -1396,8 +1396,16 @@ describe('ChatProvider.provideTokenCount', () => {
     const first = await provider.provideTokenCount(model, 'first keystroke', source.token);
     strictEqual(first, 777, 'the first probe should still get a real network count');
 
-    const second = await provider.provideTokenCount(model, 'first keystroke and more', source.token);
-    strictEqual(countCalls, 1, 'a distinct probe inside the throttle window must not hit the network');
+    const second = await provider.provideTokenCount(
+      model,
+      'first keystroke and more',
+      source.token,
+    );
+    strictEqual(
+      countCalls,
+      1,
+      'a distinct probe inside the throttle window must not hit the network',
+    );
     ok(second !== 777, 'a throttled probe should fall back to the heuristic, not the stale count');
   });
 
@@ -1801,28 +1809,29 @@ describe('ChatProvider T19 — response-part correctness', () => {
     );
 
     const thinkingParts = parts.filter((p) => p instanceof ThinkingCtor);
-    // Two `LanguageModelThinkingPart`s are emitted for the
-    // thinking delta + standalone signature:
-    //   1. value='planning the next step', metadata={}
-    //   2. value='', metadata={ signature: 'sig_xyz' }
-    // The host uses the second part's metadata to attach the
-    // signature to the prior thinking block (Copilot's BYOK
-    // pattern at `anthropicProvider.ts:762-769`).
+    // One `LanguageModelThinkingPart` for the thinking delta; the
+    // standalone signature_delta is absorbed into the LRU replay
+    // accumulator (currentThinking in the pump scope) and is NOT
+    // forwarded to the chat widget as a second thinking part.
+    // VS Code 1.128+ renders every thinking part as its own
+    // collapsible thought bubble; an empty-value one with only
+    // metadata.signature showed up as a zero-height "empty box"
+    // stacked on top of the real reasoning — observed regression
+    // on M3 once tool calls started spanning many rounds and the
+    // standalone-signature path triggered per round. The signature
+    // still rides into the next request via `thinkingCache`.
     strictEqual(
       thinkingParts.length,
-      2,
-      'expected one thinking part for the delta and one for the signature',
+      1,
+      'expected exactly one thinking part (delta only); standalone signature must not emit a second empty part to the chat widget',
     );
-    const [deltaPart, signaturePart] = thinkingParts as unknown as Array<{
+    const [deltaPart] = thinkingParts as unknown as Array<{
       value: string | string[];
       metadata: { signature?: string } | undefined;
     }>;
     ok(deltaPart, 'expected a delta thinking part');
-    ok(signaturePart, 'expected a signature thinking part');
     strictEqual(deltaPart.value, 'planning the next step');
     deepStrictEqual(deltaPart.metadata, {});
-    strictEqual(signaturePart.value, '');
-    deepStrictEqual(signaturePart.metadata, { signature: 'sig_xyz' });
   });
 
   it('never emits `__minimax_usage__:` as a LanguageModelTextPart value', async () => {

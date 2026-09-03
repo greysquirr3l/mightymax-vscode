@@ -980,6 +980,21 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
 
   for (const part of msgContent) {
     if (part instanceof vscode.LanguageModelTextPart) {
+      // Drop empty text parts at the boundary. VS Code sends
+      // `LanguageModelTextPart('')` for any assistant turn that
+      // emitted only thinking or only tool calls (the visible
+      // text slot is empty by design — the model produced no
+      // visible text that turn). Routing the empty text part
+      // through the mapper triggers an `anthropic: empty
+      // assistant text part dropped` warning per historical
+      // assistant message on every request, which is pure
+      // noise in the Mighty Max output channel — observed in
+      // the autonomous-dev session of 2026-09-03, where the
+      // history had 23 such assistant turns and each request
+      // re-emitted 23 identical warnings. Suppressing the empty
+      // text at the conversion boundary keeps the warning
+      // surface reserved for genuinely malformed content.
+      if (part.value.length === 0) continue;
       content.push({ type: 'text', value: part.value });
     } else if (part instanceof vscode.LanguageModelToolCallPart) {
       content.push({

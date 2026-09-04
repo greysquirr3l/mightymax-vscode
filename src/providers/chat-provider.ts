@@ -623,7 +623,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readMightyMaxSetting(key: string): unknown {
     if (this.configReader !== undefined) return this.configReader(key);
     const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
-    const config = ws?.getConfiguration?.('mightyMax') as { get?: (k: string) => unknown } | undefined;
+    const config = ws?.getConfiguration?.('mightyMax') as
+      { get?: (k: string) => unknown } | undefined;
     return config?.get?.(key);
   }
 
@@ -705,7 +706,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const controller = new AbortController();
     const onCancel = token.onCancellationRequested(() => controller.abort());
     try {
-      const count = await this.client.countTokens(request, pick.key, controller.signal, this.logger);
+      const count = await this.client.countTokens(
+        request,
+        pick.key,
+        controller.signal,
+        this.logger,
+      );
       if (!Number.isFinite(count) || count < 0) {
         throw new Error('MiniMax returned an invalid token count');
       }

@@ -89,6 +89,14 @@ export interface ManageDeps {
   getConfig?: () => ManageConfig;
   /** T31 — slot labels persist across restarts via this Memento-backed store. */
   slotLabels?: SlotLabelsStore;
+  /**
+   * T34 — optional handle for the MCP reserved-tools submenu.
+   * The main `Mighty Max: Manage` command reaches into the
+   * Settings submenu's "Manage MCP tools" entry; the
+   * `mightyMax.manageMcpTools` command entry point in
+   * `extension.ts` wires the same handler.
+   */
+  manageMcpTools?: () => Promise<void>;
 }
 
 const PICK_ITEMS: readonly ManagePickItem[] = [
@@ -308,6 +316,10 @@ async function runSettingsMenu(deps: ManageDeps): Promise<void> {
       description: 'Validate each stored key against the models endpoint',
     },
     {
+      label: 'Manage MCP reserved tools',
+      description: 'Curate which MCP tools always stay in the wire (above the rolling LRU)',
+    },
+    {
       label: 'Configure utility models',
       description: 'Fix the BYOK "no utility model configured" error',
     },
@@ -334,6 +346,10 @@ async function runSettingsMenu(deps: ManageDeps): Promise<void> {
   } else if (choice.label === 'Test all stored keys') {
     const stored = await deps.keyProvider.listStoredKeys();
     await handleTestAllKeys(deps, stored);
+  } else if (choice.label === 'Manage MCP reserved tools') {
+    if (deps.manageMcpTools !== undefined) {
+      await deps.manageMcpTools();
+    }
   } else if (choice.label === 'Configure utility models') {
     await handleConfigureUtilityModels(deps);
   } else if (choice.label.startsWith('Log level:')) {

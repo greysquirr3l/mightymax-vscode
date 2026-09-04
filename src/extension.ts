@@ -7,11 +7,8 @@ import { CatalogAdapter } from './adapters/catalog.js';
 import { ChatProvider } from './providers/chat-provider.js';
 import { StatusBarAdapter } from './adapters/status-bar.js';
 import { UsageTransportAdapter } from './adapters/usage-transport.js';
-import {
-  runManageCommand,
-  type ManageUi,
-  type SlotLabelsStore,
-} from './commands/manage-command.js';
+import { runManageCommand, type SlotLabelsStore } from './commands/manage-command.js';
+import { runManageMcpToolsCommand } from './commands/manage-mcp-tools.js';
 import { runConfigureUtilityModelsCommand } from './commands/configure-utility-models.js';
 import { runShowUsageCommand } from './commands/show-usage.js';
 import { runShowDiagnosticsCommand } from './commands/show-diagnostics.js';
@@ -23,6 +20,7 @@ import {
   serializeLabelsToGlobalState,
 } from './lib/domain/slot-labels.js';
 import { RecentTurnUsageStore } from './lib/domain/recent-turn-usage.js';
+import { McpToolRecencyTracker } from './lib/domain/mcp-tool-recency.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -32,12 +30,35 @@ function isLogLevel(value: unknown): value is LogLevel {
 }
 
 /**
- * Build the small `ManageUi` adapter that maps the manage-command's
- * dependency-injected UI surface onto the real `vscode.window` calls.
+ * Build the small UI adapter that maps the manage-command's
+ * dependency-injected UI surface onto the real `vscode.window`
+ * calls. The return type is a structural superset of both
+ * `ManageUi` and `ManageMcpUi` so the same factory backs
+ * every command without per-callsite casts.
  */
-function createVsCodeUi(): ManageUi {
+interface VsCodeUi {
+  showQuickPick<T extends { label: string; description?: string }>(
+    items: readonly T[],
+    options?: { title?: string; ignoreFocusOut?: boolean },
+  ): Promise<T | undefined>;
+  showInputBox(options?: {
+    prompt?: string;
+    placeHolder?: string;
+    password?: boolean;
+    value?: string;
+    ignoreFocusOut?: boolean;
+  }): Promise<string | undefined>;
+  showInfoMessage(message: string): Promise<string | undefined>;
+  showWarningMessage(message: string): Promise<string | undefined>;
+  showErrorMessage(message: string): Promise<string | undefined>;
+}
+
+function createVsCodeUi(): VsCodeUi {
   return {
-    showQuickPick: async (items, options) => {
+    showQuickPick: async <T extends { label: string; description?: string }>(
+      items: readonly T[],
+      options?: { title?: string; ignoreFocusOut?: boolean },
+    ): Promise<T | undefined> => {
       const vscodeItems: vscode.QuickPickItem[] = items.map((item) => ({
         label: item.label,
         ...(item.description !== undefined ? { description: item.description } : {}),
@@ -54,6 +75,7 @@ function createVsCodeUi(): ManageUi {
       Promise.resolve(
         vscode.window.showInputBox({
           ...(options?.prompt !== undefined ? { prompt: options.prompt } : {}),
+          ...(options?.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
           ...(options?.password !== undefined ? { password: options.password } : {}),
           ...(options?.value !== undefined ? { value: options.value } : {}),
           ...(options?.ignoreFocusOut !== undefined
@@ -62,6 +84,7 @@ function createVsCodeUi(): ManageUi {
         }),
       ),
     showInfoMessage: (message) => Promise.resolve(vscode.window.showInformationMessage(message)),
+    showWarningMessage: (message) => Promise.resolve(vscode.window.showWarningMessage(message)),
     showErrorMessage: (message) => Promise.resolve(vscode.window.showErrorMessage(message)),
   };
 }
@@ -104,10 +127,7 @@ export function activate(context: vscode.ExtensionContext): void {
         parseLabelsFromGlobalState(context.globalState.get<unknown>(SLOT_LABELS_STATE_KEY)),
       ),
     set: async (labels) => {
-      await context.globalState.update(
-        SLOT_LABELS_STATE_KEY,
-        serializeLabelsToGlobalState(labels),
-      );
+      await context.globalState.update(SLOT_LABELS_STATE_KEY, serializeLabelsToGlobalState(labels));
     },
   };
   // Watchdog timeouts are callbacks (like baseUrl) so settings
@@ -123,7 +143,16 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const catalog = new CatalogAdapter(logger);
   const recentTurnUsage = new RecentTurnUsageStore();
-  const chatProvider = new ChatProvider(logger, keyProvider, client, catalog, undefined, recentTurnUsage);
+  const mcpRecency = new McpToolRecencyTracker();
+  const chatProvider = new ChatProvider(
+    logger,
+    keyProvider,
+    client,
+    catalog,
+    undefined,
+    recentTurnUsage,
+    mcpRecency,
+  );
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes
@@ -166,6 +195,32 @@ export function activate(context: vscode.ExtensionContext): void {
       logger.info('Mighty Max management command invoked');
       const ui = createVsCodeUi();
       const configProvider = () => vscode.workspace.getConfiguration('mightyMax');
+      // T34 — bridge the Settings submenu's "Manage MCP reserved
+      // tools" entry to the dedicated command. The handle is
+      // defined inline so the manage flow doesn't have to know
+      // how to read the live `vscode.lm.tools` snapshot.
+      const manageMcpTools = () =>
+        runManageMcpToolsCommand({
+          logger,
+          ui,
+          getReserved: () => {
+            const raw = configProvider().get<unknown>('reservedMcpTools');
+            if (!Array.isArray(raw)) return [];
+            return raw.filter((s): s is string => typeof s === 'string');
+          },
+          setReserved: async (next) => {
+            await configProvider().update(
+              'reservedMcpTools',
+              [...next],
+              vscode.ConfigurationTarget.Global,
+            );
+          },
+          getMcpMaxTools: () => {
+            const raw = configProvider().get<unknown>('mcpMaxTools');
+            return typeof raw === 'number' && Number.isFinite(raw) ? raw : 60;
+          },
+          listLiveTools: () => vscode.lm.tools.map((t) => ({ name: t.name })),
+        });
       return runManageCommand({
         logger,
         secretStore,
@@ -177,10 +232,37 @@ export function activate(context: vscode.ExtensionContext): void {
           void statusBar.refresh();
         },
         slotLabels,
+        manageMcpTools,
         getConfig: () => ({
           get: (key) => configProvider().get(key),
           update: (key, value) => Promise.resolve(configProvider().update(key, value)),
         }),
+      });
+    }),
+    vscode.commands.registerCommand('mightyMax.manageMcpTools', () => {
+      logger.info('Mighty Max manage-MCP-tools command invoked');
+      const ui = createVsCodeUi();
+      const configProvider = () => vscode.workspace.getConfiguration('mightyMax');
+      return runManageMcpToolsCommand({
+        logger,
+        ui,
+        getReserved: () => {
+          const raw = configProvider().get<unknown>('reservedMcpTools');
+          if (!Array.isArray(raw)) return [];
+          return raw.filter((s): s is string => typeof s === 'string');
+        },
+        setReserved: async (next) => {
+          await configProvider().update(
+            'reservedMcpTools',
+            [...next],
+            vscode.ConfigurationTarget.Global,
+          );
+        },
+        getMcpMaxTools: () => {
+          const raw = configProvider().get<unknown>('mcpMaxTools');
+          return typeof raw === 'number' && Number.isFinite(raw) ? raw : 60;
+        },
+        listLiveTools: () => vscode.lm.tools.map((t) => ({ name: t.name })),
       });
     }),
     vscode.commands.registerCommand('mightyMax.configureUtilityModels', () => {
@@ -218,7 +300,9 @@ export function activate(context: vscode.ExtensionContext): void {
               LanguageModelThinkingPart?: unknown;
             }
           ).LanguageModelThinkingPart === 'function',
-        getConfig: () => ({ get: (key) => vscode.workspace.getConfiguration('mightyMax').get(key) }),
+        getConfig: () => ({
+          get: (key) => vscode.workspace.getConfiguration('mightyMax').get(key),
+        }),
       });
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {

@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -60,6 +60,11 @@
         "category": "Mighty Max"
       },
       {
+        "command": "mightyMax.manageMcpTools",
+        "title": "Mighty Max: Manage MCP Reserved Tools",
+        "category": "Mighty Max"
+      },
+      {
         "command": "mightyMax.showUsage",
         "title": "Mighty Max: Show MiniMax Usage",
         "category": "Mighty Max",
@@ -75,7 +80,6 @@
       {
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
-        "managementCommand": "mightyMax.manage",
         "configuration": {
           "properties": {
             "apiKey": {
@@ -178,15 +182,34 @@
         "mightyMax.enableSmartToolFiltering": {
           "type": "boolean",
           "default": true,
-          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 64); history-referenced tools and a pin list of always-on built-ins (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list and history-referenced set are still honored.",
+          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 60) for built-in tools, with MCP tools governed separately by a rolling LRU — see `mightyMax.mcpMaxTools` (default 60). History-referenced tools and the always-on pin list (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install; with several MCP servers installed the total can climb into the hundreds — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list, MCP LRU, and history-referenced set are still honored.",
           "scope": "window"
         },
         "mightyMax.maxTools": {
           "type": "number",
-          "default": 64,
+          "default": 60,
           "minimum": 5,
           "maximum": 100,
-          "description": "Maximum number of tools to send to the model when smart filtering is enabled. M3 handles 64 cleanly; Copilot Chat's virtual-tool grouper handles larger sets at the chat-UI level, not here. Lower this if your provider enforces a smaller cap.",
+          "description": "Maximum number of built-in (non-MCP) tools to send to the model when smart filtering is enabled. M3 handles 60 cleanly; Copilot Chat's virtual-tool grouper handles larger sets at the chat-UI level, not here. MCP tools are governed separately by a rolling LRU; see `mightyMax.mcpMaxTools`.",
+          "scope": "window"
+        },
+        "mightyMax.mcpMaxTools": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "maximum": 200,
+          "description": "Maximum number of MCP tools to keep in the wire payload on any given request. Distinct from `mightyMax.maxTools` (which caps built-ins). The chat-provider maintains a per-tool recency tracker: tools the model has called stay in the wire permanently for the session; new tools displace unused ones on a recency-ordered first-in basis. Setting to 0 disables MCP tool inclusion entirely; the model can still see MCP servers via the live tool set on the chat UI side. Reserved entries from `mightyMax.reservedMcpTools` count against this cap.",
+          "scope": "window"
+        },
+        "mightyMax.reservedMcpTools": {
+          "type": "array",
+          "default": [
+            "mcp_github_mcp_se_"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "MCP tools (or prefixes ending in `_`) to keep in the wire payload on every request, regardless of recency. Each entry costs one slot of the `mightyMax.mcpMaxTools` cap. The platform's built-in agent tools (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) are always-included separately and cannot be removed. The chat-provider warns at request time if the reserved list length exceeds the cap. Add MCP server prefixes here for servers the model needs available on every turn (e.g. `mcp_github_mcp_se_` for the GitHub MCP server); leave empty to let the rolling LRU handle MCP selection on recency alone.",
           "scope": "window"
         },
         "mightyMax.alwaysIncludeTools": {
@@ -202,7 +225,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically.",
+          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically. MCP tools are governed separately by the rolling LRU — see `mightyMax.mcpMaxTools`.",
           "scope": "window"
         },
         "mightyMax.toolFilterStrategy": {

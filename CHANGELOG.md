@@ -4,6 +4,40 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] — 2026-09-04
+
+### Added
+
+- **Reserved MCP tools setting.** A new
+  `mightyMax.reservedMcpTools` setting lets users pin a list of
+  MCP server prefixes (default: `["mcp_github_mcp_se_"]`) that
+  always stay in the wire payload on every request, regardless
+  of recent usage. Each entry costs one slot of the MCP cap
+  (see below), so the rolling LRU fills whatever's left. The
+  chat-provider logs a warning if the reserved list alone
+  exceeds the cap.
+- **Rolling LRU of recently-used MCP tools.** A new
+  `mightyMax.mcpMaxTools` setting (default 60) caps the MCP
+  subset of the wire payload. The chat-provider maintains a
+  per-tool recency tracker: tools the model has called in
+  this session stay in the wire permanently, new tools
+  displace unused ones on a recency-ordered first-in basis, and
+  tools the user uninstalls are pruned from the tracker at the
+  start of the next turn. The user can curate the list via
+  the new "Mighty Max: Manage MCP reserved tools" command
+  (also reachable from `Mighty Max: Manage` → Settings
+  submenu), which shows the platform's uneditable tools
+  (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`,
+  `file_search`, `semantic_search`) above the editable
+  reserved list, with a $(check) / $(warning) status per
+  entry to surface typos and uninstalled servers.
+- **VS Code 1.97+ command auto-discovery.** Removed the
+  deprecated `managementCommand` field from the
+  `languageModelChatProviders` contribution; the manage
+  command is now discovered from the top-level
+  `contributes.commands` palette, matching VS Code's
+  replacement convention.
+
 ## [0.7.3] — 2026-09-03
 
 ### Fixed

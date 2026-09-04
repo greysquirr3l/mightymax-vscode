@@ -253,7 +253,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   winner is promoted to active via `setActiveSlot(pick.slot)` so
   the next turn hits it instead of reverting to the failed slot.
   The `KeyProvider` port now exposes `recordFallback(slot,
-  fellBackFrom, atMs)` and `readonly lastFallback` so the
+fellBackFrom, atMs)` and `readonly lastFallback` so the
   status-bar dashboard can surface the most-recent fallback.
 
 - **Rotation cover is wider.** `markFailed` now fires for any

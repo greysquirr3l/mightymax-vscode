@@ -10,10 +10,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 - **Reserved MCP tools setting.** A new
   `mightyMax.reservedMcpTools` setting lets users pin a list of
-  MCP server prefixes (default: `["mcp_github_mcp_se_"]`) that
-  always stay in the wire payload on every request, regardless
-  of recent usage. Each entry costs one slot of the MCP cap
-  (see below), so the rolling LRU fills whatever's left. The
+  MCP server prefixes (default: `["mcp_github_"]`) that always
+  stay in the wire payload on every request, regardless of
+  recent usage. The default is a broad prefix that pins every
+  tool any GitHub MCP server exposes — the official
+  `github-mcp-server`, community variants, and forks all land
+  in the `mcp_github_<...>` namespace, so a single entry covers
+  them all. Each entry costs one slot of the MCP cap (see
+  below), so the rolling LRU fills whatever's left. The
   chat-provider logs a warning if the reserved list alone
   exceeds the cap.
 - **Rolling LRU of recently-used MCP tools.** A new

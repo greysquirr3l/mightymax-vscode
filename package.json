@@ -204,12 +204,12 @@
         "mightyMax.reservedMcpTools": {
           "type": "array",
           "default": [
-            "mcp_github_mcp_se_"
+            "mcp_github_"
           ],
           "items": {
             "type": "string"
           },
-          "description": "MCP tools (or prefixes ending in `_`) to keep in the wire payload on every request, regardless of recency. Each entry costs one slot of the `mightyMax.mcpMaxTools` cap. The platform's built-in agent tools (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) are always-included separately and cannot be removed. The chat-provider warns at request time if the reserved list length exceeds the cap. Add MCP server prefixes here for servers the model needs available on every turn (e.g. `mcp_github_mcp_se_` for the GitHub MCP server); leave empty to let the rolling LRU handle MCP selection on recency alone.",
+          "description": "MCP tools (or prefixes ending in `_`) to keep in the wire payload on every request, regardless of recency. Each entry costs one slot of the `mightyMax.mcpMaxTools` cap. The platform's built-in agent tools (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) are always-included separately and cannot be removed. The chat-provider warns at request time if the reserved list length exceeds the cap. The shipped default (`mcp_github_`) is a broad prefix that pins every tool any GitHub MCP server exposes — the official `github-mcp-server`, community variants, and forks all land in the `mcp_github_<...>` namespace, so a single entry covers them all. Add more entries for additional servers the model needs available on every turn; leave the default list in place to let the rolling LRU handle MCP selection on recency alone for the rest.",
           "scope": "window"
         },
         "mightyMax.alwaysIncludeTools": {

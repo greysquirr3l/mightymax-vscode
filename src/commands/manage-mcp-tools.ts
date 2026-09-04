@@ -118,10 +118,15 @@ function liveMcpToolNames(tools: ReadonlyArray<{ readonly name: string }>): Read
 
 function isValidMcpName(name: string): boolean {
   // Accept exact MCP tool names ("mcp_github_mcp_se_list_issues")
-  // and prefix pins ending in "_" ("mcp_github_mcp_se_"). Reject
-  // anything that doesn't start with `mcp_` — the chat-provider
-  // silently drops non-MCP entries from the reserved set, so we
-  // want to catch typos at the UI layer instead.
+  // and prefix pins ending in "_" ("mcp_github_"). The shipped
+  // default (`mcp_github_`) is a broad prefix that pins every
+  // tool any GitHub MCP server exposes — the official
+  // `github-mcp-server`, community variants, and forks all
+  // land in the `mcp_github_<...>` namespace, so a single
+  // entry covers them all. Reject anything that doesn't start
+  // with `mcp_` — the chat-provider silently drops non-MCP
+  // entries from the reserved set, so we want to catch typos
+  // at the UI layer instead.
   return name.startsWith('mcp_') && name.length > 4 && !name.includes(' ');
 }
 
@@ -234,7 +239,7 @@ export async function runManageMcpToolsCommand(deps: ManageMcpDeps): Promise<voi
     if (choice.label === ADD_LABEL) {
       const input = await deps.ui.showInputBox({
         prompt:
-          'Paste a tool name like `mcp_github_mcp_se_list_issues` or a prefix like `mcp_github_mcp_se_`',
+          'Paste a tool name like `mcp_github_mcp_se_list_issues` or a prefix like `mcp_github_` (matches every GitHub MCP server)',
         placeHolder: 'mcp_<server>_<tool>  or  mcp_<server>_',
       });
       if (input === undefined || input.trim().length === 0) continue;

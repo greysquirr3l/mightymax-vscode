@@ -510,3 +510,38 @@ describe('selectMcpToolsToInclude', () => {
     strictEqual(DEFAULT_MCP_MAX_TOOLS, 60);
   });
 });
+
+describe('GitHub MCP prefix catch-all', () => {
+  // The shipped default `mcp_github_` is a broad prefix that
+  // pins every tool any GitHub MCP server exposes. The official
+  // `github-mcp-server` package, community variants, and forks
+  // all land in the `mcp_github_<...>` namespace, so a single
+  // entry covers them all without the user having to know the
+  // exact name of the server they installed.
+  it('matches the official `mcp_github_mcp_se_*` server', () => {
+    ok(
+      matchesAlwaysInclude('mcp_github_mcp_se_list_issues', ['mcp_github_']),
+      'official server tools land under the broad prefix',
+    );
+    ok(
+      matchesAlwaysInclude('mcp_github_mcp_se_create_issue', ['mcp_github_']),
+    );
+  });
+
+  it('matches community GitHub MCP variants', () => {
+    // A user who installed a different GitHub MCP server
+    // (community fork, vendored copy, etc.) gets the same
+    // coverage from the default.
+    ok(matchesAlwaysInclude('mcp_github_search_repos', ['mcp_github_']));
+    ok(matchesAlwaysInclude('mcp_github_create_pr', ['mcp_github_']));
+    ok(matchesAlwaysInclude('mcp_github_list_issues', ['mcp_github_']));
+  });
+
+  it('does NOT match unrelated MCP namespaces', () => {
+    // The `mcp_github_` prefix must not bleed into other servers
+    // whose names happen to contain "github".
+    ok(!matchesAlwaysInclude('mcp_mygithub_server_tool', ['mcp_github_']));
+    ok(!matchesAlwaysInclude('mcp_githubcli_tool', ['mcp_github_']));
+    ok(!matchesAlwaysInclude('mcp_clickup_list_tasks', ['mcp_github_']));
+  });
+});

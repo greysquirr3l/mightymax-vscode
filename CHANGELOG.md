@@ -4,6 +4,48 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] — 2026-09-03
+
+### Fixed
+
+- **Empty "thought bubble" boxes stacked on top of M3 reasoning
+  blocks.** Anthropic M3 sends the cryptographic `signature_delta`
+  as its own stream chunk sometimes, separate from the paired
+  `thinking_delta`. The previous behaviour forwarded that as an
+  empty `LanguageModelThinkingPart` to the chat widget, which
+  VS Code 1.128+ rendered as a zero-height collapsible box.
+  Once an agent loop spanned many tool rounds and the signature
+  fired per round, the chat window filled with empty boxes
+  alongside the actual thinking. The signature now stays in the
+  LRU replay accumulator only — the chat widget never sees it
+  as a separate part, and Anthropic's next request still carries
+  it for reasoning replay. (Commit `cde0b9d`.)
+
+- **Tool-result truncation threw away the failure summary.**
+  `truncateToolResults` kept the first 4 K characters of an
+  oversized tool result and discarded the rest. For
+  `run_in_terminal` that meant compile errors and test failure
+  summaries — which live at the END of the output — were
+  silently discarded once a tool result exceeded the cap. Same
+  shape problem for `fetch_webpage` (conclusion at the bottom)
+  and `read_file` (EOF signature at the bottom). Truncation now
+  splits 50/50 between head and tail; same character budget,
+  both ends preserved. The model now sees the tail of an
+  oversized terminal output and can react to the failure
+  instead of hallucinating one. (Commit `b88c560`.)
+
+- **Spurious `empty assistant text part dropped` warnings on
+  every turn.** VS Code emits `LanguageModelTextPart('')` for any
+  assistant turn that produced only thinking or only tool
+  calls — the visible text slot is empty by design. The mapper
+  re-emitted one `anthropic: empty assistant text part dropped`
+  warning per historical assistant message on every request,
+  generating up to 23 identical noise lines in the Mighty Max
+  output channel during long agent loops. Empty text parts are
+  now dropped at the `vscodeToDomainMessage` boundary so the
+  mapper never sees them; the warning surface stays reserved
+  for genuinely malformed content. (Commit `a817e96`.)
+
 ## [0.7.2] — 2026-08-22
 
 ### Fixed

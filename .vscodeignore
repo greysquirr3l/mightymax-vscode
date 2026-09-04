@@ -4,6 +4,7 @@
 .claude/
 .coraline/
 .npm-cache/
+.npm-cache-local/
 .npm-tmp/
 src/
 test/

@@ -121,7 +121,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
           deps.logger.debug('Text delta', { length: typed.value.length });
           deps.progress.report(toLanguageModelTextPart(typed.value));
         } else if (typed.type === 'thinking') {
-          if (typed.value.length > 0) {
+          if (typed.value.length > 0 && typed.value.trim().length > 0) {
             reportThinkingPart(deps.progress, typed, deps.logger);
           } else if (typed.signature) {
             // Standalone signature: Anthropic may emit the
@@ -138,9 +138,20 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
             // reasoning block — observed regression on M3 once
             // tool calls started spanning many rounds and the
             // standalone-signature path triggered per round.
-            // Compare with `messages.ts:758` where the mapper
-            // emits `{type:'thinking', value:'', signature}` —
-            // the pump absorbs it here and drops the UI emission.
+            //
+            // M3 also occasionally emits a whitespace-only thinking
+            // value (`" "`, `"\n"`) on cache hits where the model
+            // re-asserts the cached block; the `length > 0` raw
+            // check above used to let those through, which the
+            // chat widget rendered as an empty bubble. The
+            // `trim().length > 0` companion check rejects
+            // whitespace-only deltas as well — they update the
+            // accumulator below but never reach the chat widget.
+            //
+            // Compare with `messages.ts:778` where the mapper
+            // emits `{type:'thinking', value:'', signature}` for
+            // the standalone-signature case — the pump absorbs
+            // it here and drops the UI emission.
           } else {
             // Truly empty (no value, no signature) — nothing to do.
             continue;

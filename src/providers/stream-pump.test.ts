@@ -417,6 +417,58 @@ describe('pumpProviderStream — T27 thinking surface', () => {
     strictEqual(result.thinking?.signature, 'sig_only');
   });
 
+  it('absorbs a whitespace-only thinkingDelta into the replay accumulator only', async () => {
+    // Regression test for the second form of the "empty thinking
+    // box" bug: M3 occasionally emits a whitespace-only thinking
+    // value (" ", "\n", "  ") on cache hits where the model
+    // re-asserts the cached block. The previous check
+    // `value.length > 0` let those through, and VS Code 1.128+
+    // rendered them as empty thinking bubbles — the same
+    // zero-height "empty box" symptom as the standalone-signature
+    // case. Treat whitespace-only deltas the same way: capture
+    // them in the LRU replay accumulator but never emit a
+    // LanguageModelThinkingPart for the chat widget.
+    for (const whitespace of [' ', '\n', '  ', '\n\n  \n']) {
+      const progress = makeProgress();
+      const deps: StreamPumpDeps = {
+        events: asyncIterable([
+          { thinkingDelta: whitespace, thinkingSignature: 'sig_ws' },
+          { textDelta: 'normal text after.' },
+          { finishReason: 'stop' },
+        ]),
+        progress: progress.progress,
+        thinkingStyle: 'anthropic',
+        logger: noopLogger(),
+        recordToolUsage: () => undefined,
+      };
+      const result = await pumpProviderStream(deps);
+
+      const thinkingParts = progress.parts.filter(
+        (p): p is { value: string | string[]; metadata?: { signature?: string } } =>
+          (p as { constructor?: { name?: string } }).constructor?.name ===
+          'LanguageModelThinkingPart',
+      );
+      strictEqual(
+        thinkingParts.length,
+        0,
+        `whitespace-only thinkingDelta ${JSON.stringify(whitespace)} must not produce any thinking part for the chat widget`,
+      );
+
+      // Whitespace and signature are still captured for replay.
+      ok(result.thinking, 'pump should capture the whitespace delta for replay');
+      strictEqual(
+        result.thinking?.thinking,
+        whitespace,
+        'whitespace delta is preserved verbatim in the accumulator',
+      );
+      strictEqual(
+        result.thinking?.signature,
+        'sig_ws',
+        'signature is preserved on the accumulator even though no thinking part was emitted',
+      );
+    }
+  });
+
   it('falls back to LanguageModelDataPart when LanguageModelThinkingPart is missing', async () => {
     // Simulate VS Code < 1.128 by deleting the proposed-API
     // constructor from the underlying stub exports. The

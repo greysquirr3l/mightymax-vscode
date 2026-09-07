@@ -4,6 +4,49 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.5] — 2026-09-07
+
+### Added
+
+- **MCP server-level tool discovery.** Three lightweight invoker
+  tools — `mcp_list_servers`, `mcp_list_tools`, and `mcp_load` — are
+  now always in the wire alongside the rolling-LRU MCP tools. The
+  model can call `mcp_list_servers` to discover which MCP servers
+  are currently loaded, `mcp_list_tools({ server })` to enumerate the
+  tool names for one server, and `mcp_load({ tool, input })` to invoke
+  an MCP tool that is not currently in the always-included set. The
+  LRU is bypassed for the duration of a session: a tool the model
+  has successfully invoked via `mcp_load` joins the recency-tracked
+  set and stays in the wire for subsequent turns. This is the
+  primary path for the model to call MCP tools that were dropped
+  from the rolling cap — without it, the model had no discovery
+  mechanism beyond the small always-included subset.
+
+- **`mcp_load` invokes via the host's `vscode.lm.invokeTool`.** The
+  adapter wires `mcp_load`'s `invoke` handler to the host's MCP
+  tool registry using the same dispatch path VS Code uses for any
+  other tool call. The `mcp_load` invoker does not need a chat-
+  participant `toolInvocationToken`; the host accepts a plain
+  invocation outside the chat-participant API. The result is
+  rendered as a structured text envelope so the model can read
+  the tool's output verbatim.
+
+- **MCP server prefix parsing.** VS Code's MCP integration names
+  every MCP tool `mcp_<server>_<tool>` where the server segment
+  is a single snake*case token (e.g. `github`, `clickup`,
+  `weather`) and the tool is the remainder (which may itself
+  contain underscores, e.g. `add_comment_to_pending_review`).
+  `parseMcpName` in `src/lib/domain/mcp-search-tools.ts` splits
+  on the FIRST underscore after `mcp*`, so `mcp_github_list_issues`correctly resolves to`server: "github", tool: "list_issues"`.
+  This matches the live tool names in the production log and
+  avoids the false split that would happen with a last-underscore
+  heuristic.
+# Changelog
+
+All notable changes to Mighty Max are documented here. The format
+follows [Keep a Changelog](https://keepachangelog.com/) and the
+project adheres to [Semantic Versioning](https://semver.org/).
+
 ## [0.7.4] — 2026-09-04
 
 ### Added

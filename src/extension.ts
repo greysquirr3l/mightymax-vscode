@@ -21,6 +21,10 @@ import {
 } from './lib/domain/slot-labels.js';
 import { RecentTurnUsageStore } from './lib/domain/recent-turn-usage.js';
 import { McpToolRecencyTracker } from './lib/domain/mcp-tool-recency.js';
+import {
+  registerMcpSearchTools,
+  type McpSearchAdapterDeps,
+} from './adapters/mcp-search-adapter.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -153,6 +157,29 @@ export function activate(context: vscode.ExtensionContext): void {
     recentTurnUsage,
     mcpRecency,
   );
+
+  // T35 — register the three MCP server-level discovery tools
+  // (`mcp_list_servers`, `mcp_list_tools`, `mcp_load`) with VS Code's
+  // LM host. They're the only path the model has to find an MCP tool
+  // that the rolling LRU has dropped from the wire, and `mcp_load`
+  // resolves and invokes the underlying tool by name. The live tool
+  // snapshot is read on every invocation; the recency bump on a
+  // successful `mcp_load` keeps the just-loaded tool in the always-
+  // included set for the rest of the session.
+  const mcpSearchDeps: McpSearchAdapterDeps = {
+    logger,
+    getLiveMcpTools: () =>
+      vscode.lm.tools
+        .filter((t) => t.name.startsWith('mcp_'))
+        .map((t) => ({
+          name: t.name,
+          description: t.description,
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+          inputSchema: t.inputSchema as object | undefined,
+        })),
+    onMcpToolInvoked: (name) => mcpRecency.record(name),
+  };
+  context.subscriptions.push(registerMcpSearchTools(context, mcpSearchDeps));
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes

@@ -37,6 +37,11 @@ import {
   selectMcpToolsToInclude,
   type ToolFilterConfig,
 } from '../lib/domain/tool-filter.js';
+import {
+  MCP_LIST_SERVERS_TOOL,
+  MCP_LIST_TOOLS_TOOL,
+  MCP_LOAD_TOOL,
+} from '../lib/domain/mcp-search-tools.js';
 import { pumpProviderStream } from './stream-pump.js';
 import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
@@ -321,9 +326,25 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         );
       }
     }
+    // T35 — the three MCP discovery invokers always go in the wire.
+    // They're tiny (no schemas, no description body), so they
+    // don't pressure the cap, and they're the only way the model
+    // can find/load an MCP tool that the LRU has dropped. Without
+    // them the model has no path to MCP tools beyond the small
+    // always-included subset.
+    const mcpSearchTools: ReadonlyArray<string> = [
+      MCP_LIST_SERVERS_TOOL,
+      MCP_LIST_TOOLS_TOOL,
+      MCP_LOAD_TOOL,
+    ];
+
     const effectiveConfig: ToolFilterConfig = {
       ...filterConfig,
-      alwaysIncludeTools: [...filterConfig.alwaysIncludeTools, ...mcpSelection.included],
+      alwaysIncludeTools: [
+        ...mcpSearchTools,
+        ...filterConfig.alwaysIncludeTools,
+        ...mcpSelection.included,
+      ],
     };
     const filterDecision = filterTools(allTools, historyToolNames, effectiveConfig);
     const keptTools = filterDecision.kept

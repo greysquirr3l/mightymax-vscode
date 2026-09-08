@@ -615,32 +615,66 @@ describe('truncateToolResults', () => {
     deepStrictEqual(result.messages, messages);
   });
 
-  it('caps oversized tool results to maxChars and appends the marker', () => {
+  it('caps oversized tool results with head-and-tail truncation', () => {
+    // The head-and-tail shape preserves the end of the result —
+    // for `run_in_terminal` that's where compile errors and test
+    // failure summaries live; for `fetch_webpage` it's where the
+    // conclusion tends to live. Observed in the autonomous-dev
+    // session of 2026-09-03: head-only truncation discarded the
+    // entire 26K-char tail of a 30K-char tool result.
     const messages = [toolResult(longContent)];
     const result = truncateToolResults(messages, { maxChars: 100 });
     equal(result.truncatedCount, 1, `truncatedCount was ${String(result.truncatedCount)}`);
+    // 50 chars head + 50 chars tail = 100 kept out of 10_000.
     equal(result.droppedChars, 9900, `droppedChars was ${String(result.droppedChars)}`);
     const head = result.messages[0];
     ok(head !== undefined, 'head message was undefined');
     if (head === undefined) return;
     equal(head.role, 'tool');
     equal(head.toolCallId, 'call_test');
-    // 100 chars of 'x' (head) plus the default marker at the end.
-    // We don't pin the marker length here — it's tested
-    // independently below and has its own DEFAULT constant the
-    // production wire mapper reads.
     const content = head.content as string;
     equal(typeof content, 'string', `content type was ${typeof content}`);
-    ok(content.length > 100, `expected head + marker, got ${String(content.length)}`);
+    ok(content.length > 100, `expected head + marker + tail, got ${String(content.length)}`);
     ok(content.length < 300, `expected under 300 chars total, got ${String(content.length)}`);
-    ok(content.startsWith('x'.repeat(100)), `head should start with 100 x chars, got: ${JSON.stringify(content.slice(0, 50))}...`);
-    // The default marker contains the literal "[... truncated" prefix.
-    // Using `includes` rather than `endsWith` because the marker is a
-    // full sentence terminating in `output.]`.
+    // Head-half of the kept budget at the start.
     ok(
-      content.includes('[... truncated'),
-      `should include the truncation marker, got tail: ...${JSON.stringify(content.slice(-50))}`,
+      content.startsWith('x'.repeat(50)),
+      `head should start with 50 x chars, got: ${JSON.stringify(content.slice(0, 50))}...`,
     );
+    // Tail-half of the kept budget at the end (last 50 chars are
+    // also 'x' because the original is uniform 'x'.repeat(10_000)).
+    ok(
+      content.endsWith('x'.repeat(50)),
+      `tail should end with 50 x chars, got: ...${JSON.stringify(content.slice(-50))}`,
+    );
+    // Marker sits between head and tail.
+    ok(
+      content.includes('[... middle of tool result'),
+      `should include the head+tail truncation marker, got: ...${JSON.stringify(content.slice(content.length / 2 - 30, content.length / 2 + 30))}`,
+    );
+    const markerIdx = content.indexOf('[... middle of tool result');
+    ok(markerIdx > 0, 'marker should be embedded between head and tail, not at offset 0');
+    const afterMarker = content.slice(markerIdx);
+    ok(afterMarker.includes('x'.repeat(50)), 'tail-half should follow the marker');
+  });
+
+  it('keeps the last N chars of an oversized tool result (regression test)', () => {
+    // The previous behaviour (head-only) lost the tail. This is a
+    // focused regression test: the FAILURE SUMMARY pattern at the
+    // end of a `run_in_terminal` output must survive truncation.
+    const tail = '\nFAIL: TestSuite/test_x\nExpected: true\nActual:   false';
+    const head = 'x'.repeat(10_000);
+    const content = head + tail;
+    const messages = [toolResult(content)];
+    const result = truncateToolResults(messages, { maxChars: 4096 });
+    const out = result.messages[0];
+    ok(out !== undefined);
+    const truncated = out.content as string;
+    ok(
+      truncated.includes('FAIL: TestSuite/test_x'),
+      `tail-bearing failure summary should survive head+tail truncation; got tail: ...${JSON.stringify(truncated.slice(-200))}`,
+    );
+    ok(truncated.includes('Expected: true'), 'failure detail in tail must survive truncation');
   });
 
   it('leaves user and assistant messages untouched (only role:tool is capped)', () => {
@@ -668,7 +702,9 @@ describe('truncateToolResults', () => {
     const head = result.messages[0];
     ok(head !== undefined);
     const content = head.content as string;
-    equal(content, 'x'.repeat(20) + '\n[CUSTOM-MARKER]');
+    // Head-and-tail split: half = 10 chars head, 10 chars tail.
+    // The marker sits between them.
+    equal(content, 'x'.repeat(10) + '\n[CUSTOM-MARKER]' + 'x'.repeat(10));
   });
 
   it('passes through messages with structured tool content (non-string) untouched', () => {
@@ -695,7 +731,9 @@ describe('truncateToolResults', () => {
     const messages: ChatMessage[] = [
       {
         role: 'assistant',
-        content: [{ type: 'tool-call', toolCall: { callId: 'c1', name: 'run_in_terminal', input: {} } }],
+        content: [
+          { type: 'tool-call', toolCall: { callId: 'c1', name: 'run_in_terminal', input: {} } },
+        ],
       },
       {
         role: 'user',
@@ -715,7 +753,10 @@ describe('truncateToolResults', () => {
       `truncated content unexpectedly long: ${String(content.length)}`,
     );
     ok(content.length < huge.length, 'truncation did not shrink the wire payload');
-    ok(content.includes('[... truncated'), 'tool-result content should include the truncation marker');
+    ok(
+      content.includes('[... middle of tool result'),
+      'tool-result content should include the head+tail truncation marker',
+    );
     ok(
       result.warnings.some(
         (w) => w.kind === 'unsupported-content' && w.reason.includes('tool-result truncation'),
@@ -1165,7 +1206,6 @@ describe('countMessageMappingErrors', () => {
   });
 });
 
-
 describe('mapRequestToMiniMax — video', () => {
   it('encodes a supported MP4 attachment to a video_url data URI', () => {
     const msg: ChatMessage = {
@@ -1188,10 +1228,12 @@ describe('mapRequestToMiniMax — video', () => {
   });
 
   it('warns and skips unsupported video types', () => {
-    const result = mapRequestToMiniMax(
-      { id: 'MiniMax-M3', thinkingStyle: 'anthropic' },
-      [{ role: 'user', content: [{ type: 'video', mimeType: 'video/avi', data: new Uint8Array([1]) }] }],
-    );
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      {
+        role: 'user',
+        content: [{ type: 'video', mimeType: 'video/avi', data: new Uint8Array([1]) }],
+      },
+    ]);
     equal(result.messages.length, 0);
     ok(result.warnings.some((warning) => warning.kind === 'unsupported-content'));
   });
@@ -1216,7 +1258,19 @@ describe('mapRequestToMiniMax — configured tool-result limit', () => {
     );
     const tool = result.messages.find((message) => message.role === 'tool');
     equal(typeof tool?.content, 'string');
-    ok((tool?.content as string).startsWith('abcdefgh'));
-    ok(result.warnings.some((warning) => warning.kind === 'unsupported-content'));
+    // Head-and-tail: cap=8 splits 4/4. Head is the first 4 chars,
+    // tail is the last 4 chars. The marker sits between them.
+    ok(
+      (tool?.content as string).startsWith('abcd'),
+      `head-half should be 'abcd', got: ${JSON.stringify((tool?.content as string).slice(0, 20))}`,
+    );
+    ok(
+      (tool?.content as string).endsWith('wxyz'),
+      `tail-half should be 'wxyz', got: ${JSON.stringify((tool?.content as string).slice(-20))}`,
+    );
+    ok(
+      result.warnings.some((warning) => warning.kind === 'unsupported-content'),
+      'expected a truncation warning',
+    );
   });
 });

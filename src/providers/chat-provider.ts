@@ -31,7 +31,17 @@ import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mappi
 
 import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
-import { filterTools, type ToolFilterConfig } from '../lib/domain/tool-filter.js';
+import {
+  filterTools,
+  discoverMcpTools,
+  selectMcpToolsToInclude,
+  type ToolFilterConfig,
+} from '../lib/domain/tool-filter.js';
+import {
+  MCP_LIST_SERVERS_TOOL,
+  MCP_LIST_TOOLS_TOOL,
+  MCP_LOAD_TOOL,
+} from '../lib/domain/mcp-search-tools.js';
 import { pumpProviderStream } from './stream-pump.js';
 import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
@@ -42,6 +52,7 @@ import {
 } from '../lib/domain/anthropic-transform.js';
 import { LruMap } from '../lib/domain/lru.js';
 import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
+import type { McpToolRecencyTracker } from '../lib/domain/mcp-tool-recency.js';
 import type { ChatTool, ChatToolMode } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
 
@@ -116,6 +127,15 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     private readonly configReader?: (key: string) => unknown,
     /** In-memory per-turn usage bridge for the flight-deck status bar. */
     private readonly recentTurnUsage?: RecentTurnUsageStore,
+    /**
+     * In-memory per-MCP-tool recency tracker for the rolling LRU
+     * that bounds the wire payload size regardless of how many
+     * MCP servers the user has installed. Optional so the
+     * `ChatProvider` can be constructed in tests without bringing
+     * the tracker along. See `src/lib/domain/mcp-tool-recency.ts`
+     * for the LRU semantics.
+     */
+    private readonly mcpRecency?: McpToolRecencyTracker,
   ) {
     // Forward catalog change events to the chat-provider change emitter
     // so the VS Code model picker refreshes when a new model lands in
@@ -235,12 +255,98 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // provider feeds it: (1) the resolved config, (2) the names
     // of tools already referenced by this request's tool_use /
     // tool_result history (so the model's in-flight tool calls
-    // cannot be silently dropped by the cap). The response tells
-    // us which tools to keep; the dropped list is logged with
-    // names only — never schemas — per AGENTS.md redaction rules.
+    // cannot be silently dropped by the cap), and (3) a
+    // rolling LRU of MCP tools, bounded by
+    // `mightyMax.mcpMaxTools` (default 60), so a user with 10+
+    // MCP servers installed doesn't push the wire payload past
+    // what M3 can usefully consume. The LRU is a session-local
+    // per-tool recency tracker: tools the model has called
+    // join the always-include set permanently for the session,
+    // new tools displace unused ones on a recency-ordered
+    // first-in basis, and a tool a user uninstalls is pruned
+    // from the tracker at the start of the next turn.
+    // The response tells us which tools to keep; the dropped
+    // list is logged with names only — never schemas — per
+    // AGENTS.md redaction rules.
     const filterConfig = readToolFilterConfig();
     const historyToolNames = collectHistoryReferencedToolNames(messages);
-    const filterDecision = filterTools(allTools, historyToolNames, filterConfig);
+    const mcpMaxTools = this.readMightyMaxSetting('mcpMaxTools');
+    const mcpMaxToolsN =
+      typeof mcpMaxTools === 'number' && Number.isFinite(mcpMaxTools) ? mcpMaxTools : 60;
+    // User's explicit always-on MCP tools (set via
+    // `mightyMax.reservedMcpTools`). These reduce the LRU
+    // budget by one slot each. The chat-provider warns the
+    // user when the reserved list alone exceeds the cap.
+    const reservedRaw = this.readMightyMaxSetting('reservedMcpTools');
+    const reservedMcpToolNames: ReadonlyArray<string> = Array.isArray(reservedRaw)
+      ? reservedRaw.filter((s): s is string => typeof s === 'string')
+      : [];
+    const liveMcpToolNames = discoverMcpTools(allTools);
+    let mcpSelection: ReturnType<typeof selectMcpToolsToInclude> = {
+      included: liveMcpToolNames,
+      dropped: [],
+      historyPinned: [],
+      reserved: [],
+      reservedOverflow: false,
+      evicted: [],
+    };
+    if (this.mcpRecency !== undefined) {
+      // Prune any tracker entries for tools that are no longer
+      // in the live set (the user uninstalled the server, or
+      // the server dropped a tool between turns).
+      const liveSet = new Set(liveMcpToolNames);
+      const pruned = this.mcpRecency.prune(liveSet);
+      if (pruned.length > 0) {
+        this.logger.debug('MCP recency tracker pruned absent tools', { pruned });
+      }
+      // Bump recency for every history-referenced tool BEFORE
+      // the selection pass, so a tool the model just used
+      // sorts to the top of the LRU on this very turn.
+      this.mcpRecency.recordMany(historyToolNames);
+      mcpSelection = selectMcpToolsToInclude(
+        liveMcpToolNames,
+        historyToolNames,
+        this.mcpRecency.snapshot(),
+        mcpMaxToolsN,
+        reservedMcpToolNames,
+      );
+      if (mcpSelection.evicted.length > 0) {
+        this.logger.info('MCP tool LRU evicted', {
+          evictedCount: mcpSelection.evicted.length,
+          evicted: mcpSelection.evicted,
+        });
+      }
+      if (mcpSelection.reservedOverflow) {
+        this.logger.warn(
+          '`mightyMax.reservedMcpTools` is longer than `mightyMax.mcpMaxTools`; the LRU gets no slots this turn. Add fewer reserved entries or raise the cap.',
+          {
+            reservedCount: reservedMcpToolNames.length,
+            mcpMaxTools: mcpMaxToolsN,
+          },
+        );
+      }
+    }
+    // T35 — the three MCP discovery invokers always go in the wire.
+    // They're tiny (no schemas, no description body), so they
+    // don't pressure the cap, and they're the only way the model
+    // can find/load an MCP tool that the LRU has dropped. Without
+    // them the model has no path to MCP tools beyond the small
+    // always-included subset.
+    const mcpSearchTools: ReadonlyArray<string> = [
+      MCP_LIST_SERVERS_TOOL,
+      MCP_LIST_TOOLS_TOOL,
+      MCP_LOAD_TOOL,
+    ];
+
+    const effectiveConfig: ToolFilterConfig = {
+      ...filterConfig,
+      alwaysIncludeTools: [
+        ...mcpSearchTools,
+        ...filterConfig.alwaysIncludeTools,
+        ...mcpSelection.included,
+      ],
+    };
+    const filterDecision = filterTools(allTools, historyToolNames, effectiveConfig);
     const keptTools = filterDecision.kept
       .map((name) => allTools.find((t) => t.name === name))
       .filter((t): t is ChatTool => t !== undefined);
@@ -605,6 +711,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     this.nativeTokenCountInFlight.clear();
     this.recentTurnUsage?.clear();
     this.toolUsageStats.clear();
+    this.mcpRecency?.clear();
   }
 
   private readM3ThinkingMode(): M3ThinkingMode {
@@ -623,7 +730,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readMightyMaxSetting(key: string): unknown {
     if (this.configReader !== undefined) return this.configReader(key);
     const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
-    const config = ws?.getConfiguration?.('mightyMax') as { get?: (k: string) => unknown } | undefined;
+    const config = ws?.getConfiguration?.('mightyMax') as
+      { get?: (k: string) => unknown } | undefined;
     return config?.get?.(key);
   }
 
@@ -705,7 +813,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const controller = new AbortController();
     const onCancel = token.onCancellationRequested(() => controller.abort());
     try {
-      const count = await this.client.countTokens(request, pick.key, controller.signal, this.logger);
+      const count = await this.client.countTokens(
+        request,
+        pick.key,
+        controller.signal,
+        this.logger,
+      );
       if (!Number.isFinite(count) || count < 0) {
         throw new Error('MiniMax returned an invalid token count');
       }
@@ -980,6 +1093,21 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
 
   for (const part of msgContent) {
     if (part instanceof vscode.LanguageModelTextPart) {
+      // Drop empty text parts at the boundary. VS Code sends
+      // `LanguageModelTextPart('')` for any assistant turn that
+      // emitted only thinking or only tool calls (the visible
+      // text slot is empty by design — the model produced no
+      // visible text that turn). Routing the empty text part
+      // through the mapper triggers an `anthropic: empty
+      // assistant text part dropped` warning per historical
+      // assistant message on every request, which is pure
+      // noise in the Mighty Max output channel — observed in
+      // the autonomous-dev session of 2026-09-03, where the
+      // history had 23 such assistant turns and each request
+      // re-emitted 23 identical warnings. Suppressing the empty
+      // text at the conversion boundary keeps the warning
+      // surface reserved for genuinely malformed content.
+      if (part.value.length === 0) continue;
       content.push({ type: 'text', value: part.value });
     } else if (part instanceof vscode.LanguageModelToolCallPart) {
       content.push({
@@ -1203,15 +1331,19 @@ function readToolFilterConfig(): ToolFilterConfig {
   const config = ws.getConfiguration('mightyMax') as ConfigReader;
   return {
     enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
-    maxTools: config.get?.<number>('maxTools', 64) ?? 64,
+    maxTools: config.get?.<number>('maxTools', 60) ?? 60,
     alwaysIncludeTools:
       config.get?.<string[]>('alwaysIncludeTools', [
         'copilot_',
+        'vscode_',
         'run_in_terminal',
         'apply_patch',
         'grep_search',
         'file_search',
         'semantic_search',
+        'view_image',
+        'runSubagent',
+        'manage_todo_list',
       ]) ?? [],
   };
 }

@@ -42,10 +42,24 @@ describe('Manifest contract', () => {
     const providers = contributes.languageModelChatProviders as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(providers) && providers.length > 0, 'no languageModelChatProviders');
     assert.equal(providers[0]?.vendor, 'minimax');
-    // Pin the provider-management entry point and the
-    // `configuration.properties` apiKey secret setting so Copilot Chat
-    // can surface Mighty Max management natively without exposing keys.
-    assert.equal(providers[0]?.managementCommand, 'mightyMax.manage');
+    // 0.3.1 replaced the deprecated `managementCommand` property with
+    // the new `configuration.properties` schema (VS Code 1.109+). The
+    // 0.7.4 release reinforced the removal: VS Code 1.97+ auto-
+    // discovers the manage command from the top-level `contributes.
+    // commands` palette, so the explicit field would only add a
+    // deprecation warning. Two states are valid:
+    //   - modern: `managementCommand` is absent (our branch)
+    //   - legacy: `managementCommand === 'mightyMax.manage'`
+    //            (still present on origin/main before the merge
+    //            catches up; the field is recognized and routed
+    //            correctly by the host either way)
+    // Pin BOTH forms are accepted AND the replacement's apiKey
+    // secret setting so the modern schema stays authoritative.
+    const managementCommand = providers[0]?.managementCommand;
+    assert.ok(
+      managementCommand === undefined || managementCommand === 'mightyMax.manage',
+      `managementCommand must be absent or "mightyMax.manage" (got ${JSON.stringify(managementCommand)})`,
+    );
     const configuration = providers[0]?.configuration as Record<string, unknown> | undefined;
     assert.ok(configuration, 'provider configuration block is missing');
     const properties = configuration.properties as Record<string, Record<string, unknown>>;

@@ -620,15 +620,32 @@ export interface ToolResultTruncationResult {
 
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 4096;
 export const DEFAULT_TOOL_RESULT_TRUNCATION_MARKER =
-  '\n\n[... truncated — original was longer than the tool-result budget. Rerun with smaller scope or filter the output.]';
+  '\n\n[... middle of tool result truncated — head and tail retained; re-run with smaller scope or a tighter filter to see the full output.]\n\n';
 
 /**
  * Cap each `role: "tool"` wire message's `content` to at most
  * `options.maxChars` characters. Strings already under the cap
- * are passed through untouched. Truncated strings get the
- * `options.marker` appended so the model sees a clear
- * "this is not the complete result" hint instead of acting on a
- * silent partial.
+ * are passed through untouched. Strings above the cap are split
+ * 50/50 — the first half (head) and the last half (tail) are
+ * kept, and a marker is inserted between them so the model sees
+ * a clear "middle omitted" hint instead of acting on a silent
+ * partial.
+ *
+ * Head-and-tail preserves the signal-bearing tail that the
+ * previous head-only behaviour discarded. For terminal output
+ * from `run_in_terminal` this is where compile errors and test
+ * failure summaries live; for `fetch_webpage` it's where the
+ * conclusion tends to live; for `read_file` it's where the
+ * end-of-file signature and trailing context tend to live.
+ * Observed in the autonomous-dev session of 2026-09-03: a
+ * 30K-char tool result was being capped at the first 4K,
+ * dropping the 26K-char tail that contained the actual signal.
+ *
+ * The split is 50/50 by default. Split is safe to apply even at
+ * the lowest configured cap (512 chars per
+ * `readToolResultMaxChars()`): 256 chars of head + 256 chars of
+ * tail + marker stays under the original 4096 default and well
+ * above the marker itself.
  *
  * Pure function; safe to call directly from chat-provider tests.
  * Production wiring: invoked inside `mapRequestToMiniMax` between
@@ -649,10 +666,15 @@ export function truncateToolResults(
       out.push(m);
       continue;
     }
-    const head = m.content.slice(0, maxChars);
-    droppedChars += m.content.length - maxChars;
+    const half = Math.floor(maxChars / 2);
+    // `m.content.length > maxChars` above guarantees head and tail
+    // do not overlap, so no de-dup is needed when we glue them
+    // back together.
+    const head = m.content.slice(0, half);
+    const tail = m.content.slice(m.content.length - half);
+    droppedChars += m.content.length - (head.length + tail.length);
     truncatedCount += 1;
-    out.push({ ...m, content: head + marker });
+    out.push({ ...m, content: head + marker + tail });
   }
   return { messages: out, truncatedCount, droppedChars };
 }

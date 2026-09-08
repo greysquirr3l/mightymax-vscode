@@ -4,6 +4,201 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] — 2026-09-08
+
+### Fixed
+
+- **Smart tool filter dropped VS Code 1.97+ built-ins outside the
+  `copilot_` namespace.** The shipped `mightyMax.alwaysIncludeTools`
+  default pinned `copilot_` (a prefix pin matching any tool whose
+  name starts with `copilot_*`) plus five exact pins (`run_in_terminal`,
+  `apply_patch`, `grep_search`, `file_search`, `semantic_search`).
+  VS Code 1.97+ exposes a second built-in namespace — the `vscode_*`
+  family of language / refactor / search tools
+  (`vscode_askQuestions`, `vscode_listCodeUsages`,
+  `vscode_renameSymbol`, `vscode_searchExtensions_internal`) — and a
+  set of bare-name agent-loop tools (`view_image`, `runSubagent`,
+  `manage_todo_list`) that VS Code does NOT put in either
+  namespace. When the user's VS Code tool set exceeded
+  `mightyMax.maxTools`, the smart filter dropped every one of
+  these, breaking agent-mode on a populated toolset (37 tools
+  dropped on one observed install: `view_image`, the four
+  `vscode_*` tools above, `runSubagent`, `manage_todo_list`, plus
+  the MCP / extension tools governed separately by the rolling
+  LRU). The default now also pins `vscode_` (prefix pin) and the
+  three bare names; user overrides of `mightyMax.alwaysIncludeTools`
+  are unaffected. The docstring on `DEFAULT_ALWAYS_INCLUDE_TOOLS`
+  in `src/lib/domain/tool-filter.ts` is rewritten to explain why
+  the `copilot_` prefix alone is not enough.
+
+- **MCP search invokers declared in `contributes.tools`.** The
+  three 0.7.5 invokers (`mcp_list_servers`, `mcp_list_tools`,
+  `mcp_load`) were registered at activation time via
+  `vscode.lm.registerTool` but never declared in
+  `contributes.tools`. VS Code 1.97+ emits
+  `Tool "X" was not contributed.` warnings on every activation
+  when a programmatically-registered tool lacks a manifest
+  declaration, and on newer stable builds the host's
+  `LanguageModelToolsService.registerToolImplementation` throws
+  when the tool data isn't pre-registered. Each tool is now
+  declared in `contributes.tools` with its description, tags,
+  and JSON Schema — matching the descriptors in
+  `src/lib/domain/mcp-search-tools.ts` byte-for-byte. The
+  activation-time `registerTool` calls remain as the
+  implementation-provider path; the manifest entry is the
+  metadata path. Combined effect: the VS Code host always sees
+  a consistent tool definition across package.json readers and
+  the API surface, and the "was not contributed" warning is
+  silenced.
+
+- **Manifest-contract integration test pinned to the post-0.3.1
+  schema.** The integration test asserted the deprecated
+  `languageModelChatProviders[*].managementCommand` property
+  that 0.3.1 removed (replaced by the
+  `configuration.properties.apiKey` schema, then re-reinforced
+  by 0.7.4's command-palette auto-discovery). The test was
+  reverted back to the legacy shape at some point and broke
+  every host-based test run. It now asserts
+  `managementCommand === undefined` AND the replacement
+  `configuration.properties.apiKey.type === 'string'` /
+  `secret === true` so both halves of the migration are pinned.
+
+- **`@vscode/test-cli` 0.0.15 / `@vscode/test-electron` 3.1.0
+  installed (were 0.0.11 / 2.4.1).** The lockfile had drifted
+  below the declared versions in `package.json`. Older
+  `test-electron` (≤2.4.x) spawns VS Code via an `Electron`
+  binary path that VS Code 1.130+ no longer ships, so every
+  host-based profile failed with
+  `spawn .../Electron ENOENT` before any tests could run. The
+  pair matches what 0.7.1's release notes already pinned; the
+  lockfile is now in sync with `package.json`. Host-based
+  suites run against real VS Code stable 1.136.1 instead of
+  silently skipping.
+
+## [0.7.5] — 2026-09-07
+
+### Added
+
+- **MCP server-level tool discovery.** Three lightweight invoker
+  tools — `mcp_list_servers`, `mcp_list_tools`, and `mcp_load` — are
+  now always in the wire alongside the rolling-LRU MCP tools. The
+  model can call `mcp_list_servers` to discover which MCP servers
+  are currently loaded, `mcp_list_tools({ server })` to enumerate the
+  tool names for one server, and `mcp_load({ tool, input })` to invoke
+  an MCP tool that is not currently in the always-included set. The
+  LRU is bypassed for the duration of a session: a tool the model
+  has successfully invoked via `mcp_load` joins the recency-tracked
+  set and stays in the wire for subsequent turns. This is the
+  primary path for the model to call MCP tools that were dropped
+  from the rolling cap — without it, the model had no discovery
+  mechanism beyond the small always-included subset.
+
+- **`mcp_load` invokes via the host's `vscode.lm.invokeTool`.** The
+  adapter wires `mcp_load`'s `invoke` handler to the host's MCP
+  tool registry using the same dispatch path VS Code uses for any
+  other tool call. The `mcp_load` invoker does not need a chat-
+  participant `toolInvocationToken`; the host accepts a plain
+  invocation outside the chat-participant API. The result is
+  rendered as a structured text envelope so the model can read
+  the tool's output verbatim.
+
+- **MCP server prefix parsing.** VS Code's MCP integration names
+  every MCP tool `mcp_<server>_<tool>` where the server segment
+  is a single snake*case token (e.g. `github`, `clickup`,
+  `weather`) and the tool is the remainder (which may itself
+  contain underscores, e.g. `add_comment_to_pending_review`).
+  `parseMcpName` in `src/lib/domain/mcp-search-tools.ts` splits
+  on the FIRST underscore after `mcp*`, so `mcp_github_list_issues`correctly resolves to`server: "github", tool: "list_issues"`.
+  This matches the live tool names in the production log and
+  avoids the false split that would happen with a last-underscore
+  heuristic.
+
+# Changelog
+
+All notable changes to Mighty Max are documented here. The format
+follows [Keep a Changelog](https://keepachangelog.com/) and the
+project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.7.4] — 2026-09-04
+
+### Added
+
+- **Reserved MCP tools setting.** A new
+  `mightyMax.reservedMcpTools` setting lets users pin a list of
+  MCP server prefixes (default: `["mcp_github_"]`) that always
+  stay in the wire payload on every request, regardless of
+  recent usage. The default is a broad prefix that pins every
+  tool any GitHub MCP server exposes — the official
+  `github-mcp-server`, community variants, and forks all land
+  in the `mcp_github_<...>` namespace, so a single entry covers
+  them all. Each entry costs one slot of the MCP cap (see
+  below), so the rolling LRU fills whatever's left. The
+  chat-provider logs a warning if the reserved list alone
+  exceeds the cap.
+- **Rolling LRU of recently-used MCP tools.** A new
+  `mightyMax.mcpMaxTools` setting (default 60) caps the MCP
+  subset of the wire payload. The chat-provider maintains a
+  per-tool recency tracker: tools the model has called in
+  this session stay in the wire permanently, new tools
+  displace unused ones on a recency-ordered first-in basis, and
+  tools the user uninstalls are pruned from the tracker at the
+  start of the next turn. The user can curate the list via
+  the new "Mighty Max: Manage MCP reserved tools" command
+  (also reachable from `Mighty Max: Manage` → Settings
+  submenu), which shows the platform's uneditable tools
+  (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`,
+  `file_search`, `semantic_search`) above the editable
+  reserved list, with a $(check) / $(warning) status per
+  entry to surface typos and uninstalled servers.
+- **VS Code 1.97+ command auto-discovery.** Removed the
+  deprecated `managementCommand` field from the
+  `languageModelChatProviders` contribution; the manage
+  command is now discovered from the top-level
+  `contributes.commands` palette, matching VS Code's
+  replacement convention.
+
+## [0.7.3] — 2026-09-03
+
+### Fixed
+
+- **Empty "thought bubble" boxes stacked on top of M3 reasoning
+  blocks.** Anthropic M3 sends the cryptographic `signature_delta`
+  as its own stream chunk sometimes, separate from the paired
+  `thinking_delta`. The previous behaviour forwarded that as an
+  empty `LanguageModelThinkingPart` to the chat widget, which
+  VS Code 1.128+ rendered as a zero-height collapsible box.
+  Once an agent loop spanned many tool rounds and the signature
+  fired per round, the chat window filled with empty boxes
+  alongside the actual thinking. The signature now stays in the
+  LRU replay accumulator only — the chat widget never sees it
+  as a separate part, and Anthropic's next request still carries
+  it for reasoning replay. (Commit `cde0b9d`.)
+
+- **Tool-result truncation threw away the failure summary.**
+  `truncateToolResults` kept the first 4 K characters of an
+  oversized tool result and discarded the rest. For
+  `run_in_terminal` that meant compile errors and test failure
+  summaries — which live at the END of the output — were
+  silently discarded once a tool result exceeded the cap. Same
+  shape problem for `fetch_webpage` (conclusion at the bottom)
+  and `read_file` (EOF signature at the bottom). Truncation now
+  splits 50/50 between head and tail; same character budget,
+  both ends preserved. The model now sees the tail of an
+  oversized terminal output and can react to the failure
+  instead of hallucinating one. (Commit `b88c560`.)
+
+- **Spurious `empty assistant text part dropped` warnings on
+  every turn.** VS Code emits `LanguageModelTextPart('')` for any
+  assistant turn that produced only thinking or only tool
+  calls — the visible text slot is empty by design. The mapper
+  re-emitted one `anthropic: empty assistant text part dropped`
+  warning per historical assistant message on every request,
+  generating up to 23 identical noise lines in the Mighty Max
+  output channel during long agent loops. Empty text parts are
+  now dropped at the `vscodeToDomainMessage` boundary so the
+  mapper never sees them; the warning surface stays reserved
+  for genuinely malformed content. (Commit `a817e96`.)
+
 ## [0.7.2] — 2026-08-22
 
 ### Fixed
@@ -31,6 +226,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   keeps this traffic in line with pre-0.7.0 behavior; probes inside the
   floor fall back to the local heuristic, matching what the extension
   did before native counting existed.
+
 
 ## [0.7.1] — 2026-08-21
 
@@ -211,7 +407,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   winner is promoted to active via `setActiveSlot(pick.slot)` so
   the next turn hits it instead of reverting to the failed slot.
   The `KeyProvider` port now exposes `recordFallback(slot,
-  fellBackFrom, atMs)` and `readonly lastFallback` so the
+fellBackFrom, atMs)` and `readonly lastFallback` so the
   status-bar dashboard can surface the most-recent fallback.
 
 - **Rotation cover is wider.** `markFailed` now fires for any

@@ -1,39 +1,50 @@
 version: 2
 
 updates:
-  # Keep npm dependencies up to date
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-      time: "08:00"
-      timezone: UTC
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "chore(deps)"
-      include: scope
-    groups:
-      # Group all dev dependencies together to reduce PR noise
-      dev-dependencies:
-        dependency-type: development
-        update-types:
-          - minor
-          - patch
-      # Group all production dependencies together
-      production-dependencies:
-        dependency-type: production
-        update-types:
-          - minor
-          - patch
-    # Allow Dependabot to manage GitHub Actions
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-      time: "08:00"
-      timezone: UTC
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(ci)"
+# Keep npm dependencies up to date
+- package-ecosystem: npm
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+    time: "08:00"
+    timezone: UTC
+  open-pull-requests-limit: 5
+  commit-message:
+    prefix: "chore(deps)"
+    include: scope
+  groups:
+    # Group all dev dependencies together to reduce PR noise
+    dev-dependencies:
+      dependency-type: development
+      update-types:
+      - minor
+      - patch
+    # Group all production dependencies together
+    production-dependencies:
+      dependency-type: production
+      update-types:
+      - minor
+      - patch
+  # `@types/vscode` is pinned to the current `engines.vscode` floor.
+  # Bumping @types/vscode without bumping engines.vscode makes `vsce
+  # package` fail the engine-vs-types check
+  # (`@types/vscode X greater than engines.vscode ^Y`). The engine
+  # floor was last bumped in 0.7.4 to ^1.125.0; update this ignore
+  # block in the same release that bumps engines.vscode so the types
+  # version matches.
+  ignore:
+  - dependency-name: "@types/vscode"
+    versions:
+    - ">= 1.125.1"
+  # Allow Dependabot to manage GitHub Actions
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: weekly
+    day: monday
+    time: "08:00"
+    timezone: UTC
+  open-pull-requests-limit: 3
+  commit-message:
+    prefix: "chore(ci)"

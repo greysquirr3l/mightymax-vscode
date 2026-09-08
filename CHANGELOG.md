@@ -4,6 +4,77 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.6] — 2026-09-08
+
+### Fixed
+
+- **Smart tool filter dropped VS Code 1.97+ built-ins outside the
+  `copilot_` namespace.** The shipped `mightyMax.alwaysIncludeTools`
+  default pinned `copilot_` (a prefix pin matching any tool whose
+  name starts with `copilot_*`) plus five exact pins (`run_in_terminal`,
+  `apply_patch`, `grep_search`, `file_search`, `semantic_search`).
+  VS Code 1.97+ exposes a second built-in namespace — the `vscode_*`
+  family of language / refactor / search tools
+  (`vscode_askQuestions`, `vscode_listCodeUsages`,
+  `vscode_renameSymbol`, `vscode_searchExtensions_internal`) — and a
+  set of bare-name agent-loop tools (`view_image`, `runSubagent`,
+  `manage_todo_list`) that VS Code does NOT put in either
+  namespace. When the user's VS Code tool set exceeded
+  `mightyMax.maxTools`, the smart filter dropped every one of
+  these, breaking agent-mode on a populated toolset (37 tools
+  dropped on one observed install: `view_image`, the four
+  `vscode_*` tools above, `runSubagent`, `manage_todo_list`, plus
+  the MCP / extension tools governed separately by the rolling
+  LRU). The default now also pins `vscode_` (prefix pin) and the
+  three bare names; user overrides of `mightyMax.alwaysIncludeTools`
+  are unaffected. The docstring on `DEFAULT_ALWAYS_INCLUDE_TOOLS`
+  in `src/lib/domain/tool-filter.ts` is rewritten to explain why
+  the `copilot_` prefix alone is not enough.
+
+- **MCP search invokers declared in `contributes.tools`.** The
+  three 0.7.5 invokers (`mcp_list_servers`, `mcp_list_tools`,
+  `mcp_load`) were registered at activation time via
+  `vscode.lm.registerTool` but never declared in
+  `contributes.tools`. VS Code 1.97+ emits
+  `Tool "X" was not contributed.` warnings on every activation
+  when a programmatically-registered tool lacks a manifest
+  declaration, and on newer stable builds the host's
+  `LanguageModelToolsService.registerToolImplementation` throws
+  when the tool data isn't pre-registered. Each tool is now
+  declared in `contributes.tools` with its description, tags,
+  and JSON Schema — matching the descriptors in
+  `src/lib/domain/mcp-search-tools.ts` byte-for-byte. The
+  activation-time `registerTool` calls remain as the
+  implementation-provider path; the manifest entry is the
+  metadata path. Combined effect: the VS Code host always sees
+  a consistent tool definition across package.json readers and
+  the API surface, and the "was not contributed" warning is
+  silenced.
+
+- **Manifest-contract integration test pinned to the post-0.3.1
+  schema.** The integration test asserted the deprecated
+  `languageModelChatProviders[*].managementCommand` property
+  that 0.3.1 removed (replaced by the
+  `configuration.properties.apiKey` schema, then re-reinforced
+  by 0.7.4's command-palette auto-discovery). The test was
+  reverted back to the legacy shape at some point and broke
+  every host-based test run. It now asserts
+  `managementCommand === undefined` AND the replacement
+  `configuration.properties.apiKey.type === 'string'` /
+  `secret === true` so both halves of the migration are pinned.
+
+- **`@vscode/test-cli` 0.0.15 / `@vscode/test-electron` 3.1.0
+  installed (were 0.0.11 / 2.4.1).** The lockfile had drifted
+  below the declared versions in `package.json`. Older
+  `test-electron` (≤2.4.x) spawns VS Code via an `Electron`
+  binary path that VS Code 1.130+ no longer ships, so every
+  host-based profile failed with
+  `spawn .../Electron ENOENT` before any tests could run. The
+  pair matches what 0.7.1's release notes already pinned; the
+  lockfile is now in sync with `package.json`. Host-based
+  suites run against real VS Code stable 1.136.1 instead of
+  silently skipping.
+
 ## [0.7.5] — 2026-09-07
 
 ### Added
@@ -41,6 +112,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   This matches the live tool names in the production log and
   avoids the false split that would happen with a last-underscore
   heuristic.
+
 # Changelog
 
 All notable changes to Mighty Max are documented here. The format

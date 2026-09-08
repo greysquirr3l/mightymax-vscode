@@ -62,18 +62,41 @@ export interface ToolFilterDecision {
  *    `copilot_listDirectory`, etc.).
  *  - bare prefix word: `"grep"` matches any tool whose name
  *    contains `"grep"` (covers `grep_search`, `grep_*`, etc.).
+ *
+ * VS Code 1.97+ exposes two distinct built-in namespaces that
+ * the model needs available on every turn: the namespaced
+ * `copilot_*` tools (the legacy Copilot Chat surface) AND a
+ * bare-name set the agent loop calls directly (`view_image`,
+ * `runSubagent`, `manage_todo_list`) plus the `vscode_*` namespace
+ * of language / refactor / search tools (`vscode_askQuestions`,
+ * `vscode_listCodeUsages`, `vscode_renameSymbol`,
+ * `vscode_searchExtensions_internal`). The `copilot_` prefix alone
+ * does NOT capture any of the bare-name or `vscode_*` entries —
+ * VS Code does not put them in the `copilot_` namespace — so
+ * each set is pinned explicitly below.
  */
 export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   // Prefix pin: matches every Copilot Chat built-in tool the agent
   // ever calls. Renaming the upstream tool does NOT silently rot
   // the pin — anything new in the `copilot_` namespace is captured.
   'copilot_',
-  // Exact pins for tool names Copilot Chat exposes.
+  // Prefix pin: covers VS Code's `vscode_*` language / refactor /
+  // search built-ins (vscode_askQuestions, vscode_listCodeUsages,
+  // vscode_renameSymbol, vscode_searchExtensions_internal, ...).
+  // Distinct from `copilot_*` — VS Code's chat UI does not put
+  // these in the `copilot_` namespace.
+  'vscode_',
+  // Exact pins for tool names Copilot Chat / VS Code agent loop
+  // expose directly. None of these are in a `_` namespace, so
+  // the prefix rule above cannot reach them.
   'run_in_terminal',
   'apply_patch',
   'grep_search',
   'file_search',
   'semantic_search',
+  'view_image',
+  'runSubagent',
+  'manage_todo_list',
 ];
 
 export const DEFAULT_ENABLE_SMART_TOOL_FILTERING = true;

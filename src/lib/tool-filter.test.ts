@@ -51,6 +51,24 @@ describe('T21 default tool-filter config', () => {
     // matched zero VS Code tools.
     ok(!DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('read_file'));
   });
+
+  it('covers the vscode_ namespace and bare agent-loop tool names', () => {
+    // VS Code 1.97+ exposes built-ins that are NOT in the
+    // `copilot_` namespace. The default pin list must cover
+    // both:
+    //   - the `vscode_*` language / refactor / search namespace
+    //     (vscode_askQuestions, vscode_listCodeUsages,
+    //      vscode_renameSymbol, vscode_searchExtensions_internal)
+    //   - the bare-name agent-loop tools (view_image,
+    //     runSubagent, manage_todo_list)
+    // The `copilot_` prefix alone does not reach any of these;
+    // dropping them silently breaks agent-mode on a populated
+    // toolset (see CHANGELOG 0.7.6 — Fixed).
+    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('vscode_'));
+    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('view_image'));
+    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('runSubagent'));
+    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('manage_todo_list'));
+  });
 });
 
 describe('T21 matchesAlwaysInclude — prefix / substring / exact', () => {
@@ -523,9 +541,7 @@ describe('GitHub MCP prefix catch-all', () => {
       matchesAlwaysInclude('mcp_github_mcp_se_list_issues', ['mcp_github_']),
       'official server tools land under the broad prefix',
     );
-    ok(
-      matchesAlwaysInclude('mcp_github_mcp_se_create_issue', ['mcp_github_']),
-    );
+    ok(matchesAlwaysInclude('mcp_github_mcp_se_create_issue', ['mcp_github_']));
   });
 
   it('matches community GitHub MCP variants', () => {

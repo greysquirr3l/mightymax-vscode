@@ -36,7 +36,7 @@ All settings are in the VS Code Settings UI under "Mighty Max" or in `settings.j
 ### `mightyMax.alwaysIncludeTools`
 
 - **Type**: Array of strings
-- **Default**: `["copilot_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search"]`
+- **Default**: `["copilot_", "vscode_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search", "view_image", "runSubagent", "manage_todo_list"]`
 - **Description**: Tools to keep regardless of relevance scoring. Supports three match modes:
   - **Exact**: `"run_in_terminal"` matches the tool whose `.name === "run_in_terminal"`.
   - **Prefix**: `"copilot_"` matches any tool whose `.name` STARTS with `"copilot_"`. Captures every Copilot Chat built-in (renames don't rot the pin).
@@ -138,12 +138,7 @@ When filtering is active, check the "Mighty Max" output channel for details:
   "mightyMax.enableSmartToolFiltering": true,
   "mightyMax.maxTools": 20,
   "mightyMax.toolFilterStrategy": "hybrid",
-  "mightyMax.alwaysIncludeTools": [
-    "read_file",
-    "write_file",
-    "edit_file",
-    "bash"
-  ]
+  "mightyMax.alwaysIncludeTools": ["read_file", "write_file", "edit_file", "bash"]
 }
 ```
 
@@ -178,11 +173,7 @@ To verify filtering is working:
 
 ```json
 {
-  "mightyMax.alwaysIncludeTools": [
-    "read_file",
-    "write_file",
-    "my_critical_tool"
-  ]
+  "mightyMax.alwaysIncludeTools": ["read_file", "write_file", "my_critical_tool"]
 }
 ```
 

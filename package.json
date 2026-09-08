@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -44,10 +44,69 @@
         "description": "Mighty Max aviator glyph (used as the status-bar item icon).",
         "default": {
           "fontPath": "assets/fonts/mightymax.woff",
-          "fontCharacter": ""
+          "fontCharacter": "\ue900"
         }
       }
     },
+    "tools": [
+      {
+        "name": "mcp_list_servers",
+        "description": "List the MCP servers currently loaded by VS Code. Returns the server names; call mcp_list_tools with a server name to see what tools that server exposes. Use this when you need to use an MCP tool that is not in your current tool list.",
+        "tags": [
+          "mcp-discovery"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "mcp_list_tools",
+        "description": "List the tools exposed by one MCP server. Pass the server name from mcp_list_servers to see the tools it exposes. Returned format: <name> -- <description> per tool.",
+        "tags": [
+          "mcp-discovery"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string",
+              "description": "Server name from mcp_list_servers (e.g. \"github\", \"clickup\")."
+            }
+          },
+          "required": [
+            "server"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "mcp_load",
+        "description": "Invoke one MCP tool by exact name and return its result. The named tool does not need to be in your current tool list; calling mcp_load records the tool as recently used so it joins your tool list for subsequent turns in this session. Use this when you need to run an MCP tool that is not currently in your tool list (typically because the rolling cap dropped it).",
+        "tags": [
+          "mcp-discovery"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "Exact tool name from mcp_list_tools, e.g. \"mcp_github_list_issues\"."
+            },
+            "input": {
+              "type": "object",
+              "description": "Input to pass to the underlying tool (must match the tool's inputSchema; pass {} if the tool takes no arguments).",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
     "commands": [
       {
         "command": "mightyMax.manage",
@@ -148,7 +207,7 @@
         "mightyMax.baseUrl": {
           "type": "string",
           "default": "https://api.minimax.io",
-          "description": "MiniMax API base URL. The API key is never stored here — it lives in SecretStorage.",
+          "description": "MiniMax API base URL. The API key is never stored here \u2014 it lives in SecretStorage.",
           "scope": "application"
         },
         "mightyMax.firstByteTimeoutMs": {
@@ -156,7 +215,7 @@
           "default": 45000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Watchdog on time-to-first-response, in milliseconds. If MiniMax accepts the connection but sends no response headers within this budget, the attempt is aborted and retried with backoff; exhausted retries surface a 'stall' error instead of hanging until you cancel. Healthy requests return headers in single-digit seconds even on large cached prompts. Changes apply to the next request — no reload needed.",
+          "description": "Watchdog on time-to-first-response, in milliseconds. If MiniMax accepts the connection but sends no response headers within this budget, the attempt is aborted and retried with backoff; exhausted retries surface a 'stall' error instead of hanging until you cancel. Healthy requests return headers in single-digit seconds even on large cached prompts. Changes apply to the next request \u2014 no reload needed.",
           "scope": "window"
         },
         "mightyMax.idleTimeoutMs": {
@@ -164,7 +223,7 @@
           "default": 60000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Watchdog on mid-stream silence, in milliseconds. If an open response stream delivers no bytes for this long, it is cut with a 'stall' error (and retried automatically when nothing had streamed yet). This measures gaps between bytes, not total request time — long responses that keep streaming are never cut. Changes apply to the next request — no reload needed.",
+          "description": "Watchdog on mid-stream silence, in milliseconds. If an open response stream delivers no bytes for this long, it is cut with a 'stall' error (and retried automatically when nothing had streamed yet). This measures gaps between bytes, not total request time \u2014 long responses that keep streaming are never cut. Changes apply to the next request \u2014 no reload needed.",
           "scope": "window"
         },
         "mightyMax.logLevel": {
@@ -182,7 +241,7 @@
         "mightyMax.enableSmartToolFiltering": {
           "type": "boolean",
           "default": true,
-          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 60) for built-in tools, with MCP tools governed separately by a rolling LRU — see `mightyMax.mcpMaxTools` (default 60). History-referenced tools and the always-on pin list (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install; with several MCP servers installed the total can climb into the hundreds — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list, MCP LRU, and history-referenced set are still honored.",
+          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 60) for built-in tools, with MCP tools governed separately by a rolling LRU \u2014 see `mightyMax.mcpMaxTools` (default 60). History-referenced tools and the always-on pin list (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install; with several MCP servers installed the total can climb into the hundreds \u2014 keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list, MCP LRU, and history-referenced set are still honored.",
           "scope": "window"
         },
         "mightyMax.maxTools": {
@@ -209,23 +268,27 @@
           "items": {
             "type": "string"
           },
-          "description": "MCP tools (or prefixes ending in `_`) to keep in the wire payload on every request, regardless of recency. Each entry costs one slot of the `mightyMax.mcpMaxTools` cap. The platform's built-in agent tools (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) are always-included separately and cannot be removed. The chat-provider warns at request time if the reserved list length exceeds the cap. The shipped default (`mcp_github_`) is a broad prefix that pins every tool any GitHub MCP server exposes — the official `github-mcp-server`, community variants, and forks all land in the `mcp_github_<...>` namespace, so a single entry covers them all. Add more entries for additional servers the model needs available on every turn; leave the default list in place to let the rolling LRU handle MCP selection on recency alone for the rest.",
+          "description": "MCP tools (or prefixes ending in `_`) to keep in the wire payload on every request, regardless of recency. Each entry costs one slot of the `mightyMax.mcpMaxTools` cap. The platform's built-in agent tools (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) are always-included separately and cannot be removed. The chat-provider warns at request time if the reserved list length exceeds the cap. The shipped default (`mcp_github_`) is a broad prefix that pins every tool any GitHub MCP server exposes \u2014 the official `github-mcp-server`, community variants, and forks all land in the `mcp_github_<...>` namespace, so a single entry covers them all. Add more entries for additional servers the model needs available on every turn; leave the default list in place to let the rolling LRU handle MCP selection on recency alone for the rest.",
           "scope": "window"
         },
         "mightyMax.alwaysIncludeTools": {
           "type": "array",
           "default": [
             "copilot_",
+            "vscode_",
             "run_in_terminal",
             "apply_patch",
             "grep_search",
             "file_search",
-            "semantic_search"
+            "semantic_search",
+            "view_image",
+            "runSubagent",
+            "manage_todo_list"
           ],
           "items": {
             "type": "string"
           },
-          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically. MCP tools are governed separately by the rolling LRU — see `mightyMax.mcpMaxTools`.",
+          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically. MCP tools are governed separately by the rolling LRU \u2014 see `mightyMax.mcpMaxTools`.",
           "scope": "window"
         },
         "mightyMax.toolFilterStrategy": {
@@ -281,7 +344,7 @@
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,
-          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' → 'Toggle auto-rotation' (the row label shows the current state: '● … ON' / '○ … OFF').",
+          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored \u2014 with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' \u2192 'Toggle auto-rotation' (the row label shows the current state: '\u25cf \u2026 ON' / '\u25cb \u2026 OFF').",
           "scope": "window"
         }
       }

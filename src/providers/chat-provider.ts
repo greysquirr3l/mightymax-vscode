@@ -1335,11 +1335,15 @@ function readToolFilterConfig(): ToolFilterConfig {
     alwaysIncludeTools:
       config.get?.<string[]>('alwaysIncludeTools', [
         'copilot_',
+        'vscode_',
         'run_in_terminal',
         'apply_patch',
         'grep_search',
         'file_search',
         'semantic_search',
+        'view_image',
+        'runSubagent',
+        'manage_todo_list',
       ]) ?? [],
   };
 }

@@ -227,6 +227,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   floor fall back to the local heuristic, matching what the extension
   did before native counting existed.
 
+
 ## [0.7.1] — 2026-08-21
 
 ### Changed

@@ -4,6 +4,50 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.7] — 2026-09-08
+
+Batched dev-dependency and supply-chain hygiene release. No
+user-facing behavior change; the version bump is so the
+`v0.7.7` Marketplace listing can roll up the five dependabot /
+override PRs that landed between `v0.7.6` and the next user-
+visible release. The OSSF Scorecard `Vulnerabilities` check
+drops from "5 existing vulnerabilities" to 0 with this
+release.
+
+### Security
+
+- **OSSF Scorecard `Vulnerabilities` count: 5 → 0.** Five
+  transitive-dependency advisories cleared across the 0.7.6
+  → 0.7.7 cycle. Three (`brace-expansion` ×2, `diff`) came
+  along for free when mocha 12 (PR #75) bumped its own
+  transitive tree. Two (`qs` ×2 — GHSA-4mjr-xmp4-gh2g,
+  GHSA-x5fp-wj9c-mxmx) needed an explicit `overrides` block
+  because no upstream package in our tree has shipped a
+  resolution that pulls `qs ^6.16.0` yet. (PR #76.)
+
+### Changed
+
+- **Mocha 11.8.0 → 12.0.0.** Dev-dep major bump via
+  dependabot. Zero source-code changes — our tests use Mocha
+  BDD globals (`describe` / `it` / `beforeEach` / `afterEach`),
+  which haven't changed shape. Build & test (ubuntu/windows/
+  macos) green on 12.0.0. (PR #75.)
+- **fast-uri 3.1.5 → 3.1.7.** Transitive dev-dep bump via
+  dependabot. (PR #71.)
+- **softprops/action-gh-release 3.0.2 → 3.0.3.** CI action
+  patch bump. (PR #72.)
+- **Three safe dev-deps**: `@types/node 26.2.0 → 26.4.1`,
+  `eslint 10.8.1 → 10.10.0`, `typescript-eslint 8.67.0 →
+  8.69.0`. (PR #74.)
+- **Engine floor locked at `^1.125.0`.** `.github/
+  dependabot.yml` now ignores `@types/vscode >= 1.125.1`
+  with an inline rationale, so future dependabot PRs won't
+  re-open the same `@types/vscode` ↔ `engines.vscode`
+  conflict that closed PR #70. The next release that
+  intentionally lifts the engine floor (planned minor or
+  major) should drop the ignore block in the same commit
+  that bumps `engines.vscode`. (PR #74.)
+
 ## [0.7.6] — 2026-09-08
 
 ### Fixed
@@ -226,7 +270,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   keeps this traffic in line with pre-0.7.0 behavior; probes inside the
   floor fall back to the local heuristic, matching what the extension
   did before native counting existed.
-
 
 ## [0.7.1] — 2026-08-21
 

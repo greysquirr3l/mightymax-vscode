@@ -44,7 +44,7 @@
         "description": "Mighty Max aviator glyph (used as the status-bar item icon).",
         "default": {
           "fontPath": "assets/fonts/mightymax.woff",
-          "fontCharacter": ""
+          "fontCharacter": "\ue900"
         }
       }
     },
@@ -144,7 +144,7 @@
         "mightyMax.baseUrl": {
           "type": "string",
           "default": "https://api.minimax.io",
-          "description": "MiniMax API base URL. The API key is never stored here — it lives in SecretStorage.",
+          "description": "MiniMax API base URL. The API key is never stored here \u2014 it lives in SecretStorage.",
           "scope": "application"
         },
         "mightyMax.firstByteTimeoutMs": {
@@ -152,7 +152,7 @@
           "default": 45000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Watchdog on time-to-first-response, in milliseconds. If MiniMax accepts the connection but sends no response headers within this budget, the attempt is aborted and retried with backoff; exhausted retries surface a 'stall' error instead of hanging until you cancel. Healthy requests return headers in single-digit seconds even on large cached prompts. Changes apply to the next request — no reload needed.",
+          "description": "Watchdog on time-to-first-response, in milliseconds. If MiniMax accepts the connection but sends no response headers within this budget, the attempt is aborted and retried with backoff; exhausted retries surface a 'stall' error instead of hanging until you cancel. Healthy requests return headers in single-digit seconds even on large cached prompts. Changes apply to the next request \u2014 no reload needed.",
           "scope": "window"
         },
         "mightyMax.idleTimeoutMs": {
@@ -160,7 +160,7 @@
           "default": 60000,
           "minimum": 1000,
           "maximum": 600000,
-          "description": "Watchdog on mid-stream silence, in milliseconds. If an open response stream delivers no bytes for this long, it is cut with a 'stall' error (and retried automatically when nothing had streamed yet). This measures gaps between bytes, not total request time — long responses that keep streaming are never cut. Changes apply to the next request — no reload needed.",
+          "description": "Watchdog on mid-stream silence, in milliseconds. If an open response stream delivers no bytes for this long, it is cut with a 'stall' error (and retried automatically when nothing had streamed yet). This measures gaps between bytes, not total request time \u2014 long responses that keep streaming are never cut. Changes apply to the next request \u2014 no reload needed.",
           "scope": "window"
         },
         "mightyMax.logLevel": {
@@ -178,7 +178,7 @@
         "mightyMax.enableSmartToolFiltering": {
           "type": "boolean",
           "default": true,
-          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 64); history-referenced tools and a pin list of always-on built-ins (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install — keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list and history-referenced set are still honored.",
+          "description": "Smart tool filtering. When enabled, the agent's tool set is capped at `mightyMax.maxTools` (default 64); history-referenced tools and a pin list of always-on built-ins (`copilot_*`, `run_in_terminal`, `apply_patch`, `grep_search`, `file_search`, `semantic_search`) always survive the cap. The full VS Code tool set is ~83 entries on a typical install \u2014 keeping the wire payload small directly reduces first-turn latency on MiniMax M3 (Anthropic endpoint) where tool-schema size dominates the cold-cache build. Set to `false` to forward every tool verbatim; the pin list and history-referenced set are still honored.",
           "scope": "window"
         },
         "mightyMax.maxTools": {
@@ -258,7 +258,7 @@
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,
-          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' → 'Toggle auto-rotation' (the row label shows the current state: '● … ON' / '○ … OFF').",
+          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored \u2014 with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' \u2192 'Toggle auto-rotation' (the row label shows the current state: '\u25cf \u2026 ON' / '\u25cb \u2026 OFF').",
           "scope": "window"
         }
       }
@@ -295,7 +295,8 @@
   "overrides": {
     "markdown-it": "^14.2.0",
     "serialize-javascript": "^7.0.5",
-    "xml2js": "^0.5.0"
+    "xml2js": "^0.5.0",
+    "qs": "^6.16.0"
   },
   "devDependencies": {
     "@eslint/js": "9.13.0",

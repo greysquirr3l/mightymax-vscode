@@ -30,6 +30,10 @@ import type { FailureKind } from '../lib/domain/key-pool.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 
 import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
+import {
+  buildCallIdToToolNameMap,
+  collapseSubAgentToolResultsInDomain,
+} from '../lib/domain/subagent-synthesis.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
 import {
   filterTools,
@@ -225,8 +229,25 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Convert vscode messages to domain format
     const domainMessages = messages.map(vscodeToDomainMessage);
 
+    // T35: collapse multi-part sub-agent tool results into a single
+    // `<task>` text block so the model's input is one clean string
+    // instead of N parts (some of which may have leaked JSON-
+    // stringified thinking parts from the `vscodeToDomainMessage`
+    // `JSON.stringify` fallback path). The chat widget's display of
+    // historical tool results is unaffected by this — VS Code
+    // renders its own stored state — but the model's context is
+    // cleaner for every future turn that re-includes the result.
+    const callIdToToolName = buildCallIdToToolNameMap(domainMessages);
+    const collapsedMessages = collapseSubAgentToolResultsInDomain(
+      domainMessages,
+      callIdToToolName,
+      {
+        maxChars: this.readToolResultMaxChars(),
+      },
+    );
+
     // Inject cached thinking blocks into assistant messages
-    const enrichedMessages = this.enrichWithThinking(domainMessages, model.id);
+    const enrichedMessages = this.enrichWithThinking(collapsedMessages, model.id);
 
     // Get model info from catalog to determine thinking style + dialect
     const modelInfo = await this.catalog.getModel(model.id);

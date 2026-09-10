@@ -74,6 +74,16 @@ export interface ToolFilterDecision {
  * does NOT capture any of the bare-name or `vscode_*` entries —
  * VS Code does not put them in the `copilot_` namespace — so
  * each set is pinned explicitly below.
+ *
+ * T35: `runSubagent` is removed from the pin list and `minimax_subagent`
+ * takes its place. Our custom tool wraps VS Code's built-in and
+ * synthesizes the multi-part sub-agent result into a single `<task>`
+ * text block (one box in the chat widget) instead of N parts.
+ * `runSubagent` itself is NOT removed from VS Code — the user can
+ * still invoke it directly via @-mention — but our model won't
+ * reach for it, so sub-agents our MODEL invokes render as a single
+ * box. (User-@-invoked sub-agents are a separate, out-of-scope case:
+ * VS Code renders them outside the LM provider API.)
  */
 export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   // Prefix pin: matches every Copilot Chat built-in tool the agent
@@ -95,7 +105,9 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   'file_search',
   'semantic_search',
   'view_image',
-  'runSubagent',
+  // T35: prefer our custom `minimax_subagent` over VS Code's
+  // `runSubagent` (see header comment).
+  'minimax_subagent',
   'manage_todo_list',
 ];
 

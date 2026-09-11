@@ -60,13 +60,24 @@ describe('T21 default tool-filter config', () => {
     //     (vscode_askQuestions, vscode_listCodeUsages,
     //      vscode_renameSymbol, vscode_searchExtensions_internal)
     //   - the bare-name agent-loop tools (view_image,
-    //     runSubagent, manage_todo_list)
+    //     minimax_subagent (T35), manage_todo_list)
     // The `copilot_` prefix alone does not reach any of these;
     // dropping them silently breaks agent-mode on a populated
     // toolset (see CHANGELOG 0.7.6 — Fixed).
+    //
+    // T35: `runSubagent` was removed from the pin list and
+    // `minimax_subagent` was added in its place. Our custom tool
+    // synthesizes the multi-part sub-agent result into one `<task>`
+    // text block so the chat widget renders a single box. See
+    // `tasks/T35-subagent-single-part-rendering.md` for the
+    // honest limitation around user-@-invoked sub-agents.
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('vscode_'));
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('view_image'));
-    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('runSubagent'));
+    ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('minimax_subagent'));
+    ok(
+      !DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('runSubagent'),
+      'runSubagent removed in favor of minimax_subagent',
+    );
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('manage_todo_list'));
   });
 });

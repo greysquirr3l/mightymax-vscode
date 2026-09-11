@@ -309,20 +309,21 @@ other feature keep working.
 
 Mighty Max covers every BYOK-supported surface in VS Code Chat:
 
-| Feature                 | Status       | Notes                                                                                                           |
-| ----------------------- | ------------ | --------------------------------------------------------------------------------------------------------------- |
-| Chat: Ask               | ✅ Supported | Standard chat mode in the Chat panel                                                                            |
-| Chat: Edit              | ✅ Supported | Edit mode with diff previews                                                                                    |
-| Chat: Inline            | ✅ Supported | Inline chat in the editor (Ctrl+I)                                                                              |
-| Agent mode              | ✅ Supported | Full agentic tool calling with built-in, extension, and MCP tools                                               |
-| Custom/local agents     | ✅ Supported | User-authored agent definitions work with MiniMax models                                                        |
-| Utility tasks           | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                 |
-| Tool calling            | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                            |
-| Image input             | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                                                                  |
-| Thinking blocks         | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning                                            |
-| Multi-round agent loops | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                 |
-| Multi-key rotation      | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard |
-| Token usage tracking    | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                             |
+| Feature                        | Status       | Notes                                                                                                                                                                                                                 |
+| ------------------------------ | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chat: Ask                      | ✅ Supported | Standard chat mode in the Chat panel                                                                                                                                                                                  |
+| Chat: Edit                     | ✅ Supported | Edit mode with diff previews                                                                                                                                                                                          |
+| Chat: Inline                   | ✅ Supported | Inline chat in the editor (Ctrl+I)                                                                                                                                                                                    |
+| Agent mode                     | ✅ Supported | Full agentic tool calling with built-in, extension, and MCP tools                                                                                                                                                     |
+| Custom/local agents            | ✅ Supported | User-authored agent definitions work with MiniMax models                                                                                                                                                              |
+| Utility tasks                  | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                                                                                                                       |
+| Tool calling                   | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                                                                                                                                  |
+| Image input                    | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                                        |
+| Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning                                                                                                                                                  |
+| Multi-round agent loops        | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                                                                                                                       |
+| Single-box sub-agent rendering | ✅ Supported | Our custom `minimax_subagent` tool wraps VS Code's `runSubagent` and synthesizes the multi-part result into one `<task>` text block, so sub-agents our model invokes render as a single box (not N collapsible parts) |
+| Multi-key rotation             | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard                                                                                                       |
+| Token usage tracking           | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                                                                                                                                   |
 
 ## What Mighty Max does NOT provide
 
@@ -343,6 +344,17 @@ account with Copilot:
   Window may include vendor-specific agent implementations that remain coupled
   to official SDK providers. Standard agent mode (Chat panel, inline chat) and
   custom/local agents continue to work with BYOK.
+
+### Sub-agent rendering note
+
+When our model spawns a sub-agent, the result renders as a single box in the
+chat widget — our custom `minimax_subagent` tool synthesizes the multi-part
+output into one `<task>` text block. Sub-agents you invoke **directly** via
+`@-mention` in the chat UI still use VS Code's built-in `runSubagent`, which
+renders as multiple boxes (one per emitted text/thinking/tool-call part); the
+LM provider API doesn't give us a path to rewrite those stored historical
+results. See `tasks/T35-subagent-single-part-rendering.md` for the full design
+note.
 
 ## Workspace trust posture
 

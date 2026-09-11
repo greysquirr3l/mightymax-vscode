@@ -25,6 +25,7 @@ import {
   registerMcpSearchTools,
   type McpSearchAdapterDeps,
 } from './adapters/mcp-search-adapter.js';
+import { registerSubAgentTool } from './adapters/subagent-tool-adapter.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -180,6 +181,13 @@ export function activate(context: vscode.ExtensionContext): void {
     onMcpToolInvoked: (name) => mcpRecency.record(name),
   };
   context.subscriptions.push(registerMcpSearchTools(context, mcpSearchDeps));
+
+  // T35 — register our custom `minimax_subagent` tool. It wraps
+  // VS Code's built-in `runSubagent` and synthesizes the multi-part
+  // sub-agent result into a single `<task>` text block, so the chat
+  // widget renders exactly one box instead of N collapsible parts
+  // (the "blank rectangles" symptom from T35).
+  context.subscriptions.push(registerSubAgentTool({ logger }));
 
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes

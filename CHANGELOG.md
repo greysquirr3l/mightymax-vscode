@@ -4,6 +4,65 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] — 2026-09-11
+
+User-facing fix for the "blank rectangles" symptom on sub-agent
+tool results in the Copilot Chat widget (PR #77). The model
+invocation path is changed; no other surface is affected. See
+`tasks/T35-subagent-single-part-rendering.md` for the full
+design note and the honest limitation around user-@-invoked
+sub-agents.
+
+### Added
+
+- **`minimax_subagent` tool — single-box sub-agent rendering.**
+  The chat widget renders each item in a tool result's
+  `content` array as its own collapsible card, so VS Code's
+  built-in `runSubagent` (which returns one part per emitted
+  text delta + one per thinking delta + one per sub-agent tool
+  call) shows up as a wall of blank rectangles inside the
+  parent agent's tool-result card. Mighty Max now ships a
+  custom `minimax_subagent` tool that wraps `runSubagent`,
+  internally invokes it via `vscode.lm.invokeTool(...)`,
+  walks the multi-part result, and synthesizes it into a
+  single `<task>` XML text block. The single-part result
+  renders as one box. The default tool-filter pin list
+  (`src/lib/domain/tool-filter.ts`) swaps `runSubagent` for
+  `minimax_subagent`, so the model prefers the single-part
+  variant. The user can still invoke `runSubagent` directly
+  via @-mention — VS Code renders @-invoked sub-agents
+  outside the LM provider API and we cannot rewrite the
+  stored historical message for those (documented
+  limitation).
+
+- **Inbound `runSubagent` collapse for model fidelity.** A
+  second, invisible-from-the-UI half of the fix: when VS
+  Code replays a conversation history that includes a
+  `runSubagent` or `minimax_subagent` tool result, the
+  vscode-to-domain mapper passes the model's context a
+  single `<task>` text string instead of N raw parts (some
+  of which were leaking JSON-stringified thinking parts via
+  the `LanguageModelToolResultPart → vscodeToDomainMessage
+JSON.stringify` fallback path). Tracked under T35.
+
+### Fixed
+
+- **`minimax_subagent` and the three MCP discovery tools
+  (`mcp_list_servers`, `mcp_list_tools`, `mcp_load`) now
+  actually register with VS Code.** `vscode.lm.registerTool(...)`
+  rejects tools that aren't declared in the extension
+  manifest's `contributes.languageModelTools`. The runtime
+  error `Tool "<name>" was not contributed` was logged to
+  the host's `exthost.log` on every extension activation
+  and swallowed by the adapter's `try` / `catch` in both
+  `registerMcpSearchTools` and `registerSubAgentTool`. All
+  four entries are now declared with the canonical schema
+  (`name`, `displayName`, `toolReferenceName`,
+  `userDescription`, `modelDescription`, `tags`,
+  `inputSchema`) borrowed from Copilot's own
+  `contributes.languageModelTools`. The adapter code is
+  unchanged.
+
 ## [0.7.7] — 2026-09-08
 
 Batched dev-dependency and supply-chain hygiene release. No
@@ -38,9 +97,9 @@ release.
   patch bump. (PR #72.)
 - **Three safe dev-deps**: `@types/node 26.2.0 → 26.4.1`,
   `eslint 10.8.1 → 10.10.0`, `typescript-eslint 8.67.0 →
-  8.69.0`. (PR #74.)
+8.69.0`. (PR #74.)
 - **Engine floor locked at `^1.125.0`.** `.github/
-  dependabot.yml` now ignores `@types/vscode >= 1.125.1`
+dependabot.yml` now ignores `@types/vscode >= 1.125.1`
   with an inline rationale, so future dependabot PRs won't
   re-open the same `@types/vscode` ↔ `engines.vscode`
   conflict that closed PR #70. The next release that

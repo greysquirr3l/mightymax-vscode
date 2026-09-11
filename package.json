@@ -262,7 +262,106 @@
           "scope": "window"
         }
       }
-    }
+    },
+    "languageModelTools": [
+      {
+        "name": "minimax_subagent",
+        "displayName": "MiniMax Subagent",
+        "toolReferenceName": "minimax_subagent",
+        "userDescription": "Spawn a sub-agent to handle a focused, well-scoped task and return its output as a single text block (one box in the chat widget).",
+        "modelDescription": "Spawn a sub-agent to handle a focused, well-scoped task. Prefer this over @Explore because the result renders as a single <task> text block instead of N collapsible parts. The sub-agent has its own tool set and context window; use it when delegating work that should not pollute the parent conversation's chat history.",
+        "tags": [
+          "minimax",
+          "subagent"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "description": {
+              "type": "string",
+              "description": "Short label describing what the sub-agent is doing (shown in the tool call title)."
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Plain-text prompt sent to the sub-agent."
+            },
+            "subagent_type": {
+              "type": "string",
+              "description": "Optional sub-agent type override (defaults to the chat host's default)."
+            }
+          },
+          "required": [
+            "description",
+            "prompt"
+          ]
+        }
+      },
+      {
+        "name": "mcp_list_servers",
+        "displayName": "MCP: List Servers",
+        "toolReferenceName": "mcp_list_servers",
+        "userDescription": "List the MCP servers currently loaded by VS Code.",
+        "modelDescription": "List the names of MCP (Model Context Protocol) servers currently loaded by VS Code. Use this when the model needs to discover which MCP servers are available before calling their tools.",
+        "tags": [
+          "mcp",
+          "minimax"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "mcp_list_tools",
+        "displayName": "MCP: List Tools",
+        "toolReferenceName": "mcp_list_tools",
+        "userDescription": "List the tools available on a given MCP server.",
+        "modelDescription": "List the tools available on a specific MCP server. Use this after mcp_list_servers to discover tool names before invoking one.",
+        "tags": [
+          "mcp",
+          "minimax"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "server": {
+              "type": "string",
+              "description": "The MCP server name (from mcp_list_servers)."
+            }
+          },
+          "required": [
+            "server"
+          ]
+        }
+      },
+      {
+        "name": "mcp_load",
+        "displayName": "MCP: Load Tool",
+        "toolReferenceName": "mcp_load",
+        "userDescription": "Invoke an MCP tool by name and return its result.",
+        "modelDescription": "Invoke an MCP tool by its mcp_<server>_<tool> name. Use this when the model needs to call a tool that the smart-filter LRU has dropped from the wire.",
+        "tags": [
+          "mcp",
+          "minimax"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "description": "The exact mcp_<server>_<tool> name."
+            },
+            "input": {
+              "type": "object",
+              "description": "Optional input payload matching the target tool's schema."
+            }
+          },
+          "required": [
+            "tool"
+          ]
+        }
+      }
+    ]
   },
   "capabilities": {
     "untrustedWorkspaces": {

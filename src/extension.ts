@@ -26,6 +26,10 @@ import {
   type McpSearchAdapterDeps,
 } from './adapters/mcp-search-adapter.js';
 import { registerSubAgentTool } from './adapters/subagent-tool-adapter.js';
+import { HailuoVideoAdapter } from './adapters/hailuo-video-adapter.js';
+import { LocalMediaStore, resolveMediaOutputDirectory } from './adapters/local-media-store.js';
+import { registerGenerateVideoTool } from './adapters/generate-video-tool-adapter.js';
+import { runGenerateVideoCommand } from './commands/generate-video-command.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -189,6 +193,49 @@ export function activate(context: vscode.ExtensionContext): void {
   // (the "blank rectangles" symptom from T35).
   context.subscriptions.push(registerSubAgentTool({ logger }));
 
+  // T36 — Hailuo-03 (H3 / H3-Max) video generation pipeline. Wires
+  // the `mightyMax_generateVideo` LM tool + `mightyMax.generateVideo`
+  // command to the same `KeyProvider` and `Logger` the chat provider
+  // uses. The pipeline runs submit → poll → download → save, and
+  // surfaces the saved file via a notification with Open / Reveal /
+  // Copy-path actions. Gated by `mightyMax.allowVideoToolInChat` for
+  // the LM-tool surface; the command is always available.
+  const mediaBaseDir = resolveMediaOutputDirectory(
+    context.storageUri?.fsPath ?? context.globalStorageUri?.fsPath ?? '/tmp',
+    vscode.workspace.getConfiguration('mightyMax').get<string>('mediaOutputDir'),
+  );
+  const mediaStore = new LocalMediaStore({ baseDirectory: mediaBaseDir });
+  const videoGenerator = new HailuoVideoAdapter({
+    baseUrl: baseUrl(),
+    logger,
+  });
+  context.subscriptions.push(
+    registerGenerateVideoTool({
+      logger,
+      keyProvider,
+      videoGenerator,
+      mediaStore,
+      config: {
+        getPollIntervalMs: () => {
+          const raw = vscode.workspace
+            .getConfiguration('mightyMax')
+            .get<number>('videoPollIntervalMs');
+          if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
+          return Math.min(60_000, Math.max(1_000, Math.floor(raw)));
+        },
+        getTimeoutMs: () => {
+          const raw = vscode.workspace.getConfiguration('mightyMax').get<number>('videoTimeoutMs');
+          if (typeof raw !== 'number' || !Number.isFinite(raw)) return 600_000;
+          return Math.min(1_800_000, Math.max(30_000, Math.floor(raw)));
+        },
+        getFileExtension: (): 'mp4' => 'mp4',
+        getToolEnabled: () =>
+          vscode.workspace.getConfiguration('mightyMax').get<boolean>('allowVideoToolInChat') !==
+          false,
+      },
+    }),
+  );
+
   // T27 — Token Plan usage indicator. The status bar item polls
   // every 5 minutes; the same secret-change listener that refreshes
   // the chat picker also kicks an out-of-band refresh so switching
@@ -319,6 +366,77 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('mightyMax.showUsage', () => {
       logger.info('Mighty Max show-usage command invoked');
       return runShowUsageCommand(context, statusBar);
+    }),
+    vscode.commands.registerCommand('mightyMax.generateVideo', () => {
+      logger.info('Mighty Max generate-video command invoked');
+      return runGenerateVideoCommand({
+        logger,
+        keyProvider,
+        videoGenerator,
+        mediaStore,
+        ui: {
+          showQuickPick: async <T extends vscode.QuickPickItem>(
+            items: ReadonlyArray<T>,
+            options?: {
+              title?: string;
+              placeHolder?: string;
+              canPickMany?: boolean;
+              ignoreFocusOut?: boolean;
+            },
+          ): Promise<T | undefined> => {
+            const picked = await vscode.window.showQuickPick<T>(items, {
+              ...(options?.title !== undefined ? { title: options.title } : {}),
+              ...(options?.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
+              ...(options?.canPickMany !== undefined ? { canPickMany: options.canPickMany } : {}),
+              ...(options?.ignoreFocusOut !== undefined
+                ? { ignoreFocusOut: options.ignoreFocusOut }
+                : {}),
+            });
+            return picked;
+          },
+          showInputBox: async (options) => {
+            return vscode.window.showInputBox({
+              ...(options.title !== undefined ? { title: options.title } : {}),
+              ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+              ...(options.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
+              ...(options.value !== undefined ? { value: options.value } : {}),
+              ...(options.ignoreFocusOut !== undefined
+                ? { ignoreFocusOut: options.ignoreFocusOut }
+                : {}),
+            });
+          },
+          showInformationMessage: async (message, ...actions) => {
+            return vscode.window.showInformationMessage(message, ...actions);
+          },
+          showErrorMessage: async (message, ...actions) => {
+            return vscode.window.showErrorMessage(message, ...actions);
+          },
+          openExternal: async (uri) => {
+            await vscode.env.openExternal(uri);
+          },
+          revealFile: async (uri) => {
+            await vscode.commands.executeCommand('revealFileInOS', uri);
+          },
+        },
+        config: {
+          getPollIntervalMs: () => {
+            const raw = vscode.workspace
+              .getConfiguration('mightyMax')
+              .get<number>('videoPollIntervalMs');
+            if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
+            return Math.min(60_000, Math.max(1_000, Math.floor(raw)));
+          },
+          getTimeoutMs: () => {
+            const raw = vscode.workspace
+              .getConfiguration('mightyMax')
+              .get<number>('videoTimeoutMs');
+            if (typeof raw !== 'number' || !Number.isFinite(raw)) return 600_000;
+            return Math.min(1_800_000, Math.max(30_000, Math.floor(raw)));
+          },
+          getFileExtension: (): 'mp4' => 'mp4',
+          getToolEnabled: () => true,
+        },
+      });
     }),
     vscode.commands.registerCommand('mightyMax.showDiagnostics', () => {
       logger.info('Mighty Max diagnostics command invoked');

@@ -118,6 +118,13 @@ function formatTokenCount(tokens: number): string {
  *            chat-provider still clamps the actual request's
  *            `max_tokens` to 32K (opencode OUTPUT_TOKEN_MAX); the
  *            catalog value drives UI, not the request body.
+ *  - M3.1-Flash-Preview — 1 000 000 ctx / 128 000 out, image input,
+ *            tool calling, native thinking (Anthropic-style), frontier
+ *            coding. Beta on the M Plan / MiniMax Code tier; served by
+ *            the same `minimax-m3` Anthropic sampler/thinking
+ *            branches, so the id intentionally matches the existing
+ *            `includes('minimax-m3')` predicates rather than spawning
+ *            a new branch.
  *  - M2.7 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2.5 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2   — 196 608 ctx, tool calling, OpenAI-style reasoning deltas,
@@ -139,6 +146,21 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     }),
     thinkingStyle: 'anthropic',
     detail: '1M ctx · 128K out · image + tools + thinking',
+  }),
+  Object.freeze({
+    id: 'MiniMax-M3.1-Flash-Preview',
+    displayName: 'M3.1 Flash Preview (MiniMax)',
+    vendor: MINIMAX_VENDOR,
+    family: MINIMAX_FAMILY,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: Object.freeze({
+      toolCalling: true,
+      imageInput: true,
+      thinking: true,
+    }),
+    thinkingStyle: 'anthropic',
+    detail: '1M ctx · 128K out · image + tools + thinking (preview)',
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',

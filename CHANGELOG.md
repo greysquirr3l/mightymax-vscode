@@ -4,6 +4,50 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.9.0] — 2026-09-30
+
+Minor release — two additive features, no breaking changes.
+
+- **MiniMax-M3.1-Flash-Preview catalog entry.** The frontier
+  multimodal Flash preview is now a first-class option in the
+  VS Code Chat model picker under `minimax/MiniMax-M3.1-Flash-Preview`.
+  Same 1M-token context, 128K output budget, image input, tool
+  calling, and Anthropic-style thinking as M3 — so it picks up
+  the existing `getModelSampler` / `getThinkingConfig` /
+  `provideTokenCount` branches via the `includes('minimax-m3')`
+  match. Beta access is gated to the M Plan / MiniMax Code tier;
+  the catalog entry advertises the model but calls /v1/messages
+  against your stored API key as usual. **Known gap:** the
+  docs note M3 and M3.1-Flash-Preview also accept _video_ input
+  via Anthropic content blocks; this PR only lights up image
+  input. Video input is a separate message-mapping change
+  (tracked as a follow-up; will require a new `videoInput`
+  capability flag).
+
+- **Hailuo-03 video generation (H3 / H3-Max).** Mighty Max wires
+  MiniMax's async video generation endpoint (`MiniMax-H3`,
+  `MiniMax-H3-Max`) as both an LM tool and a command-palette
+  entry. Run **Mighty Max: Generate Video (Hailuo-03)** from the
+  command palette, or let any M-series chat model invoke
+  `mightyMax_generateVideo` mid-turn. The pipeline runs
+  submit → poll → download → save on the same multi-slot
+  `KeyProvider` the chat provider uses, and surfaces the saved
+  MP4 via a notification with Open / Reveal / Copy-path actions.
+  H3-Max supports subject-reference video (up to 4 reference
+  images); H3 rejects it with a clear error. Four new settings:
+  `mightyMax.allowVideoToolInChat` (default `true`),
+  `mightyMax.mediaOutputDir`,
+  `mightyMax.videoPollIntervalMs` (default 5000),
+  `mightyMax.videoTimeoutMs` (default 600000). The
+  chat-model invocation is gated by `allowVideoToolInChat`; the
+  command is always available. Implementation lives in
+  `src/lib/domain/{media,media-capability,video-tool}.ts`,
+  `src/ports/{video-generator,media-artifact-store}.ts`, and
+  `src/adapters/{hailuo-video-adapter,local-media-store,
+generate-video-tool-adapter}.ts`.
+
 ## [0.8.2] — 2026-09-11
 
 User-facing fix for the "blank rectangles" symptom on sub-agent

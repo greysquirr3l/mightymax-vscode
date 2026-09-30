@@ -52,6 +52,12 @@ const EXCLUDED = new Set([
   // (the adapter imports `vscode.MarkdownString`, `vscode.ThemeColor`,
   // etc.). It runs under the stub runner, not here.
   'out/adapters/status-bar.test.js',
+  // T36 — the generate-video tool + command tests require `vscode`
+  // (the tool adapter wraps `vscode.lm.registerTool` / `LanguageModelToolResult`,
+  // and the command test references `vscode.QuickPickItem`). They run
+  // under the stub runner, not here.
+  'out/adapters/generate-video-tool-adapter.test.js',
+  'out/commands/generate-video-command.test.js',
 ]);
 
 // Recursive *.test.js collector. CI pins Node 20, which predates

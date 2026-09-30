@@ -9,7 +9,7 @@ MiniMax M-series language models for VS Code Chat (BYOK).
 ## What this is
 
 Mighty Max is a Visual Studio Code and VS Code Insiders extension that
-contributes the MiniMax M-series models (M3, M2.7, M2.5, M2, M1) to
+contributes the MiniMax M-series models (M3.1 Flash Preview, M3, M2.7, M2.5, M2, M1) to
 VS Code Chat via the Language Model Chat Provider API (finalized in
 VS Code 1.109). It registers under the `minimax` vendor and works as
 a complete drop-in backend for Ask, Edit, Inline Chat, Agent mode,
@@ -78,6 +78,7 @@ code --install-extension mighty-max.vsix
 1. Open the Chat panel (View → Chat or Ctrl+Alt+I / Cmd+Alt+I)
 2. Click the model picker dropdown
 3. Select a MiniMax model:
+   - `minimax:MiniMax-M3.1-Flash-Preview` — Frontier Flash preview (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
    - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
    - `minimax:MiniMax-M2.7` — High performance (1M context)
    - `minimax:MiniMax-M2.5` — Balanced (1M context)
@@ -223,7 +224,7 @@ Set this in your VS Code settings:
 }
 ```
 
-Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3).
+Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3, M3.1 Flash Preview).
 Utility requests are short, tool-less completions optimized for
 quick, focused responses.
 
@@ -250,6 +251,64 @@ options:
 - **Use Copilot's models (uses Copilot quota)** — writes
   `chat.byokUtilityModelDefault = "copilot"`. Utility tasks run on
   Copilot's hosted models.
+
+## Media generation (Hailuo-03 video)
+
+Mighty Max wires MiniMax's **Hailuo-03** video generation endpoint
+(`MiniMax-H3`, `MiniMax-H3-Max`) as both an **LM tool** and a
+**command palette entry**. Both run the same submit → poll →
+download → save pipeline.
+
+### Use the command
+
+1. Run **Mighty Max: Generate Video (Hailuo-03)** from the command
+   palette.
+2. Pick a model (`H3` or `H3-Max`), pick a duration (`6s` or `10s`),
+   type a prompt.
+3. Wait for the task to finish. MiniMax's `Success` state usually
+   arrives within 30–120s; the tool polls every `mightyMax.videoPollIntervalMs`
+   (default 5s) and gives up after `mightyMax.videoTimeoutMs`
+   (default 10 minutes).
+4. On success, a notification surfaces **Open**, **Reveal**, and
+   **Copy path** actions so you can jump straight into the video
+   player or your shell.
+
+### Use the chat tool
+
+Any M-series chat model can call `mightyMax_generateVideo` during a
+turn. The chat-model invocation is gated by `mightyMax.allowVideoToolInChat`
+(setting, default `true`) — flip it off to disable autonomous video
+spend while keeping the command working. The tool returns a single
+text result with the absolute path of the saved video; the model
+describes it back to you.
+
+### Reference shapes
+
+- **Text-to-video** — only `prompt` + `durationSec`. Both models.
+- **Image-to-video** — also pass `firstFrameImageUri`. Both models.
+- **Start-end-to-video** — also pass `lastFrameImageUri`. Both
+  models.
+- **Subject-reference video** — pass up to 4 `referenceImageUris`.
+  **H3-Max only.** H3 rejects this with a clear error; H3-Max
+  accepts it.
+
+### Where videos land
+
+By default, saved videos land in `<extension-storage>/media/` —
+the VS Code per-extension directory you don't normally see. Set
+`mightyMax.mediaOutputDir` to redirect (e.g. `/Users/me/Movies/mighty-max`).
+Add the path to your workspace `.gitignore`; generated MP4s are
+large and shouldn't be committed.
+
+### What this is NOT
+
+- **Not a chat model.** Hailuo-03 video lives on a different API
+  path (`/v2/video_generation`, not `/anthropic/v1/messages`) and
+  has no streaming completion. It's wired as a tool, not as a model
+  catalog entry.
+- **Not free.** H3 / H3-Max are pay-as-you-go. Set the API key in
+  **Mighty Max: Manage** as usual — the same key covers chat and
+  media.
 
 ## Bundled agents & skills
 
@@ -318,12 +377,13 @@ Mighty Max covers every BYOK-supported surface in VS Code Chat:
 | Custom/local agents            | ✅ Supported | User-authored agent definitions work with MiniMax models                                                                                                                                                              |
 | Utility tasks                  | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                                                                                                                       |
 | Tool calling                   | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                                                                                                                                  |
-| Image input                    | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                                        |
+| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                    |
 | Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning                                                                                                                                                  |
 | Multi-round agent loops        | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                                                                                                                       |
 | Single-box sub-agent rendering | ✅ Supported | Our custom `minimax_subagent` tool wraps VS Code's `runSubagent` and synthesizes the multi-part result into one `<task>` text block, so sub-agents our model invokes render as a single box (not N collapsible parts) |
 | Multi-key rotation             | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard                                                                                                       |
 | Token usage tracking           | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                                                                                                                                   |
+| Media generation (Hailuo-03)   | ✅ Tool-only | `mightyMax_generateVideo` LM tool + `Mighty Max: Generate Video` command. H3 and H3-Max; 6s/10s; image-to-video, start-end-to-video, and (H3-Max) subject-reference. Saved to disk; the chat model describes the result. |
 
 ## What Mighty Max does NOT provide
 

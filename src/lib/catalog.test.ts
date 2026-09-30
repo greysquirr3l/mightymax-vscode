@@ -33,7 +33,7 @@ import type { CatalogEntry } from './domain/catalog.js';
 const { formatTokenCount } = _internal;
 
 describe('BUILT_IN_CATALOG', () => {
-  it('ships the full M-series: M1, M2, M2.5, M2.7, M3', () => {
+  it('ships the full M-series: M1, M2, M2.5, M2.7, M3, M3.1-Flash-Preview', () => {
     const ids = BUILT_IN_CATALOG.map((e) => e.id);
     assert.deepEqual([...ids].sort(), [
       'MiniMax-M1',
@@ -41,6 +41,7 @@ describe('BUILT_IN_CATALOG', () => {
       'MiniMax-M2.5',
       'MiniMax-M2.7',
       'MiniMax-M3',
+      'MiniMax-M3.1-Flash-Preview',
     ]);
   });
 
@@ -71,6 +72,26 @@ describe('BUILT_IN_CATALOG', () => {
     assert.ok(m3, 'M3 entry must exist');
     assert.equal(m3.maxInputTokens, 1_000_000);
     assert.equal(m3.maxOutputTokens, 128_000);
+  });
+
+  it('M3.1-Flash-Preview advertises image + tools + thinking on the Anthropic endpoint', () => {
+    // MiniMax-M3.1-Flash-Preview is the frontier multimodal Flash
+    // preview released to M Plan / MiniMax Code users. It mirrors
+    // M3's 1M / 128K token budget and ships on the Anthropic-
+    // compatible endpoint only, so it picks up the same Anthropic
+    // thinking block + cache_control wiring. The "preview" suffix
+    // in the id is a MiniMax convention we keep verbatim so the
+    // Anthropic `includes('minimax-m3')` match in `getModelSampler`
+    // and `getThinkingConfig` picks it up.
+    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.ok(flash, 'M3.1-Flash-Preview entry must exist');
+    assert.equal(flash.maxInputTokens, 1_000_000);
+    assert.equal(flash.maxOutputTokens, 128_000);
+    assert.equal(flash.capabilities.toolCalling, true);
+    assert.equal(flash.capabilities.imageInput, true);
+    assert.equal(flash.capabilities.thinking, true);
+    assert.equal(flash.thinkingStyle, 'anthropic');
+    assert.match(flash.detail, /preview/);
   });
 
   it('M2.x uses OpenAI-style thinking deltas', () => {

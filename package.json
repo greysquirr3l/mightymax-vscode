@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -68,6 +68,11 @@
       {
         "command": "mightyMax.showDiagnostics",
         "title": "Mighty Max: Show Integration Diagnostics",
+        "category": "Mighty Max"
+      },
+      {
+        "command": "mightyMax.generateVideo",
+        "title": "Mighty Max: Generate Video (Hailuo-03)",
         "category": "Mighty Max"
       }
     ],
@@ -258,7 +263,35 @@
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,
-          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored \u2014 with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' \u2192 'Toggle auto-rotation' (the row label shows the current state: '\u25cf \u2026 ON' / '\u25cb \u2026 OFF').",
+          "description": "When enabled, if the active MiniMax API key is rejected by the API (401/403), Mighty Max transparently retries the request with the next healthy stored key. When disabled, the auth error surfaces to chat immediately and you must change keys manually via 'Mighty Max: Manage' (or the 'Manage API keys' submenu). Auto-rotation only matters when multiple keys are stored — with a single stored key the behavior is the same either way. Flip this setting in-app via 'Mighty Max: Manage' → 'Toggle auto-rotation' (the row label shows the current state: '● … ON' / '○ … OFF').",
+          "scope": "window"
+        },
+        "mightyMax.allowVideoToolInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the chat model to invoke the `mightyMax_generateVideo` tool (Hailuo-03 H3 / H3-Max video generation). When disabled, the chat provider drops the tool from the wire and only the `Mighty Max: Generate Video` command palette entry can run the pipeline. Use this to gate accidental autonomous video spend.",
+          "scope": "window"
+        },
+        "mightyMax.mediaOutputDir": {
+          "type": "string",
+          "default": "",
+          "description": "Directory downloaded videos land in. Defaults to the VS Code extension storage directory (`<storage>/media`). Set to an absolute path (e.g. `/Users/me/Movies/mighty-max`) to redirect. Add the path to your workspace `.gitignore` — generated MP4s are large and shouldn't be committed.",
+          "scope": "window"
+        },
+        "mightyMax.videoPollIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "maximum": 60000,
+          "description": "Polling interval for the Hailuo-03 video generation endpoint. Default 5s; range 1s–60s. MiniMax's `Success` state usually arrives within 30–120s of submission; smaller intervals use more of your 200-RPM budget, larger ones extend the perceived latency.",
+          "scope": "window"
+        },
+        "mightyMax.videoTimeoutMs": {
+          "type": "number",
+          "default": 600000,
+          "minimum": 30000,
+          "maximum": 1800000,
+          "description": "Total timeout for a single Hailuo-03 video generation pipeline run. Default 10 minutes; range 30s–30 minutes. Longer tasks surface as 'video generation timed out' errors; bump this if you queue 10s H3-Max subject-reference videos.",
           "scope": "window"
         }
       }
@@ -359,6 +392,67 @@
           "required": [
             "tool"
           ]
+        }
+      },
+      {
+        "name": "mightyMax_generateVideo",
+        "displayName": "Mighty Max: Generate Video",
+        "toolReferenceName": "mightyMax_generateVideo",
+        "userDescription": "Generate a short video using MiniMax H3 / H3-Max (Hailuo-03). Saves to disk and returns the path.",
+        "modelDescription": "Generate a short (6s or 10s) video using MiniMax's H3 or H3-Max video generation endpoint. Use the `firstFrameImageUri` / `lastFrameImageUri` inputs for image-to-video or start-end-to-video. Use `referenceImageUris` (H3-Max only, up to 4) for subject-reference video. The tool returns the absolute path of the saved video on disk; describe the result to the user.",
+        "tags": [
+          "minimax",
+          "media",
+          "video"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "enum": [
+                "MiniMax-H3",
+                "MiniMax-H3-Max"
+              ],
+              "description": "Which MiniMax video model to invoke. H3-Max supports subject-reference video (up to 4 reference images)."
+            },
+            "prompt": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "Plain-text description of the desired video. Required. Max 2000 characters."
+            },
+            "durationSec": {
+              "type": "number",
+              "enum": [
+                6,
+                10
+              ],
+              "description": "Output duration in seconds. 6 or 10."
+            },
+            "firstFrameImageUri": {
+              "type": "string",
+              "description": "Optional URI of the first-frame conditioning image (image-to-video). Max 2048 characters."
+            },
+            "lastFrameImageUri": {
+              "type": "string",
+              "description": "Optional URI of the last-frame conditioning image (start-end-to-video). Max 2048 characters."
+            },
+            "referenceImageUris": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 2048
+              },
+              "maxItems": 4,
+              "description": "Optional list of subject-reference image URIs (H3-Max only). At most 4 entries."
+            }
+          },
+          "required": [
+            "model",
+            "prompt",
+            "durationSec"
+          ],
+          "additionalProperties": false
         }
       }
     ]

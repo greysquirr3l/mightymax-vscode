@@ -108,6 +108,12 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   // T35: prefer our custom `minimax_subagent` over VS Code's
   // `runSubagent` (see header comment).
   'minimax_subagent',
+  // T36: the Hailuo-03 video generator. Pinned so the chat model
+  // always has access regardless of relevance score; the actual
+  // invocation is gated by `mightyMax.allowVideoToolInChat` at
+  // registration time (the prepareInvocation throws when the
+  // setting is `false`, so the chat host never sees the tool fire).
+  'mightyMax_generateVideo',
   'manage_todo_list',
 ];
 

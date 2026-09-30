@@ -198,6 +198,29 @@ class ThemeColor {
     this.id = id;
   }
 }
+
+/**
+ * Minimal `vscode.Uri` stub — T36 added the `mightyMax.generateVideo`
+ * command which opens / reveals the saved video via
+ * `vscode.Uri.file(absolutePath)`. Tests exercise that path; the
+ * stub only needs to round-trip the `fsPath` field.
+ */
+class Uri {
+  constructor(scheme, fsPath) {
+    this.scheme = scheme;
+    this.fsPath = fsPath;
+    this.path = fsPath;
+  }
+  static file(fsPath) {
+    return new Uri('file', fsPath);
+  }
+  static parse(value) {
+    return new Uri('file', value);
+  }
+  toString() {
+    return `${this.scheme}://${this.fsPath}`;
+  }
+}
 const StatusBarAlignment = Object.freeze({ Left: 1, Right: 2 });
 
 const vscodeStub = {
@@ -229,6 +252,15 @@ const vscodeStub = {
       dispose() {},
     }),
   },
+  env: {
+    clipboard: {
+      async writeText(_value) {
+        // No-op stub — the `Copy path` branch of the generate-video
+        // command exercises this; tests just need the call to resolve.
+      },
+    },
+  },
+  Uri,
   extensions: { getExtension: () => undefined },
 };
 

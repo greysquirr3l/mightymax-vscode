@@ -18,11 +18,33 @@ project adheres to [Semantic Versioning](https://semver.org/).
   match. Beta access is gated to the M Plan / MiniMax Code tier;
   the catalog entry advertises the model but calls /v1/messages
   against your stored API key as usual. **Known gap:** the
-  docs note M3 and M3.1-Flash-Preview also accept *video* input
+  docs note M3 and M3.1-Flash-Preview also accept _video_ input
   via Anthropic content blocks; this PR only lights up image
   input. Video input is a separate message-mapping change
   (tracked as a follow-up; will require a new `videoInput`
   capability flag).
+
+- **Hailuo-03 video generation (H3 / H3-Max).** Mighty Max wires
+  MiniMax's async video generation endpoint (`MiniMax-H3`,
+  `MiniMax-H3-Max`) as both an LM tool and a command-palette
+  entry. Run **Mighty Max: Generate Video (Hailuo-03)** from the
+  command palette, or let any M-series chat model invoke
+  `mightyMax_generateVideo` mid-turn. The pipeline runs
+  submit → poll → download → save on the same multi-slot
+  `KeyProvider` the chat provider uses, and surfaces the saved
+  MP4 via a notification with Open / Reveal / Copy-path actions.
+  H3-Max supports subject-reference video (up to 4 reference
+  images); H3 rejects it with a clear error. Four new settings:
+  `mightyMax.allowVideoToolInChat` (default `true`),
+  `mightyMax.mediaOutputDir`,
+  `mightyMax.videoPollIntervalMs` (default 5000),
+  `mightyMax.videoTimeoutMs` (default 600000). The
+  chat-model invocation is gated by `allowVideoToolInChat`; the
+  command is always available. Implementation lives in
+  `src/lib/domain/{media,media-capability,video-tool}.ts`,
+  `src/ports/{video-generator,media-artifact-store}.ts`, and
+  `src/adapters/{hailuo-video-adapter,local-media-store,
+  generate-video-tool-adapter}.ts`.
 
 ## [0.8.2] — 2026-09-11
 

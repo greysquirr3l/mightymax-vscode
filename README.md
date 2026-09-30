@@ -9,7 +9,7 @@ MiniMax M-series language models for VS Code Chat (BYOK).
 ## What this is
 
 Mighty Max is a Visual Studio Code and VS Code Insiders extension that
-contributes the MiniMax M-series models (M3, M2.7, M2.5, M2, M1) to
+contributes the MiniMax M-series models (M3.1 Flash Preview, M3, M2.7, M2.5, M2, M1) to
 VS Code Chat via the Language Model Chat Provider API (finalized in
 VS Code 1.109). It registers under the `minimax` vendor and works as
 a complete drop-in backend for Ask, Edit, Inline Chat, Agent mode,
@@ -78,6 +78,7 @@ code --install-extension mighty-max.vsix
 1. Open the Chat panel (View → Chat or Ctrl+Alt+I / Cmd+Alt+I)
 2. Click the model picker dropdown
 3. Select a MiniMax model:
+   - `minimax:MiniMax-M3.1-Flash-Preview` — Frontier Flash preview (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
    - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
    - `minimax:MiniMax-M2.7` — High performance (1M context)
    - `minimax:MiniMax-M2.5` — Balanced (1M context)
@@ -223,7 +224,7 @@ Set this in your VS Code settings:
 }
 ```
 
-Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3).
+Replace `MiniMax-M3` with any MiniMax model (M1, M2, M2.5, M2.7, M3, M3.1 Flash Preview).
 Utility requests are short, tool-less completions optimized for
 quick, focused responses.
 
@@ -318,7 +319,7 @@ Mighty Max covers every BYOK-supported surface in VS Code Chat:
 | Custom/local agents            | ✅ Supported | User-authored agent definitions work with MiniMax models                                                                                                                                                              |
 | Utility tasks                  | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                                                                                                                       |
 | Tool calling                   | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                                                                                                                                  |
-| Image input                    | ✅ Supported | M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                                        |
+| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                   |
 | Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning                                                                                                                                                  |
 | Multi-round agent loops        | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                                                                                                                       |
 | Single-box sub-agent rendering | ✅ Supported | Our custom `minimax_subagent` tool wraps VS Code's `runSubagent` and synthesizes the multi-part result into one `<task>` text block, so sub-agents our model invokes render as a single box (not N collapsible parts) |

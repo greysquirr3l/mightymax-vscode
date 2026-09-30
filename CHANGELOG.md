@@ -4,6 +4,26 @@ All notable changes to Mighty Max are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **MiniMax-M3.1-Flash-Preview catalog entry.** The frontier
+  multimodal Flash preview is now a first-class option in the
+  VS Code Chat model picker under `minimax/MiniMax-M3.1-Flash-Preview`.
+  Same 1M-token context, 128K output budget, image input, tool
+  calling, and Anthropic-style thinking as M3 — so it picks up
+  the existing `getModelSampler` / `getThinkingConfig` /
+  `provideTokenCount` branches via the `includes('minimax-m3')`
+  match. Beta access is gated to the M Plan / MiniMax Code tier;
+  the catalog entry advertises the model but calls /v1/messages
+  against your stored API key as usual. **Known gap:** the
+  docs note M3 and M3.1-Flash-Preview also accept *video* input
+  via Anthropic content blocks; this PR only lights up image
+  input. Video input is a separate message-mapping change
+  (tracked as a follow-up; will require a new `videoInput`
+  capability flag).
+
 ## [0.8.2] — 2026-09-11
 
 User-facing fix for the "blank rectangles" symptom on sub-agent

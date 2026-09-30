@@ -6,7 +6,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
+## [0.9.0] — 2026-09-30
+
+Minor release — two additive features, no breaking changes.
 
 - **MiniMax-M3.1-Flash-Preview catalog entry.** The frontier
   multimodal Flash preview is now a first-class option in the
@@ -44,7 +46,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `src/lib/domain/{media,media-capability,video-tool}.ts`,
   `src/ports/{video-generator,media-artifact-store}.ts`, and
   `src/adapters/{hailuo-video-adapter,local-media-store,
-  generate-video-tool-adapter}.ts`.
+generate-video-tool-adapter}.ts`.
 
 ## [0.8.2] — 2026-09-11
 

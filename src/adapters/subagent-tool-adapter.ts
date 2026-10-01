@@ -30,6 +30,7 @@ import * as vscode from 'vscode';
 import type { Logger } from '../ports/logger.js';
 import {
   buildSubAgentToolResult,
+  buildSubAgentDescriptor,
   MINIMAX_SUBAGENT_TOOL,
   validateSubAgentInput,
 } from '../lib/domain/subagent-tool.js';
@@ -104,17 +105,43 @@ async function invokeUnderlyingRunSubAgent(
 }
 
 /**
- * Register the `minimax_subagent` tool with VS Code's LM host.
- * The returned disposable unregisters on extension deactivation;
- * `extension.ts` calls this at activation and pushes the disposable
- * onto the extension context's subscriptions.
+ * Build the object handed to `vscode.lm.registerTool`.
+ *
+ * T39: the tool used to be registered as a bare `{ invoke }`. The
+ * `LanguageModelTool` interface in `@types/vscode` declares only
+ * `invoke` and `prepareInvocation`, so that type-checks — but the
+ * runtime ALSO reads `description` and `inputSchema` off the
+ * implementation object in order to advertise the tool to the model
+ * (the same escape hatch `mcp-search-adapter.ts` documents at its
+ * own `registerTool` call). With neither field present the tool was
+ * silently invisible: a captured 0.9.2 session shows three
+ * `runSubagent` emissions, zero `minimax_subagent`, and the name
+ * absent from every logged tool array. T35's "prefer our wrapper"
+ * had never actually run.
+ *
+ * The shape is split from `registerSubAgentTool` so the contract is
+ * testable without importing `vscode` — the returned type carries
+ * the extra fields structurally, and the `vscode.lm.registerTool`
+ * call is the only part that needs the host.
+ *
+ * `description` and `inputSchema` come straight from
+ * `buildSubAgentDescriptor()`, the same descriptor the unit tests
+ * pin and that `validateSubAgentInput` mirrors, so the advertised
+ * schema and the validated schema cannot drift apart.
  */
-export function registerSubAgentTool(deps: SubAgentToolAdapterDeps): vscode.Disposable {
-  const tool: vscode.LanguageModelTool<Record<string, unknown>> = {
-    invoke: async (
-      options: vscode.LanguageModelToolInvocationOptions<Record<string, unknown>>,
-      token: vscode.CancellationToken,
-    ): Promise<vscode.LanguageModelToolResult> => {
+export function buildRegisteredSubAgentTool(deps: SubAgentToolAdapterDeps): {
+  description: string;
+  inputSchema: unknown;
+  invoke: (
+    options: vscode.LanguageModelToolInvocationOptions<Record<string, unknown>>,
+    token: vscode.CancellationToken,
+  ) => Promise<vscode.LanguageModelToolResult>;
+} {
+  const descriptor = buildSubAgentDescriptor();
+  return {
+    description: descriptor.description,
+    inputSchema: descriptor.inputSchema,
+    invoke: async (options, token) => {
       const validation = validateSubAgentInput(options.input);
       if (!validation.ok || validation.value === undefined) {
         deps.logger.info('minimax_subagent rejected', { reason: validation.errorMessage });
@@ -144,5 +171,21 @@ export function registerSubAgentTool(deps: SubAgentToolAdapterDeps): vscode.Disp
       return asToolResult(text);
     },
   };
-  return vscode.lm.registerTool(MINIMAX_SUBAGENT_TOOL, tool);
+}
+
+/**
+ * Register the `minimax_subagent` tool with VS Code's LM host.
+ * The returned disposable unregisters on extension deactivation;
+ * `extension.ts` calls this at activation and pushes the disposable
+ * onto the extension context's subscriptions.
+ */
+export function registerSubAgentTool(deps: SubAgentToolAdapterDeps): vscode.Disposable {
+  const tool = buildRegisteredSubAgentTool(deps);
+  // The `registerTool` typed signature only accepts
+  // `LanguageModelTool<T>`, which omits `description` / `inputSchema`.
+  // Those fields are read by the runtime for tool advertisement, so
+  // the cast is deliberate and documented rather than a shortcut —
+  // without it the tool is registered but never shown to the model.
+  const implementation = tool as unknown as vscode.LanguageModelTool<Record<string, unknown>>;
+  return vscode.lm.registerTool(MINIMAX_SUBAGENT_TOOL, implementation);
 }

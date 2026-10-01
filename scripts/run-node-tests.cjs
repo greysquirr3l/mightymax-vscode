@@ -63,6 +63,11 @@ const EXCLUDED = new Set([
   // `vscode.QuickPickItem` / `vscode.Uri`.
   'out/adapters/generate-image-tool-adapter.test.js',
   'out/commands/generate-image-command.test.js',
+  // T39 — the sub-agent tool adapter test requires `vscode` (the
+  // adapter does `import * as vscode from 'vscode'` at module scope,
+  // and its `invoke` return type is `vscode.LanguageModelToolResult`).
+  // It runs under the stub runner, not here.
+  'out/adapters/subagent-tool-adapter.test.js',
 ]);
 
 // Recursive *.test.js collector. CI pins Node 20, which predates

@@ -71,4 +71,13 @@ require('../out/commands/generate-image-command.test.js');
 require('../out/adapters/status-bar.test.js');
 require('../out/adapters/generate-video-tool-adapter.test.js');
 require('../out/adapters/generate-image-tool-adapter.test.js');
+// T39: imports `./subagent-tool-adapter.js`, which does
+// `import * as vscode from 'vscode'` at module scope. The test
+// itself only exercises `buildRegisteredSubAgentTool`, which touches
+// no `vscode.*` member — but the import has to resolve, so this
+// file needs the stub installed. It deliberately does NOT call
+// `registerSubAgentTool` (that would need `vscode.lm`, which the
+// stub does not implement); the registration contract is asserted on
+// the object handed to `registerTool`, not on the host call.
+require('../out/adapters/subagent-tool-adapter.test.js');
 require('../out/test/tool-filtering.test.js');

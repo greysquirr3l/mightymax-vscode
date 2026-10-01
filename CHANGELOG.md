@@ -48,8 +48,8 @@ capability, the image-01 generator, and repo visibility for
   Two spec details worth calling out:
 
   - The adapter requests `response_format: "base64"` rather than
-    the default `"url"`. The spec warns *"⚠️ Note: url expires in
-    24 hours"*, and the artifact store wants bytes on disk, so
+    the default `"url"`. The spec warns _"⚠️ Note: url expires in
+    24 hours"_, and the artifact store wants bytes on disk, so
     this avoids a second round-trip and removes the expiry window.
   - `aspectRatio` combined with `width`/`height` is **rejected**
     rather than resolved. The spec says `aspect_ratio` "takes

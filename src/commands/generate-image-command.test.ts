@@ -9,10 +9,7 @@ import { describe, it } from 'node:test';
 import type * as vscode from 'vscode';
 
 import { runGenerateImageCommand } from './generate-image-command.js';
-import type {
-  GenerateImageCommandDeps,
-  GenerateImageCommandUi,
-} from './generate-image-command.js';
+import type { GenerateImageCommandDeps, GenerateImageCommandUi } from './generate-image-command.js';
 import type {
   MediaArtifactRef,
   MediaArtifactStore,

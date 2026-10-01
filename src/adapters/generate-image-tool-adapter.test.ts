@@ -96,7 +96,11 @@ describe('runGenerateImagePipeline', () => {
       { bytes: new Uint8Array([3]), mime: 'image/png' },
     ]);
     const { d, store } = deps({ imageGenerator: gen });
-    const r = await runGenerateImagePipeline({ ...valid, count: 3 }, d, new AbortController().signal);
+    const r = await runGenerateImagePipeline(
+      { ...valid, count: 3 },
+      d,
+      new AbortController().signal,
+    );
     assert.equal(r.absolutePaths.length, 3);
     assert.equal(store.writes.length, 3);
     assert.equal(r.totalSizeBytes, 3);
@@ -104,7 +108,11 @@ describe('runGenerateImagePipeline', () => {
 
   it('forwards the normalized request to the generator', async () => {
     const { d, gen } = deps();
-    await runGenerateImagePipeline({ ...valid, aspectRatio: '16:9' }, d, new AbortController().signal);
+    await runGenerateImagePipeline(
+      { ...valid, aspectRatio: '16:9' },
+      d,
+      new AbortController().signal,
+    );
     assert.equal(gen.seen[0]?.aspectRatio, '16:9');
   });
 
@@ -126,11 +134,14 @@ describe('runGenerateImagePipeline', () => {
   });
 
   it('translates a typed generator error into a readable message', async () => {
-    const gen = new FakeGenerator(new ImageGenerationError('sensitive', undefined, 'guard tripped'));
+    const gen = new FakeGenerator(
+      new ImageGenerationError('sensitive', undefined, 'guard tripped'),
+    );
     const { d } = deps({ imageGenerator: gen });
     await assert.rejects(
       runGenerateImagePipeline(valid, d, new AbortController().signal),
-      (e: unknown) => e instanceof Error && /sensitive/.test(e.message) && /guard tripped/.test(e.message),
+      (e: unknown) =>
+        e instanceof Error && /sensitive/.test(e.message) && /guard tripped/.test(e.message),
     );
   });
 });

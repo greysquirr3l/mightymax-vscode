@@ -258,15 +258,15 @@ Mighty Max wires two of MiniMax's non-chat media APIs — **Hailuo-03
 video** (`MiniMax-H3`, `MiniMax-H3-Max`) and **image-01** — as both
 an **LM tool** and a **command palette entry**.
 
-| | Video | Image |
-| --- | --- | --- |
-| Models | `MiniMax-H3`, `MiniMax-H3-Max` | `image-01` |
-| Command | `Mighty Max: Generate Video (Hailuo-03)` | `Mighty Max: Generate Image (image-01)` |
-| LM tool | `mightyMax_generateVideo` | `mightyMax_generateImage` |
-| API shape | async (submit → poll → download) | synchronous |
-| Inputs | prompt, duration, first/last frame, subject refs | prompt, aspect ratio or exact W×H, count, seed |
-| Output | 6s / 10s MP4 | PNG |
-| Chat-tool gate | `mightyMax.allowVideoToolInChat` | `mightyMax.allowImageToolInChat` |
+|                | Video                                            | Image                                          |
+| -------------- | ------------------------------------------------ | ---------------------------------------------- |
+| Models         | `MiniMax-H3`, `MiniMax-H3-Max`                   | `image-01`                                     |
+| Command        | `Mighty Max: Generate Video (Hailuo-03)`         | `Mighty Max: Generate Image (image-01)`        |
+| LM tool        | `mightyMax_generateVideo`                        | `mightyMax_generateImage`                      |
+| API shape      | async (submit → poll → download)                 | synchronous                                    |
+| Inputs         | prompt, duration, first/last frame, subject refs | prompt, aspect ratio or exact W×H, count, seed |
+| Output         | 6s / 10s MP4                                     | PNG                                            |
+| Chat-tool gate | `mightyMax.allowVideoToolInChat`                 | `mightyMax.allowImageToolInChat`               |
 
 Both share the same `KeyProvider` and `MediaArtifactStore`, so a
 video and an image generated in the same session land in the same
@@ -338,7 +338,7 @@ are large and shouldn't be committed.
   the API key in **Mighty Max: Manage** as usual — the same key
   covers chat and media.
 
-### Not video *input*
+### Not video _input_
 
 Video **output** (above) is supported. Video **input** — attaching a
 clip and asking a question about it — works on M3 and M3.1 Flash
@@ -419,13 +419,13 @@ Mighty Max covers every BYOK-supported surface in VS Code Chat:
 | Custom/local agents            | ✅ Supported | User-authored agent definitions work with MiniMax models                                                                                                                                                                 |
 | Utility tasks                  | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                                                                                                                          |
 | Tool calling                   | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                                                                                                                                     |
-| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                       || Video input                    | ✅ Partial | M3.1 Flash Preview and M3 accept video via Anthropic content blocks. On M2.x a video attachment is dropped with a warning rather than sent.                                                                               || Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning. M3.1 Flash always thinks — tune depth with `mightyMax.m31ThinkingEffort`.                                                                          |
+| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                       |     | Video input | ✅ Partial | M3.1 Flash Preview and M3 accept video via Anthropic content blocks. On M2.x a video attachment is dropped with a warning rather than sent. |     | Thinking blocks | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning. M3.1 Flash always thinks — tune depth with `mightyMax.m31ThinkingEffort`. |
 | Multi-round agent loops        | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                                                                                                                          |
 | Single-box sub-agent rendering | ✅ Supported | Our custom `minimax_subagent` tool wraps VS Code's `runSubagent` and synthesizes the multi-part result into one `<task>` text block, so sub-agents our model invokes render as a single box (not N collapsible parts)    |
 | Multi-key rotation             | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard                                                                                                          |
 | Token usage tracking           | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                                                                                                                                      |
 | Media generation (Hailuo-03)   | ✅ Tool-only | `mightyMax_generateVideo` LM tool + `Mighty Max: Generate Video` command. H3 and H3-Max; 6s/10s; image-to-video, start-end-to-video, and (H3-Max) subject-reference. Saved to disk; the chat model describes the result. |
-| Media generation (image-01)    | ✅ Tool-only | `mightyMax_generateImage` LM tool + `Mighty Max: Generate Image` command. Synchronous; 8 aspect ratios or exact width/height; 1–9 images; reproducible via `seed`. Shares the video pipeline's output directory. |
+| Media generation (image-01)    | ✅ Tool-only | `mightyMax_generateImage` LM tool + `Mighty Max: Generate Image` command. Synchronous; 8 aspect ratios or exact width/height; 1–9 images; reproducible via `seed`. Shares the video pipeline's output directory.         |
 
 ## What Mighty Max does NOT provide
 

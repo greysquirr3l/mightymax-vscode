@@ -526,11 +526,6 @@ export function mapRequestToMiniMax(
     }
   }
 
-  // Reconciliation pass: ADOPT orphan tool-results rather than drop
-  // them. Anthropic rejects a `tool_result` whose `tool_use_id` has
-  // no matching assistant `tool_use` (error 2013, "invalid params,
-  // tool result's tool id not found"). The previous behavior
-  // silently dropped the orphan and emitted an
   // Tool-result truncation (T27 perf): cap each role:'tool'
   // content to DEFAULT_TOOL_RESULT_MAX_CHARS chars so a long
   // history can't bloat the wire. Done before the orphan

@@ -18,6 +18,7 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import {
   buildCallIdToToolNameMap,
   collapseSubAgentToolResultsInDomain,
+  isSubAgentToolName,
   synthesizeSubAgentOutput,
   type SubAgentPart,
   type SubAgentState,
@@ -359,6 +360,40 @@ describe('collapseSubAgentToolResultsInDomain', () => {
     const resultPart = collapsed[1]!.content.find((p) => p.type === 'tool-result');
     if (resultPart === undefined || resultPart.type !== 'tool-result') return;
     strictEqual(resultPart.toolResult.content.length, 1, 'collapsed to a single content entry');
+  });
+
+  it('also collapses the namespaced `agent/runSubagent` form', () => {
+    // T37: VS Code names the built-in `agent/runSubagent` in
+    // current versions. An exact-name membership check misses it
+    // and the multi-part result renders as a wall of blank boxes
+    // — the exact failure T35 exists to prevent.
+    const messages: ReadonlyArray<ChatMessage> = [
+      {
+        role: 'assistant',
+        content: [toolCallPart('call_ns', 'agent/runSubagent')],
+      },
+      {
+        role: 'user',
+        content: [toolResultPart('call_ns', ['child said hi'])],
+      },
+    ];
+    const map = buildCallIdToToolNameMap(messages);
+    const collapsed = collapseSubAgentToolResultsInDomain(messages, map);
+    const resultPart = collapsed[1]!.content.find((p) => p.type === 'tool-result');
+    if (resultPart === undefined || resultPart.type !== 'tool-result') return;
+    strictEqual(resultPart.toolResult.content.length, 1, 'collapsed to a single content entry');
+    const text = resultPart.toolResult.content[0] as string;
+    ok(text.startsWith('<task id="call_ns"'), 'namespaced name collapses like the bare one');
+  });
+
+  it('does NOT over-match: a look-alike tool name keeps its native rendering', () => {
+    ok(isSubAgentToolName('runSubagent'));
+    ok(isSubAgentToolName('agent/runSubagent'));
+    ok(isSubAgentToolName('vscode/runSubagent'));
+    ok(isSubAgentToolName('minimax_subagent'));
+    ok(!isSubAgentToolName('runSubagent_report'), 'segment match, not bare substring');
+    ok(!isSubAgentToolName('subagent'), 'a different tool');
+    ok(!isSubAgentToolName('read_file'));
   });
 
   it('does NOT collapse non-sub-agent tool results', () => {

@@ -6,6 +6,51 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-10-01
+
+Patch release. One theme: sub-agent delegation is structurally
+guaranteed rather than incidentally available. Three separate paths
+could each drop VS Code's built-in sub-agent tool on the floor, and
+all three are now closed.
+
+### Fixed
+
+- **Sub-agent delegation can no longer be evicted by the tool cap.** T35
+  removed `runSubagent` from the always-include pin list so the model
+  would prefer our `minimax_subagent` wrapper (single chat box
+  instead of a wall of blank boxes). That made the built-in sub-agent
+  tool _droppable_: on an install with 80+ tools, `mightyMax.maxTools`
+  could remove sub-agent delegation for a whole turn with no visible
+  error. "Prefer our wrapper" is a description-ordering concern; "the
+  built-in is always available" is a correctness one, so both are now
+  reserved. `runSubagent` is pinned as a substring entry, which
+  covers every name shape VS Code has shipped — bare `runSubagent`
+  and the namespaced `agent/runSubagent`. The pin is also
+  **unconditional**: a user-configured `mightyMax.alwaysIncludeTools`
+  replaces the default list wholesale, so the provider force-merges
+  the sub-agent pair into the effective config on every request
+  (same precedent as the MCP discovery tools). A user who trims
+  their always-include list still keeps sub-agent delegation.
+
+- **The contributed default for `mightyMax.alwaysIncludeTools` was
+  stale.** VS Code returns the value from `package.json` when the user
+  has not set the setting, so the domain constant
+  (`DEFAULT_ALWAYS_INCLUDE_TOOLS`) was only used by the test suite —
+  production ran on a 6-entry list missing `vscode_`, `view_image`,
+  `runSubagent`, `minimax_subagent`, `manage_todo_list`, and both
+  media-generator tools. The manifest default is now in sync with the
+  domain constant, and the provider's stub-only fallback reads from
+  that constant instead of a hand-copied duplicate.
+
+- **Sub-agent results from the namespaced tool are collapsed again.**
+  The result-collapsing step matched the tool name by exact
+  membership, so `agent/runSubagent` results were passed through
+  un-collapsed and rendered as a wall of blank boxes — the exact
+  failure T35 exists to prevent. Matching is now segment-aware
+  (`runSubagent`, or `…/runSubagent`), which covers the namespaced
+  form without over-matching a look-alike such as
+  `runSubagent_report`.
+
 ## [0.9.2] — 2026-09-30
 
 Minor release. Closes out the 0.9.x follow-ups: the `videoInput`

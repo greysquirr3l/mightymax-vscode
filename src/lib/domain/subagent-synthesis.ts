@@ -220,6 +220,31 @@ export const SUB_AGENT_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Family-aware membership test for {@link SUB_AGENT_TOOL_NAMES}.
+ *
+ * The exact-name Set is not sufficient on its own: VS Code has
+ * shipped the built-in sub-agent tool under both the bare name
+ * (`runSubagent`) and a server-qualified form
+ * (`agent/runSubagent`). An exact-membership check silently stops
+ * collapsing the second shape, so the multi-part result goes back
+ * to the chat widget as a wall of blank boxes — the exact failure
+ * T35 exists to prevent.
+ *
+ * We match on whole segments, not a bare substring: the name must
+ * be exactly a member, or end in `/<member>`. That covers the
+ * namespaced forms without also swallowing a hypothetical
+ * `runSubagent_report` (which is a different tool and must keep
+ * its native rendering).
+ */
+export function isSubAgentToolName(toolName: string): boolean {
+  if (SUB_AGENT_TOOL_NAMES.has(toolName)) return true;
+  for (const name of SUB_AGENT_TOOL_NAMES) {
+    if (toolName.endsWith(`/${name}`)) return true;
+  }
+  return false;
+}
+
+/**
  * Walk `messages` and build a map of `callId → toolName` from the
  * assistant turns' `LanguageModelToolCallPart`s. Pure — operates on
  * already-converted domain messages, so the call sites don't need
@@ -281,7 +306,7 @@ export function collapseSubAgentToolResultsInDomain(
     const newContent: ChatMessageContentPart[] = msg.content.map((part) => {
       if (part.type !== 'tool-result') return part;
       const toolName = callIdToToolName.get(part.toolResult.callId);
-      if (toolName === undefined || !SUB_AGENT_TOOL_NAMES.has(toolName)) return part;
+      if (toolName === undefined || !isSubAgentToolName(toolName)) return part;
       mutated = true;
       return {
         type: 'tool-result',

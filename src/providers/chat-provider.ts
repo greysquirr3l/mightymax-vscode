@@ -39,6 +39,8 @@ import {
   filterTools,
   discoverMcpTools,
   selectMcpToolsToInclude,
+  DEFAULT_ALWAYS_INCLUDE_TOOLS,
+  MANDATORY_ALWAYS_INCLUDE_TOOLS,
   type ToolFilterConfig,
 } from '../lib/domain/tool-filter.js';
 import {
@@ -375,6 +377,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       ...filterConfig,
       alwaysIncludeTools: [
         ...mcpSearchTools,
+        // T37: sub-agent delegation is reserved unconditionally —
+        // a user who trimmed `mightyMax.alwaysIncludeTools` must
+        // not lose it. Ordered FIRST so `filterTools` emits the
+        // sub-agent tools before the rest of the pinned set when
+        // the budget is exhausted.
+        ...MANDATORY_ALWAYS_INCLUDE_TOOLS,
         ...filterConfig.alwaysIncludeTools,
         ...mcpSelection.included,
       ],
@@ -1401,18 +1409,15 @@ function readToolFilterConfig(): ToolFilterConfig {
     enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
     maxTools: config.get?.<number>('maxTools', 60) ?? 60,
     alwaysIncludeTools:
-      config.get?.<string[]>('alwaysIncludeTools', [
-        'copilot_',
-        'vscode_',
-        'run_in_terminal',
-        'apply_patch',
-        'grep_search',
-        'file_search',
-        'semantic_search',
-        'view_image',
-        'runSubagent',
-        'manage_todo_list',
-      ]) ?? [],
+      config.get?.<string[]>(
+        'alwaysIncludeTools',
+        // Fallback only fires when the host exposes no settings
+        // API at all (unit-test stub). Read from the domain
+        // constant so the two cannot drift — this list used to
+        // be a hand-copied duplicate that lost `runSubagent`,
+        // `minimax_subagent`, and the media tools.
+        [...DEFAULT_ALWAYS_INCLUDE_TOOLS],
+      ) ?? [],
   };
 }
 

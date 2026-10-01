@@ -19,6 +19,7 @@ import {
   DEFAULT_ENABLE_SMART_TOOL_FILTERING,
   DEFAULT_MAX_TOOLS,
   DEFAULT_MCP_MAX_TOOLS,
+  MANDATORY_ALWAYS_INCLUDE_TOOLS,
   discoverMcpTools,
   matchesAlwaysInclude,
   filterTools,
@@ -60,25 +61,92 @@ describe('T21 default tool-filter config', () => {
     //     (vscode_askQuestions, vscode_listCodeUsages,
     //      vscode_renameSymbol, vscode_searchExtensions_internal)
     //   - the bare-name agent-loop tools (view_image,
-    //     minimax_subagent (T35), manage_todo_list)
+    //     runSubagent / minimax_subagent, manage_todo_list)
     // The `copilot_` prefix alone does not reach any of these;
     // dropping them silently breaks agent-mode on a populated
     // toolset (see CHANGELOG 0.7.6 — Fixed).
     //
-    // T35: `runSubagent` was removed from the pin list and
-    // `minimax_subagent` was added in its place. Our custom tool
-    // synthesizes the multi-part sub-agent result into one `<task>`
-    // text block so the chat widget renders a single box. See
-    // `tasks/T35-subagent-single-part-rendering.md` for the
+    // T35: `minimax_subagent` is our custom single-box wrapper.
+    // See `tasks/T35-subagent-single-part-rendering.md` for the
     // honest limitation around user-@-invoked sub-agents.
+    //
+    // T37: `runSubagent` was removed in T35 and is pinned AGAIN.
+    // "Prefer our wrapper" is a description-ordering concern;
+    // "the built-in is always available" is a correctness one.
+    // With 80+ tools installed the cap could evict sub-agent
+    // delegation for a whole turn. Both stay pinned.
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('vscode_'));
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('view_image'));
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('minimax_subagent'));
     ok(
-      !DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('runSubagent'),
-      'runSubagent removed in favor of minimax_subagent',
+      DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('runSubagent'),
+      'runSubagent re-pinned: the built-in sub-agent tool is never evictable',
     );
     ok(DEFAULT_ALWAYS_INCLUDE_TOOLS.includes('manage_todo_list'));
+  });
+
+  it('T37 — the runSubagent pin covers every name shape VS Code ships', () => {
+    // Bare 1.97–1.104 name.
+    ok(matchesAlwaysInclude('runSubagent', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+    // Current namespaced form. The pin is a SUBSTRING pin, not a
+    // prefix pin, so the `agent/` prefix does not defeat it.
+    ok(matchesAlwaysInclude('agent/runSubagent', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+    // Hypothetical server-qualified form.
+    ok(matchesAlwaysInclude('vscode/runSubagent', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+    // Our custom tool is pinned by its own exact entry.
+    ok(matchesAlwaysInclude('minimax_subagent', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+    // The pin must not over-match unrelated tool names.
+    ok(!matchesAlwaysInclude('run_subagent_helper_foo', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+    ok(!matchesAlwaysInclude('subagent', DEFAULT_ALWAYS_INCLUDE_TOOLS));
+  });
+
+  it('T37 — the sub-agent tool survives the cap on an over-budget toolset', () => {
+    // 200 MCP tools, cap of 5. Without the pin,
+    // `agent/runSubagent` lands in `dropped` and the model loses
+    // sub-agent delegation for the turn.
+    const flood = Array.from({ length: 200 }, (_, i) => ({
+      name: `mcp_server_${i}_tool_${i}`,
+    }));
+    const tools = [...flood, { name: 'agent/runSubagent' }, { name: 'minimax_subagent' }];
+    const out = filterTools(tools, [], {
+      enableSmartToolFiltering: true,
+      maxTools: 5,
+      alwaysIncludeTools: DEFAULT_ALWAYS_INCLUDE_TOOLS,
+    });
+    ok(out.kept.includes('agent/runSubagent'), 'built-in sub-agent tool must survive the cap');
+    ok(out.kept.includes('minimax_subagent'), 'custom sub-agent tool must survive the cap');
+    ok(out.dropped.includes('agent/runSubagent') === false, 'not reported as dropped');
+  });
+
+  it('T37 — the mandatory set holds only the sub-agent pair', () => {
+    // Membership means "the agent loop is structurally incomplete
+    // without this". A tool that merely renders nicer does not
+    // qualify — that belongs in the configurable default list.
+    deepStrictEqual(
+      [...MANDATORY_ALWAYS_INCLUDE_TOOLS].sort(),
+      ['minimax_subagent', 'runSubagent'],
+      'mandatory pins are exactly the sub-agent family',
+    );
+  });
+
+  it('T37 — a trimmed user setting still keeps sub-agent delegation', () => {
+    // A user-configured `alwaysIncludeTools` REPLACES the default
+    // list, so the provider force-merges the mandatory set. This
+    // test simulates that merge with the most hostile plausible
+    // user config: an empty list.
+    const flood = Array.from({ length: 200 }, (_, i) => ({
+      name: `mcp_server_${i}_tool_${i}`,
+    }));
+    const tools = [...flood, { name: 'agent/runSubagent' }];
+    const out = filterTools(tools, [], {
+      enableSmartToolFiltering: true,
+      maxTools: 5,
+      // The provider always prepends the mandatory set; simulate
+      // that with an otherwise-empty user list.
+      alwaysIncludeTools: [...MANDATORY_ALWAYS_INCLUDE_TOOLS],
+    });
+    ok(out.kept.includes('agent/runSubagent'), 'reserved even when the user list is empty');
+    ok(!out.dropped.includes('agent/runSubagent'));
   });
 });
 

@@ -8,12 +8,40 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [0.9.3] — 2026-10-01
 
-Patch release. One theme: sub-agent delegation is structurally
-guaranteed rather than incidentally available. Three separate paths
-could each drop VS Code's built-in sub-agent tool on the floor, and
-all three are now closed.
+Patch release. Two themes: sub-agent delegation is structurally
+guaranteed rather than incidentally available, and images reach the
+model through both entry points. Six separate paths could each drop a
+built-in capability on the floor; all are now closed.
 
 ### Fixed
+
+- **Images returned by a tool now reach the model.** Asking the agent
+  to look at an image and report back produced
+  `[tool result data omitted: image/png, 9328978 bytes]` in place of
+  the image — the agent could see a file the _user_ attached, but
+  never one it had just fetched itself (reproduced live against the
+  real `view_image` tool). The tool-result wire is string-only, but
+  the domain content array already has an `image` variant, so the
+  image is now emitted as a sibling content part on the same user
+  turn, immediately after the result text it belongs to. Opaque
+  binary with no matching content part (`application/octet-stream`
+  and friends) still collapses to the short marker.
+
+- **Attached images were rejected on the Anthropic-compatible
+  endpoint.** Every image was serialized as
+  `source: {type: 'url', url: 'data:image/png;base64,...'}`, but
+  Anthropic's image source schema accepts either `base64` (with a
+  `media_type`) or a genuine remote `url` — a data URI is neither.
+  Since the domain mapper always produces a data URI, **every** image
+  was a server-side rejection on the `anthropic` dialect (M3, M3.1
+  Flash Preview). Data URIs are now parsed into a proper `base64`
+  source. The video branch already did this; images and video now
+  share one `parseDataUri` helper so they cannot drift apart again.
+
+  `convertAnthropicContentPart` had **no test coverage at all**,
+  which is how a malformed block shipped a full release — every image
+  test stopped at the domain mapper. It is now covered directly, and
+  `serializeAnthropicRequest` is exported for that purpose.
 
 - **Sub-agent delegation can no longer be evicted by the tool cap.** T35
   removed `runSubagent` from the always-include pin list so the model

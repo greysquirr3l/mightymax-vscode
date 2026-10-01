@@ -155,7 +155,7 @@ const M3: ModelInfo = {
   family: 'minimax',
   maxInputTokens: 1_048_576,
   maxOutputTokens: 16_384,
-  capabilities: { toolCalling: true, imageInput: true, thinking: true, videoInput: true},
+  capabilities: { toolCalling: true, imageInput: true, thinking: true, videoInput: true },
   thinkingStyle: 'anthropic',
   detail: '1M ctx, 16K out',
 };
@@ -167,7 +167,7 @@ const M2_5: ModelInfo = {
   family: 'minimax',
   maxInputTokens: 200_000,
   maxOutputTokens: 8_192,
-  capabilities: { toolCalling: true, imageInput: false, thinking: true, videoInput: false},
+  capabilities: { toolCalling: true, imageInput: false, thinking: true, videoInput: false },
   thinkingStyle: 'openai',
   detail: '200K ctx, 8K out',
 };
@@ -1565,9 +1565,9 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
   // duck-types on `{mimeType, data}` so stubs and cross-realm
   // instances behave identically — the plain-object form is what
   // these tests exercise.
-  const makeDataPart = (mimeType: string, payload: string) => ({
+  const makeDataPart = (mimeType: string, payload?: string, bytes?: Uint8Array) => ({
     mimeType,
-    data: new TextEncoder().encode(payload),
+    data: bytes ?? new TextEncoder().encode(payload ?? ''),
   });
 
   it('drops cache_control (and other metadata-mime) data parts from tool-result content', () => {
@@ -1616,16 +1616,72 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
     deepStrictEqual(part.toolResult.content, ['{"rows":3}', 'plain text']);
   });
 
-  it('collapses binary data parts to a short marker instead of a Uint8Array byte map', () => {
+  it('emits an image sibling part for image/* tool results instead of a marker', () => {
+    // T38 regression — the real `view_image` shape. Observed live on
+    // 0.9.2: a 9.3 MB PNG came back to the model as the literal
+    // string `[tool result data omitted: image/png, 9328978 bytes]`,
+    // so the agent could never see an image it had looked at.
+    //
+    // The marker was defensible for opaque binary blobs, but an
+    // image is model-visible content and the domain content array
+    // already has an `image` variant. The image rides the SAME user
+    // turn as the tool result so ordering is preserved.
+    const png = new Uint8Array([137, 80, 78, 71]);
     const msg: vscode.LanguageModelChatRequestMessage = {
       role: vscode.LanguageModelChatMessageRole.User,
       name: undefined,
       content: [
-        new vscode.LanguageModelToolResultPart('call_png', [
-          {
-            mimeType: 'image/png',
-            data: new Uint8Array([137, 80, 78, 71]),
-          },
+        new vscode.LanguageModelToolResultPart('call_img', [
+          makeDataPart('image/png', undefined, png),
+          new vscode.LanguageModelTextPart('logo rendered at 2x'),
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    // Two parts: the tool result (text only) and the image sibling.
+    strictEqual(domain.content.length, 2);
+    const result = domain.content[0]!;
+    if (result.type !== 'tool-result') {
+      ok(false, 'expected tool-result first');
+      return;
+    }
+    // The text survives; the image is NOT in the string list.
+    deepStrictEqual(result.toolResult.content, ['logo rendered at 2x']);
+    const image = domain.content[1]!;
+    strictEqual(image.type, 'image');
+    if (image.type !== 'image') return;
+    strictEqual(image.mimeType, 'image/png');
+    deepStrictEqual(image.data, png);
+  });
+
+  it('emits a video sibling part for video/* tool results', () => {
+    const mp4 = new Uint8Array([0, 0, 0, 24]);
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_vid', [
+          makeDataPart('video/mp4', undefined, mp4),
+        ]),
+      ],
+    };
+    const domain = vscodeToDomainMessage(msg);
+    const image = domain.content[1];
+    strictEqual(image?.type, 'video');
+    if (image?.type !== 'video') return;
+    deepStrictEqual(image.data, mp4);
+  });
+
+  it('collapses non-image binary blobs to a short marker (unchanged)', () => {
+    // The marker path stays for payloads the model genuinely
+    // cannot consume — an opaque application/octet-stream blob
+    // has no domain content part to ride along with.
+    const msg: vscode.LanguageModelChatRequestMessage = {
+      role: vscode.LanguageModelChatMessageRole.User,
+      name: undefined,
+      content: [
+        new vscode.LanguageModelToolResultPart('call_blob', [
+          makeDataPart('application/octet-stream', undefined, new Uint8Array([1, 2, 3, 4])),
         ]),
       ],
     };
@@ -1635,7 +1691,11 @@ describe('vscodeToDomainMessage — tool-result content normalization', () => {
       ok(false, 'expected a tool-result part');
       return;
     }
-    deepStrictEqual(part.toolResult.content, ['[tool result data omitted: image/png, 4 bytes]']);
+    // Opaque binary stays a marker — there is no domain content
+    // part that can carry it to the model.
+    deepStrictEqual(part.toolResult.content, [
+      '[tool result data omitted: application/octet-stream, 4 bytes]',
+    ]);
   });
 });
 

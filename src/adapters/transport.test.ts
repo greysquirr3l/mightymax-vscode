@@ -11,12 +11,13 @@
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 
-import { MiniMaxClientAdapter } from './transport.js';
+import { MiniMaxClientAdapter, parseDataUri, serializeAnthropicRequest } from './transport.js';
 import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { Logger } from '../ports/logger.js';
 import type {
   MiniMaxCompletionRequest,
   MiniMaxStreamEvent,
+  MiniMaxWireContentPart,
 } from '../ports/minimax-client.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,8 +45,8 @@ interface RecordedCall {
 
 function makeCapturingLogger(): Logger & { readonly calls: ReadonlyArray<RecordedCall> } {
   const calls: RecordedCall[] = [];
-  const rec = (level: RecordedCall['level']) =>
-    (message: string, context?: Record<string, unknown>) => {
+  const rec =
+    (level: RecordedCall['level']) => (message: string, context?: Record<string, unknown>) => {
       calls.push(context === undefined ? { level, message } : { level, message, context });
     };
   return {
@@ -121,12 +122,7 @@ describe('T22 — request/response-body redaction under failure paths', () => {
     };
     try {
       const signal = new AbortController().signal;
-      const events = adapter.streamCompletion(
-        request,
-        SENTINEL_API_KEY,
-        signal,
-        logger,
-      );
+      const events = adapter.streamCompletion(request, SENTINEL_API_KEY, signal, logger);
       const iter = events[Symbol.asyncIterator]();
       await iter.next();
     } catch {
@@ -211,10 +207,7 @@ describe('T22 — request/response-body redaction under failure paths', () => {
       );
       // The upstream error message is the one allowed exception —
       // verify it surfaces through the `errorMessage` key.
-      strictEqual(
-        ctx['errorMessage'],
-        'invalid_request: tool result id not found',
-      );
+      strictEqual(ctx['errorMessage'], 'invalid_request: tool result id not found');
       strictEqual(ctx['errorType'], 'invalid_request_error');
       strictEqual(ctx['errorCode'], 2013);
     }
@@ -289,9 +282,7 @@ function heldSseResponse(): {
     }),
     emitText: (text: string) => {
       ctrl.enqueue(
-        encoder.encode(
-          `data: {"choices":[{"delta":{"content":${JSON.stringify(text)}}}]}\n\n`,
-        ),
+        encoder.encode(`data: {"choices":[{"delta":{"content":${JSON.stringify(text)}}}]}\n\n`),
       );
     },
     emitRaw: (json: string) => {
@@ -329,10 +320,7 @@ function undiciTerminatedError(): TypeError {
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`timed out after ${ms}ms: ${label}`)),
-      ms,
-    );
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms: ${label}`)), ms);
     p.then(
       (v) => {
         clearTimeout(timer);
@@ -399,9 +387,7 @@ describe('concurrency semaphore — permit lifecycle', () => {
     strictEqual(firstA.done, false);
 
     // B queues behind A's permit.
-    const doneB = consumeAll(
-      adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger),
-    );
+    const doneB = consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', signal, logger));
 
     // Finish A; its permit hands off to B.
     held.finish();
@@ -534,9 +520,7 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     strictEqual(thrown.kind, 'stall');
     strictEqual(calls, 2, 'expected one retry before surfacing the stall');
     ok(
-      logger.calls.some(
-        (c) => c.level === 'warn' && c.message.includes('first-byte timeout'),
-      ),
+      logger.calls.some((c) => c.level === 'warn' && c.message.includes('first-byte timeout')),
       'expected a first-byte-timeout retry warning',
     );
   });
@@ -658,9 +642,7 @@ describe('stall watchdogs — first-byte and idle timeouts', () => {
     ok(eventCount > 0, 'the retried request should yield events');
     strictEqual(calls, 2, 'expected exactly one transparent re-issue');
     ok(
-      logger.calls.some(
-        (c) => c.level === 'warn' && c.message.includes('died before first event'),
-      ),
+      logger.calls.some((c) => c.level === 'warn' && c.message.includes('died before first event')),
       'expected a before-first-event retry warning',
     );
   });
@@ -730,9 +712,7 @@ describe('mid-stream retry gate — delivered vs parsed events', () => {
     ok(eventCount > 0, 'the retried request should yield events');
     strictEqual(calls, 2, 'expected exactly one transparent re-issue');
     ok(
-      logger.calls.some(
-        (c) => c.level === 'warn' && c.message.includes('died before first event'),
-      ),
+      logger.calls.some((c) => c.level === 'warn' && c.message.includes('died before first event')),
       'expected a before-first-event retry warning',
     );
   });
@@ -930,9 +910,7 @@ describe('server-terminated connections — retry behavior', () => {
     ok(eventCount > 0, 'the retried request should yield events');
     strictEqual(calls, 2, 'expected exactly one transparent re-issue');
     ok(
-      logger.calls.some(
-        (c) => c.level === 'warn' && c.message.includes('died before first event'),
-      ),
+      logger.calls.some((c) => c.level === 'warn' && c.message.includes('died before first event')),
       'expected a before-first-event retry warning',
     );
   });
@@ -1006,7 +984,6 @@ describe('server-terminated connections — retry behavior', () => {
   });
 });
 
-
 describe('MiniMaxClientAdapter — native token counting', () => {
   it('uses the Anthropic M3 count_tokens endpoint and returns input_tokens', async () => {
     let requestedUrl = '';
@@ -1067,7 +1044,10 @@ describe('MiniMaxClientAdapter — native token counting', () => {
     }
     ok(thrown instanceof MiniMaxClientError, 'expected a MiniMaxClientError');
     strictEqual(thrown.kind, 'stall');
-    ok(thrown.retriable, 'a stalled token count should be retriable by the caller heuristic fallback');
+    ok(
+      thrown.retriable,
+      'a stalled token count should be retriable by the caller heuristic fallback',
+    );
   });
 
   it('releases its semaphore permit after a watchdog timeout so a later completion is not blocked', async () => {
@@ -1103,10 +1083,107 @@ describe('MiniMaxClientAdapter — native token counting', () => {
     );
 
     const eventCount = await withTimeout(
-      consumeAll(adapter.streamCompletion(OPENAI_REQUEST, 'test-key', new AbortController().signal, logger)),
+      consumeAll(
+        adapter.streamCompletion(OPENAI_REQUEST, 'test-key', new AbortController().signal, logger),
+      ),
       2_000,
       'completion blocked on the semaphore — countTokens leaked its permit on watchdog timeout',
     );
     ok(eventCount > 0, 'the completion behind the stalled probe should still yield events');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T38 — Anthropic content-block serialization
+//
+// `convertAnthropicContentPart` had NO test coverage through 0.9.2,
+// which is how a malformed `image` block shipped a whole release:
+// every image was emitted as
+// `source: {type:'url', url:'data:image/png;base64,...'}`. Anthropic's
+// image source schema accepts `base64` (with a `media_type`) or a real
+// remote `url` — a data URI is neither — so every attached image was
+// a server-side reject on the Anthropic-compatible endpoint. The video
+// branch three lines above already parsed the data URI correctly; only
+// images were missed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('T38 — Anthropic image/video content blocks', () => {
+  const dataUri = (mediaType: string, bytes: number[]): string =>
+    `data:${mediaType};base64,${btoa(String.fromCharCode(...bytes))}`;
+
+  const serializeContentParts = (
+    parts: ReadonlyArray<MiniMaxWireContentPart>,
+  ): ReadonlyArray<{ readonly type: string; readonly source?: unknown }> => {
+    const body = serializeAnthropicRequest({
+      model: 'MiniMax-M3',
+      dialect: 'anthropic',
+      messages: [{ role: 'user', content: parts }],
+      stream: true,
+    });
+    const first = body.messages[0];
+    ok(first !== undefined, 'expected at least one serialized message');
+    const content = first?.content as ReadonlyArray<{ type: string; source?: unknown }>;
+    return content;
+  };
+
+  it('parses a data URI into a base64 image source (never a data-URI url)', () => {
+    const content = serializeContentParts([
+      { type: 'image_url', image_url: { url: dataUri('image/png', [137, 80, 78, 71]) } },
+    ]);
+    const block = content[0];
+    strictEqual(block?.type, 'image');
+    deepStrictEqual(block?.source, {
+      type: 'base64',
+      media_type: 'image/png',
+      data: btoa(String.fromCharCode(137, 80, 78, 71)),
+    });
+  });
+
+  it('rejects a data-URI url source outright — that was the shipped bug', () => {
+    const url = dataUri('image/png', [1, 2, 3]);
+    const content = serializeContentParts([{ type: 'image_url', image_url: { url } }]);
+    const source = content[0]?.source as
+      { readonly type: string; readonly url?: string } | undefined;
+    ok(
+      source?.type !== 'url' || source.url !== url,
+      'a data URI must never survive as source.type="url"',
+    );
+  });
+
+  it('keeps a genuine remote URL as a url source', () => {
+    const content = serializeContentParts([
+      { type: 'image_url', image_url: { url: 'https://example.com/a.png' } },
+    ]);
+    deepStrictEqual(content[0]?.source, { type: 'url', url: 'https://example.com/a.png' });
+  });
+
+  it('parses a data URI into a base64 video source (video branch unchanged)', () => {
+    const content = serializeContentParts([
+      { type: 'video_url', video_url: { url: dataUri('video/mp4', [1, 2, 3, 4]) } },
+    ]);
+    deepStrictEqual(content[0]?.source, {
+      type: 'base64',
+      media_type: 'video/mp4',
+      data: btoa(String.fromCharCode(1, 2, 3, 4)),
+    });
+  });
+
+  it('parseDataUri rejects a non-data URL and a non-base64 payload', () => {
+    strictEqual(parseDataUri('https://example.com/a.png'), undefined);
+    strictEqual(parseDataUri('data:image/png,notbase64'), undefined);
+  });
+
+  it('parseDataUri handles padded base64 and a media type with parameters', () => {
+    strictEqual(parseDataUri('data:image/png;base64,QQ==')?.data, 'QQ==');
+    deepStrictEqual(
+      parseDataUri('data:image/png;charset=utf-8;base64,QUJD')?.mediaType,
+      'image/png',
+    );
+  });
+
+  it('parseDataUri does not throw on an empty payload', () => {
+    // Degenerate, not a crash: the mapper rejects empty image data
+    // upstream with a `malformed-image` warning before we get here.
+    strictEqual(parseDataUri('data:image/png;base64,')?.data, '');
   });
 });

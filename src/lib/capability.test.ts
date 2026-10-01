@@ -5,7 +5,12 @@ import { evaluateAgentEligibility } from './domain/capability.js';
 
 describe('evaluateAgentEligibility', () => {
   it('marks valid tool-calling models as utility and agent eligible', () => {
-    const out = evaluateAgentEligibility({ toolCalling: true, imageInput: true, thinking: true });
+    const out = evaluateAgentEligibility({
+      toolCalling: true,
+      imageInput: true,
+      thinking: true,
+      videoInput: true,
+    });
 
     equal(out.utilityEligible, true);
     equal(out.agentEligible, true);
@@ -13,7 +18,12 @@ describe('evaluateAgentEligibility', () => {
   });
 
   it('keeps utility eligibility but blocks agent eligibility when tool calling is absent', () => {
-    const out = evaluateAgentEligibility({ toolCalling: false, imageInput: true, thinking: false });
+    const out = evaluateAgentEligibility({
+      toolCalling: false,
+      imageInput: true,
+      thinking: false,
+      videoInput: false,
+    });
 
     equal(out.utilityEligible, true);
     equal(out.agentEligible, false);
@@ -26,6 +36,7 @@ describe('evaluateAgentEligibility', () => {
       toolCalling: 'yes' as unknown as boolean,
       imageInput: 1 as unknown as boolean,
       thinking: null as unknown as boolean,
+      videoInput: 'nope' as unknown as boolean,
     });
 
     equal(out.utilityEligible, false);

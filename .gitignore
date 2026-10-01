@@ -2,7 +2,6 @@ tasks/
 AGENTS.md
 features.json
 IMPLEMENTATION_PLAN.md
-PROGRESS.md
 .vscode/
 .github/copilot-instructions.md
 mighty-max-plan.toml

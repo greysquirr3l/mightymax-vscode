@@ -118,7 +118,7 @@ const M3: ModelInfo = {
   family: 'minimax',
   maxInputTokens: 1_048_576,
   maxOutputTokens: 16_384,
-  capabilities: { toolCalling: true, imageInput: true, thinking: true },
+  capabilities: { toolCalling: true, imageInput: true, thinking: true, videoInput: true},
   thinkingStyle: 'anthropic',
   detail: '1M ctx, 16K out',
 };

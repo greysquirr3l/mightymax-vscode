@@ -133,6 +133,20 @@ function buildImageContentPart(
   return { type: 'image_url', image_url: { url: dataUri } };
 }
 
+/**
+ * Whether a model accepts video content blocks.
+ *
+ * Prefers the catalog's `videoInput` flag when the caller supplies
+ * it. Falls back to an id check for call sites that only pass
+ * `{ id, thinkingStyle }` — the M3 family is the only one documented
+ * to accept video, and the id is the same signal the catalog itself
+ * is built from.
+ */
+function modelAcceptsVideo(model: MessageMappingModel): boolean {
+  if (model.videoInput !== undefined) return model.videoInput;
+  return model.id.toLowerCase().includes('minimax-m3');
+}
+
 function buildVideoContentPart(
   mimeType: string,
   data: Uint8Array,
@@ -173,6 +187,17 @@ function buildVideoContentPart(
 export interface MessageMappingModel {
   readonly id: string;
   readonly thinkingStyle: ThinkingStyle;
+  /**
+   * Whether this model accepts video content blocks. Optional so the
+   * many existing call sites (and test fixtures) that pass only
+   * `{ id, thinkingStyle }` keep compiling; when omitted we fall back
+   * to the same id-based check the catalog uses.
+   *
+   * Declared `| undefined` so callers can pass
+   * `catalogEntry?.capabilities.videoInput` directly under
+   * `exactOptionalPropertyTypes` without a conditional spread.
+   */
+  readonly videoInput?: boolean | undefined;
 }
 
 /**
@@ -305,6 +330,17 @@ export function mapRequestToMiniMax(
         continue;
       }
       if (part.type === 'video') {
+        // M2.x and M1 accept "text and tool-call content blocks only"
+        // per the MiniMax docs, so a video part on those models is a
+        // guaranteed rejection. Downgrade to a warning rather than
+        // putting a doomed request on the wire.
+        if (!modelAcceptsVideo(model)) {
+          warnings.push({
+            kind: 'unsupported-content',
+            reason: `model ${model.id} does not accept video input; attachment skipped`,
+          });
+          continue;
+        }
         const encoded = buildVideoContentPart(part.mimeType, part.data);
         if (isMessageMappingError(encoded)) {
           warnings.push(encoded);

@@ -259,9 +259,17 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
     // Map messages to MiniMax wire format (model first, then messages)
-    const mappingResult = mapRequestToMiniMax({ id: model.id, thinkingStyle }, enrichedMessages, {
-      toolResultMaxChars: this.readToolResultMaxChars(),
-    });
+    const mappingResult = mapRequestToMiniMax(
+      {
+        id: model.id,
+        thinkingStyle,
+        videoInput: modelInfo?.capabilities.videoInput,
+      },
+      enrichedMessages,
+      {
+        toolResultMaxChars: this.readToolResultMaxChars(),
+      },
+    );
 
     // Log any mapping warnings, deduplicated. A long history
     // re-maps in full every request, so one structural quirk can
@@ -717,7 +725,11 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           ? ({ role: 'user', content: [{ type: 'text', value: text }] } satisfies ChatMessage)
           : vscodeToDomainMessage(text);
       const mapped = mapRequestToMiniMax(
-        { id: model.id, thinkingStyle: modelInfo?.thinkingStyle ?? 'anthropic' },
+        {
+          id: model.id,
+          thinkingStyle: modelInfo?.thinkingStyle ?? 'anthropic',
+          videoInput: modelInfo?.capabilities.videoInput,
+        },
         [domainMessage],
         { toolResultMaxChars: this.readToolResultMaxChars() },
       );

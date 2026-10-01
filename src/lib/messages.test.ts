@@ -11,7 +11,7 @@
  * `node:assert/strict` deep equality, no `vscode` imports.
  */
 
-import { deepStrictEqual, equal, fail, ok } from 'node:assert/strict';
+import { deepStrictEqual, equal, fail, match, ok } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
@@ -1236,6 +1236,66 @@ describe('mapRequestToMiniMax — video', () => {
     ]);
     equal(result.messages.length, 0);
     ok(result.warnings.some((warning) => warning.kind === 'unsupported-content'));
+  });
+});
+
+describe('mapRequestToMiniMax — videoInput capability gate', () => {
+  // MiniMax docs: "The M2.7, M2.5, M2.1, and M2 series support text
+  // and tool-call content blocks only." A video part on those models is
+  // a guaranteed rejection, so the mapper must degrade to a warning
+  // rather than put a doomed request on the wire.
+  const videoMsg: ChatMessage = {
+    role: 'user',
+    content: [{ type: 'video', mimeType: 'video/mp4', data: new Uint8Array([0x00, 0x01]) }],
+  };
+
+  it('honours an explicit videoInput: false on an M3 id', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M3', thinkingStyle: 'anthropic', videoInput: false },
+      [videoMsg],
+    );
+    equal(result.messages.length, 0);
+    ok(
+      result.warnings.some((w) => w.kind === 'unsupported-content'),
+      'expected an unsupported-content warning',
+    );
+  });
+
+  it('honours an explicit videoInput: true on an M2 id', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M2.5', thinkingStyle: 'openai', videoInput: true },
+      [videoMsg],
+    );
+    equal(result.warnings.length, 0);
+    ok(result.messages.length > 0, 'explicit capability must win over the id heuristic');
+  });
+
+  it('falls back to the id heuristic when videoInput is omitted (M3 → allowed)', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M3.1-Flash-Preview', thinkingStyle: 'anthropic' },
+      [videoMsg],
+    );
+    equal(result.warnings.length, 0);
+    ok(result.messages.length > 0);
+  });
+
+  it('falls back to the id heuristic when videoInput is omitted (M2 → blocked)', () => {
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M2.5', thinkingStyle: 'openai' }, [videoMsg]);
+    equal(result.messages.length, 0);
+    ok(result.warnings.some((w) => w.kind === 'unsupported-content'));
+  });
+
+  it('names the offending model in the warning', () => {
+    const result = mapRequestToMiniMax(
+      { id: 'MiniMax-M2.7', thinkingStyle: 'openai', videoInput: false },
+      [videoMsg],
+    );
+    const warning = result.warnings.find((w) => w.kind === 'unsupported-content');
+    ok(warning && 'reason' in warning);
+    if (warning && 'reason' in warning) {
+      match(String(warning.reason), /MiniMax-M2\.7/);
+      match(String(warning.reason), /video/);
+    }
   });
 });
 

@@ -33,6 +33,7 @@ export function evaluateAgentEligibility(capabilities: ModelCapabilities): Agent
     ['toolCalling', capabilities.toolCalling],
     ['imageInput', capabilities.imageInput],
     ['thinking', capabilities.thinking],
+    ['videoInput', capabilities.videoInput],
   ]
     .filter(([, value]) => typeof value !== 'boolean')
     .map(([name]) => name);

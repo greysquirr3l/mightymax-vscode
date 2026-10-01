@@ -22,6 +22,7 @@ import {
   MANDATORY_ALWAYS_INCLUDE_TOOLS,
   discoverMcpTools,
   matchesAlwaysInclude,
+  matchesToolName,
   filterTools,
   selectMcpToolsToInclude,
 } from './domain/tool-filter.js';
@@ -556,15 +557,44 @@ describe('selectMcpToolsToInclude', () => {
     ok(out.included.includes('mcp_a_x'), 'most-recent LRU entry must take the remaining slot');
   });
 
-  it('signals reservedOverflow when the reserved list alone exceeds the cap', () => {
+  it('signals reservedOverflow when the RESOLVED reserved set exceeds the cap', () => {
+    // Issue #88 (point 1): this used to compare the raw ENTRY
+    // count, which under-counted as soon as one entry could
+    // expand to many tools — a single prefix reserving 200 tools
+    // counted as "1" and reported "fits". Overflow is now
+    // measured on the resolved set, which is what actually
+    // consumes the budget.
+    //
+    // Five entries, but only three resolve (d_x / e_x are not
+    // loaded). Resolved count is 3, cap is 3 -> no overflow, and
+    // the two dead entries are now REPORTED rather than silently
+    // dropped.
     const live = ['mcp_a_x', 'mcp_b_x', 'mcp_c_x'];
     const reserved = ['mcp_a_x', 'mcp_b_x', 'mcp_c_x', 'mcp_d_x', 'mcp_e_x'];
     const out = selectMcpToolsToInclude(live, [], new Map(), 3, reserved);
-    ok(out.reservedOverflow, 'reservedOverflow must be true when reserved > cap');
-    // All 3 live tools still in (the cap allows them), the
-    // other 2 reserved entries are silently absent from
-    // `reserved` because they're not in the live set.
+    deepStrictEqual(
+      [...out.reserved].sort(),
+      ['mcp_a_x', 'mcp_b_x', 'mcp_c_x'],
+      'only live tools resolve',
+    );
+    ok(
+      !out.reservedOverflow,
+      '3 resolved tools against a cap of 3 fits — the dead entries must not count',
+    );
+    deepStrictEqual(
+      [...out.unmatchedReserved].sort(),
+      ['mcp_d_x', 'mcp_e_x'],
+      'entries matching nothing are reported, not silently dropped',
+    );
     deepStrictEqual([...out.included].sort(), ['mcp_a_x', 'mcp_b_x', 'mcp_c_x']);
+  });
+
+  it('signals reservedOverflow when the resolved reserved set really exceeds the cap', () => {
+    // The complement of the above: 3 live tools, cap of 2, all
+    // reserved -> genuinely over budget.
+    const live = ['mcp_a_x', 'mcp_b_x', 'mcp_c_x'];
+    const out = selectMcpToolsToInclude(live, [], new Map(), 2, ['mcp_a_x', 'mcp_b_x', 'mcp_c_x']);
+    ok(out.reservedOverflow, 'reservedOverflow must be true when resolved > cap');
   });
 
   it('drops reserved entries that are not in the live tool set', () => {
@@ -638,5 +668,131 @@ describe('GitHub MCP prefix catch-all', () => {
     ok(!matchesAlwaysInclude('mcp_mygithub_server_tool', ['mcp_github_']));
     ok(!matchesAlwaysInclude('mcp_githubcli_tool', ['mcp_github_']));
     ok(!matchesAlwaysInclude('mcp_clickup_list_tasks', ['mcp_github_']));
+  });
+});
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #88 — `mightyMax.reservedMcpTools` prefix entries reserve nothing,
+// but the Manage MCP Tools UI advertised and previewed them.
+//
+// The filter resolved reserved entries with a bare
+// `liveMcpToolNames.includes(name)` — an exact array lookup. A prefix
+// entry like `mcp_ghidra-mcp_` is not itself a tool name, so it
+// matched nothing. The UI implemented the prefix rule separately and
+// reported "Matches 3 loaded tools", so a user could configure a
+// prefix, watch it report a match count, and get zero reservation
+// with no error anywhere.
+//
+// Both surfaces now share `matchesToolName`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('issue #88 — reserved prefix entries', () => {
+  const LIVE = [
+    'mcp_ghidra-mcp_decompile_function',
+    'mcp_ghidra-mcp_get_metadata',
+    'mcp_ghidra-mcp_search_strings',
+  ];
+  const snapshot = new Map(LIVE.map((n) => [n, { firstUsedAt: 0, lastUsedAt: 0, callCount: 0 }]));
+
+  it('an exact reserved entry reserves that one tool (regression guard)', () => {
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 60, [
+      'mcp_ghidra-mcp_decompile_function',
+    ]);
+    deepStrictEqual([...out.reserved], ['mcp_ghidra-mcp_decompile_function']);
+  });
+
+  it('a prefix reserved entry reserves EVERY matching tool', () => {
+    // This is the reported bug: returned [] before the fix.
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 60, ['mcp_ghidra-mcp_']);
+    deepStrictEqual(
+      [...out.reserved].sort(),
+      [...LIVE].sort(),
+      'prefix must reserve all three, matching what the UI promised',
+    );
+  });
+
+  it('a reserved prefix survives the cap — reserved tools are not LRU-dropped', () => {
+    // Cap of 2 against 3 live tools: without the prefix fix the
+    // reservation was empty and all three went through the LRU.
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 2, ['mcp_ghidra-mcp_']);
+    ok(out.reserved.length === 3, 'all three reserved even though the cap is 2');
+    for (const name of LIVE) {
+      ok(out.included.includes(name), `${name} must be included despite the cap`);
+    }
+  });
+
+  it('a prefix that matches nothing is reported, not silently dropped', () => {
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 60, ['mcp_typo_server_']);
+    deepStrictEqual([...out.reserved], []);
+    deepStrictEqual(
+      [...out.unmatchedReserved],
+      ['mcp_typo_server_'],
+      'the chat-provider logs this so the entry doing nothing is visible',
+    );
+  });
+
+  it('reports only entries that match nothing, not the whole list', () => {
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 60, [
+      'mcp_ghidra-mcp_',
+      'mcp_typo_server_',
+      'mcp_ghidra-mcp_get_metadata',
+    ]);
+    deepStrictEqual([...out.unmatchedReserved], ['mcp_typo_server_']);
+  });
+
+  it('a prefix plus an overlapping exact name reserves each tool once', () => {
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 60, [
+      'mcp_ghidra-mcp_',
+      'mcp_ghidra-mcp_get_metadata',
+    ]);
+    const reserved = [...out.reserved];
+    deepStrictEqual(reserved.length, new Set(reserved).size, 'no duplicate reservations');
+    deepStrictEqual(reserved.sort(), [...LIVE].sort());
+  });
+
+  it('overflow is measured on the RESOLVED count, not the entry count', () => {
+    // One prefix entry resolving to 3 tools against a cap of 2.
+    // Counting entries would say "1 <= 2, fine"; the resolved
+    // count is what actually consumes budget.
+    const out = selectMcpToolsToInclude(LIVE, [], snapshot, 2, ['mcp_ghidra-mcp_']);
+    strictEqual(out.reservedOverflow, true, '3 resolved tools must overflow a cap of 2');
+  });
+
+  it('a prefix does not over-match an unrelated server', () => {
+    // Prefix matching is opt-in via the trailing underscore, and
+    // must not degrade into a bare substring match.
+    const mixed = [...LIVE, 'mcp_github-mcp_list_issues'];
+    const snap = new Map(mixed.map((n) => [n, { firstUsedAt: 0, lastUsedAt: 0, callCount: 0 }]));
+    const out = selectMcpToolsToInclude(mixed, [], snap, 60, ['mcp_ghidra-mcp_']);
+    deepStrictEqual([...out.reserved].sort(), [...LIVE].sort(), 'github tool must not match');
+  });
+});
+
+describe('issue #88 — matchesToolName is the single shared matcher', () => {
+  it('handles all three shapes', () => {
+    strictEqual(matchesToolName('runSubagent', 'runSubagent'), true, 'exact');
+    strictEqual(matchesToolName('copilot_readFile', 'copilot_'), true, 'prefix');
+    strictEqual(matchesToolName('grep_search', 'grep'), true, 'substring');
+  });
+
+  it('rejects an empty entry rather than matching everything', () => {
+    // An empty string is a substring of every name. Guarding it
+    // here means an empty array entry cannot reserve the world.
+    strictEqual(matchesToolName('anything', ''), false);
+  });
+
+  it('a prefix pin does not over-match a look-alike', () => {
+    strictEqual(matchesToolName('my_copilot_helper', 'copilot_'), false);
+  });
+
+  it('agrees with matchesAlwaysInclude by construction', () => {
+    const names = ['copilot_readFile', 'mcp_ghidra-mcp_x', 'grep_search', 'runSubagent'];
+    const entries = ['copilot_', 'mcp_ghidra-mcp_', 'grep', 'runSubagent'];
+    for (const n of names) {
+      strictEqual(
+        entries.some((e) => matchesToolName(n, e)),
+        matchesAlwaysInclude(n, entries),
+        `both surfaces must agree for ${n}`,
+      );
+    }
   });
 });

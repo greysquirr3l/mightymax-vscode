@@ -322,6 +322,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       dropped: [],
       historyPinned: [],
       reserved: [],
+      unmatchedReserved: [],
       reservedOverflow: false,
       evicted: [],
     };
@@ -353,10 +354,24 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       }
       if (mcpSelection.reservedOverflow) {
         this.logger.warn(
-          '`mightyMax.reservedMcpTools` is longer than `mightyMax.mcpMaxTools`; the LRU gets no slots this turn. Add fewer reserved entries or raise the cap.',
+          '`mightyMax.reservedMcpTools` resolves to more tools than `mightyMax.mcpMaxTools` allows; the LRU gets no slots this turn. Add fewer reserved entries or raise the cap.',
           {
-            reservedCount: reservedMcpToolNames.length,
+            // The RESOLVED count, not the entry count: one prefix
+            // entry can expand to hundreds of live tools.
+            reservedCount: mcpSelection.reserved.length,
             mcpMaxTools: mcpMaxToolsN,
+          },
+        );
+      }
+      // Issue #88 — a reserved entry that matches nothing is doing
+      // nothing. Previously that was silent, which is how a prefix
+      // entry could be configured, shown as "Matches N loaded
+      // tools" in the UI, and reserve zero tools with no signal.
+      if (mcpSelection.unmatchedReserved.length > 0) {
+        this.logger.warn(
+          '`mightyMax.reservedMcpTools` entries match no loaded MCP tool this turn; they reserve nothing. Check for a typo, or that the MCP server is running.',
+          {
+            unmatchedEntries: mcpSelection.unmatchedReserved,
           },
         );
       }

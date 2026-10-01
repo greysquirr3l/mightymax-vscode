@@ -187,32 +187,44 @@ export const MANDATORY_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
 export const DEFAULT_MCP_MAX_TOOLS = 60;
 
 /**
- * Match a tool name against the `alwaysInclude` list. The matcher
- * uses three rules — exact, prefix, substring — to cover both the
- * modern Copilot namespaced built-ins (`copilot_*`) and the older
- * / 1.104-era shorter names. Documented in
- * `SMART_TOOL_FILTERING.md`.
+ * Match a live tool name against ONE always-include/reserved
+ * entry. Shared by both surfaces so they can never disagree again.
+ *
+ * Three shapes, all handled:
+ *   - **exact** — `runSubagent` matches only itself.
+ *   - **prefix** — an entry ending in `_` (`mcp_github_mcp_se_`)
+ *     matches any name starting with it. The `_` is the opt-in: a
+ *     bare `copilot` must NOT match `my_copilot_helper`, so
+ *     substring matching deliberately does not apply to prefixes.
+ *   - **substring** — an entry without a trailing `_` matches any
+ *     name containing it as a fragment (`grep` catches
+ *     `grep_search` and `grep_file_contents`).
+ *
+ * This is the same function `mightyMax.reservedMcpTools` is sold
+ * against in the Manage MCP Tools UI, which already implemented the
+ * prefix rule. The filter used a bare `Array.includes` instead, so a
+ * user could enter a prefix, watch the UI report "Matches N loaded
+ * tools", and get zero reservation — silently. Issue #88.
+ */
+export function matchesToolName(toolName: string, entry: string): boolean {
+  if (entry.length === 0) return false;
+  if (entry === toolName) return true;
+  if (entry.endsWith('_')) return toolName.startsWith(entry);
+  return toolName.includes(entry);
+}
+
+/**
+ * Match a tool name against the whole `alwaysInclude` list.
+ *
+ * Rules per entry are documented on {@link matchesToolName}, which
+ * every entry is evaluated with.
  */
 export function matchesAlwaysInclude(
   toolName: string,
   alwaysInclude: ReadonlyArray<string>,
 ): boolean {
   for (const entry of alwaysInclude) {
-    if (entry.length === 0) continue;
-    // Exact name match first.
-    if (entry === toolName) return true;
-    // Prefix-pin: an entry ending in `_` matches any tool whose
-    // name STARTS with the prefix. Substring matching must NOT
-    // also apply — a tool like `my_copilot_helper` would
-    // otherwise be falsely matched by the bare `copilot_` pin.
-    if (entry.endsWith('_')) {
-      if (toolName.startsWith(entry)) return true;
-      continue;
-    }
-    // Substring match: covers family names without a separator
-    // (e.g. `grep` matches `grep_search`, `grep_file_contents`,
-    // `fancy_grepper_tool`).
-    if (toolName.includes(entry)) return true;
+    if (matchesToolName(toolName, entry)) return true;
   }
   return false;
 }
@@ -267,9 +279,21 @@ export interface McpSelectionResult {
   readonly dropped: ReadonlyArray<string>;
   /** Tools pinned because the model called them in a prior turn. */
   readonly historyPinned: ReadonlyArray<string>;
-  /** Tools the user explicitly reserved in `mightyMax.reservedMcpTools` and that exist in the live set. */
+  /** The LIVE tool names matched by the user's `reservedMcpTools` entries. A prefix entry can resolve to many tools. */
   readonly reserved: ReadonlyArray<string>;
-  /** True when the reserved list length exceeds `mcpMaxTools` — chat-provider warns the user. */
+  /**
+   * Reserved entries that matched no live tool — a typo, or a
+   * server that is not currently loaded. Reported so the
+   * chat-provider can warn: the entry is doing nothing, and
+   * silently is how issue #88 stayed invisible.
+   */
+  readonly unmatchedReserved: ReadonlyArray<string>;
+  /**
+   * True when the RESOLVED reserved set exceeds `mcpMaxTools` —
+   * chat-provider warns the user. Measured after expansion, so a
+   * single prefix reserving hundreds of tools is correctly reported
+   * rather than counting as one entry.
+   */
   readonly reservedOverflow: boolean;
   /** Tools that had been used in a prior turn but lost their slot to a newer tool this turn. */
   readonly evicted: ReadonlyArray<string>;
@@ -331,31 +355,53 @@ export function selectMcpToolsToInclude(
       historyPinned: [],
       evicted: [],
       reserved: [],
+      // Every entry is unmatched here by definition — no live
+      // tools means nothing can match. Reported so the provider
+      // warns rather than leaving the user to wonder why their
+      // reserved list does nothing.
+      unmatchedReserved: [...reservedMcpToolNames],
       reservedOverflow: false,
     };
   }
 
-  // Resolve the reserved entries against the live set. A
-  // reserved entry that doesn't match any loaded tool is a
-  // no-op (we still log it on the chat-provider side; the
-  // selection function is pure and has no logger). Duplicates
-  // within the reserved list are deduped.
+  // Resolve the reserved entries against the live set.
+  //
+  // Issue #88: this used a bare `liveMcpToolNames.includes(name)`,
+  // so a prefix entry (`mcp_github_mcp_se_`) matched nothing —
+  // `includes` is an exact array lookup and the prefix is not
+  // itself a tool name. The Manage MCP Tools UI already
+  // implemented the prefix rule and advertised "Matches N loaded
+  // tools", so a user could configure a prefix, watch it report a
+  // match count, and get zero reservation with no error. Both
+  // surfaces now go through `matchesToolName`, which implements
+  // all three shapes (exact / prefix-on-trailing-`_` / substring).
+  //
+  // An entry matching nothing is still a silent no-op — the
+  // selection function is pure and has no logger. The
+  // chat-provider logs unmatched reserved entries; see
+  // `selectMcpToolsToInclude`'s doc comment.
   const reservedSet = new Set<string>();
   const reservedLive: string[] = [];
-  for (const name of reservedMcpToolNames) {
-    if (!reservedSet.has(name) && liveMcpToolNames.includes(name)) {
-      reservedSet.add(name);
-      reservedLive.push(name);
-    } else if (!reservedSet.has(name)) {
-      // Reserved entry not in live set — still mark seen so we
-      // can report it in `reservedLive` (empty), but don't add.
-      // We track this via `reservedOverflow`-style logic only on
-      // the chat-provider side; the selection function just
-      // silently drops absent reserved entries.
-      reservedSet.add(name);
+  const unmatchedReserved: string[] = [];
+  for (const entry of reservedMcpToolNames) {
+    let matchedAny = false;
+    for (const live of liveMcpToolNames) {
+      if (!matchesToolName(live, entry)) continue;
+      matchedAny = true;
+      // Two entries can resolve to the same tool (a prefix plus an
+      // exact name); reserve it once.
+      if (!reservedSet.has(live)) {
+        reservedSet.add(live);
+        reservedLive.push(live);
+      }
     }
+    if (!matchedAny) unmatchedReserved.push(entry);
   }
-  const reservedOverflow = reservedMcpToolNames.length > mcpMaxTools;
+  // Overflow is measured on the RESOLVED count. Comparing the raw
+  // entry count under-counted badly once a single prefix could
+  // expand to hundreds of tools — it would report "fits" for a
+  // prefix that reserves 200 tools against a cap of 60.
+  const reservedOverflow = reservedLive.length > mcpMaxTools;
 
   // The LRU budget is what's left after reserved + history.
   // If reserved + history already exceeds the cap, history
@@ -382,6 +428,7 @@ export function selectMcpToolsToInclude(
       dropped: liveMcpToolNames.filter((n) => !alwaysOn.has(n)),
       historyPinned: alwaysOnLive.filter((n) => historySet.has(n)),
       reserved: reservedLive,
+      unmatchedReserved,
       evicted: [],
       reservedOverflow,
     };
@@ -425,6 +472,7 @@ export function selectMcpToolsToInclude(
     dropped,
     historyPinned: alwaysOnLive.filter((n) => historySet.has(n)),
     reserved: reservedLive,
+    unmatchedReserved,
     evicted,
     reservedOverflow,
   };

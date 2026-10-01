@@ -6,6 +6,59 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-10-01
+
+Patch release. Two silent-failure fixes, both the same shape: a
+capability was advertised by one surface and unimplemented by another,
+so a user could configure it correctly, be told it worked, and get
+nothing.
+
+### Fixed
+
+- **`minimax_subagent` was registered but invisible to the model.** The
+  tool was registered with a bare `{ invoke }` object. That
+  type-checks — the `LanguageModelTool` interface declares only
+  `invoke` and `prepareInvocation` — but the VS Code runtime also
+  reads `description` and `inputSchema` off the implementation object
+  to advertise the tool, which is the escape hatch the MCP search
+  adapter already documented and used. With neither field, VS Code
+  had nothing to advertise and the tool never entered the model's
+  tool list.
+
+  The symptom was visible in a captured 0.9.2 session: three
+  `runSubagent` emissions, zero `minimax_subagent`, and the name
+  absent from every logged tool array. T35's "prefer our single-box
+  wrapper" had been inert since it shipped, so sub-agent results
+  still rendered as a wall of collapsible parts. The registration now
+  takes `description` and `inputSchema` from the existing
+  `buildSubAgentDescriptor()` — the descriptor that was already
+  written and unit-tested but only ever called by the test suite — so
+  the advertised schema and `validateSubAgentInput` cannot drift.
+
+- **`mightyMax.reservedMcpTools` prefix entries reserved nothing**
+  (issue #88). The filter resolved reserved entries with a bare
+  `liveMcpToolNames.includes(name)` — an exact array lookup — so a
+  prefix like `mcp_github_mcp_se_` matched nothing, because a prefix
+  is not itself a tool name. The Manage MCP Tools UI implemented the
+  prefix rule separately and displayed "Matches 3 loaded tools", so
+  a user could configure a prefix, watch it report a match count, and
+  get zero reservation with no error anywhere.
+
+  All three surfaces now share one `matchesToolName` helper
+  (exact / prefix-on-trailing-`_` / substring), so they cannot
+  diverge again. Two related corrections came with it:
+
+  - `reservedOverflow` is measured on the **resolved** set rather
+    than the entry count. Counting entries under-reported badly once
+    a single prefix could expand to hundreds of tools — one entry
+    reserving 200 tools counted as "1" and reported "fits".
+  - Reserved entries that match nothing are now **reported**
+    (`unmatchedReserved`) and logged at `warn`, instead of being
+    silently dropped. A typo'd tool name is now diagnosable.
+
+Gates: compile clean · `eslint src --max-warnings 0` clean ·
+890 tests pass, 0 fail (+12).
+
 ## [0.9.3] — 2026-10-01
 
 Patch release. Two themes: sub-agent delegation is structurally

@@ -25,11 +25,14 @@ import { describe, it } from 'node:test';
 
 import {
   applyAnthropicRequestTransform,
+  coerceThinkingEffort,
   getMaxTokensForModel,
   getModelSampler,
   getThinkingConfig,
+  isM31FlashFamily,
   sanitizeAnthropicSchema,
   sanitizeSurrogates,
+  THINKING_EFFORT_VALUES,
 } from './domain/anthropic-transform.js';
 import type { MiniMaxWireMessage } from '../ports/minimax-client.js';
 
@@ -273,9 +276,7 @@ describe('applyAnthropicRequestTransform', () => {
   });
 
   it('sanitizes surrogate code points in text content', () => {
-    const messages: MiniMaxWireMessage[] = [
-      { role: 'user', content: 'a\uD800b' },
-    ];
+    const messages: MiniMaxWireMessage[] = [{ role: 'user', content: 'a\uD800b' }];
     const result = applyAnthropicRequestTransform(messages, 'sys\uDC00tem');
     equal(result.messages[0]?.content, 'a\uFFFDb');
     equal(result.system, 'sys\uFFFDtem');
@@ -329,18 +330,12 @@ describe('applyAnthropicRequestTransform', () => {
   });
 
   it('returns a single cache marker when only one message survives', () => {
-    const result = applyAnthropicRequestTransform(
-      [{ role: 'user', content: 'only' }],
-      '',
-    );
+    const result = applyAnthropicRequestTransform([{ role: 'user', content: 'only' }], '');
     deepStrictEqual(result.cacheMarkers, [1]);
   });
 
   it('returns no cache markers when no messages survive', () => {
-    const result = applyAnthropicRequestTransform(
-      [{ role: 'user', content: '' }],
-      '',
-    );
+    const result = applyAnthropicRequestTransform([{ role: 'user', content: '' }], '');
     deepStrictEqual(result.cacheMarkers, []);
     deepStrictEqual(result.messages, []);
   });
@@ -471,5 +466,105 @@ describe('getThinkingConfig', () => {
 
   it('returns undefined for M1 (no thinking in catalog)', () => {
     equal(getThinkingConfig('MiniMax-M1', 'none', 32_000), undefined);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M3.1-Flash: output_config.effort + the always-thinks 400 guard
+//
+// Grounded in the MiniMax OpenAPI `CreateMessageReq` schema:
+//   output_config.effort — "Accepts `low`, `medium`, `high`, `xhigh`,
+//     or `max`; defaults to `max` when omitted. Other models ignore
+//     this field. `none` is not supported ... and returns HTTP 400."
+//   thinking.type — "MiniMax-M3.1-Flash-Preview: always thinks. If
+//     `type` is sent it must be `adaptive`; `disabled` returns HTTP
+//     400."
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isM31FlashFamily', () => {
+  it('matches the M3.1 Flash preview id', () => {
+    equal(isM31FlashFamily('MiniMax-M3.1-Flash-Preview'), true);
+  });
+  it('is case-insensitive', () => {
+    equal(isM31FlashFamily('minimax-m3.1-flash-preview'), true);
+  });
+  it('does NOT match plain M3', () => {
+    equal(isM31FlashFamily('MiniMax-M3'), false);
+  });
+  it('does NOT match the M2.x family', () => {
+    equal(isM31FlashFamily('MiniMax-M2.7'), false);
+  });
+});
+
+describe('coerceThinkingEffort', () => {
+  it('lists exactly the five levels the OpenAPI schema documents', () => {
+    deepStrictEqual([...THINKING_EFFORT_VALUES], ['low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
+  it('accepts every documented level', () => {
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      equal(coerceThinkingEffort(level), level);
+    }
+  });
+  it('rejects `none` (the API 400s on it for M3.1-Flash)', () => {
+    equal(coerceThinkingEffort('none'), undefined);
+  });
+  it('rejects unknown strings', () => {
+    equal(coerceThinkingEffort('turbo'), undefined);
+    equal(coerceThinkingEffort(''), undefined);
+  });
+  it('rejects non-strings', () => {
+    equal(coerceThinkingEffort(3), undefined);
+    equal(coerceThinkingEffort(null), undefined);
+    equal(coerceThinkingEffort(undefined), undefined);
+  });
+});
+
+describe('getThinkingConfig — M3.1 Flash', () => {
+  const FLASH = 'MiniMax-M3.1-Flash-Preview';
+
+  it('carries output_config.effort defaulting to `max`', () => {
+    const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000);
+    ok(cfg);
+    equal(cfg?.thinking.type, 'adaptive');
+    equal(cfg?.outputConfig?.effort, 'max');
+  });
+
+  it('honors an explicit effort level', () => {
+    const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000, 'adaptive', 'low');
+    equal(cfg?.outputConfig?.effort, 'low');
+  });
+
+  it('CLAMPS `disabled` to `adaptive` — the API 400s on thinking:disabled', () => {
+    // Regression guard: a user with mightyMax.m3ThinkingMode =
+    // "disabled" on M3.1-Flash would otherwise get HTTP 400 on
+    // every single request.
+    const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000, 'disabled');
+    ok(cfg);
+    equal(
+      cfg?.thinking.type,
+      'adaptive',
+      'M3.1-Flash always thinks; disabled must be clamped, not forwarded',
+    );
+  });
+
+  it('still carries effort when the mode was clamped', () => {
+    const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000, 'disabled', 'high');
+    equal(cfg?.thinking.type, 'adaptive');
+    equal(cfg?.outputConfig?.effort, 'high');
+  });
+});
+
+describe('getThinkingConfig — M3 does not receive output_config', () => {
+  it('omits outputConfig for plain M3 (spec: other models ignore it)', () => {
+    const cfg = getThinkingConfig('MiniMax-M3', 'anthropic', 32_000, 'adaptive', 'low');
+    ok(cfg);
+    equal(cfg?.thinking.type, 'adaptive');
+    equal(cfg?.outputConfig, undefined, 'M3 ignores output_config; do not put it on the wire');
+  });
+
+  it('M3 still honors disabled (unlike M3.1 Flash)', () => {
+    const cfg = getThinkingConfig('MiniMax-M3', 'anthropic', 32_000, 'disabled');
+    equal(cfg?.thinking.type, 'disabled');
   });
 });

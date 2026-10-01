@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -80,7 +80,6 @@
       {
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
-        "managementCommand": "mightyMax.manage",
         "configuration": {
           "properties": {
             "apiKey": {
@@ -247,9 +246,29 @@
           "default": "adaptive",
           "enumDescriptions": [
             "Enable MiniMax M3 adaptive thinking for stronger planning and interleaved tool use.",
-            "Disable visible MiniMax M3 thinking for lower-latency, direct responses."
+            "Disable visible MiniMax M3 thinking for lower-latency, direct responses. Ignored by M3.1 Flash, which always thinks — the API rejects thinking:disabled with HTTP 400."
           ],
-          "description": "Controls MiniMax M3 thinking on the Anthropic-compatible endpoint. M2-family models retain their native reasoning behavior.",
+          "description": "Controls MiniMax M3 thinking on the Anthropic-compatible endpoint. M2-family models retain their native reasoning behavior. M3.1 Flash always thinks and cannot be switched off; use 'mightyMax.m31ThinkingEffort' to tune its depth instead.",
+          "scope": "window"
+        },
+        "mightyMax.m31ThinkingEffort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "default": "max",
+          "enumDescriptions": [
+            "Shallowest reasoning — fastest, lowest token cost.",
+            "Light reasoning for routine edits and lookups.",
+            "Balanced reasoning for most agentic work.",
+            "Deep reasoning for architecture and multi-step refactors.",
+            "Fullest reasoning — slowest and most expensive. Matches the API's own default when the field is omitted."
+          ],
+          "description": "Thinking depth for MiniMax-M3.1-Flash-Preview, sent as `output_config.effort` on the Anthropic-compatible endpoint. Affects M3.1 Flash only — MiniMax documents that M3 and the M2.x family ignore this field. M3.1 Flash cannot disable thinking entirely, so 'low' is the cheapest option. Higher levels increase latency and token spend.",
           "scope": "window"
         },
         "mightyMax.toolResultMaxChars": {
@@ -451,8 +470,7 @@
             "model",
             "prompt",
             "durationSec"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     ]

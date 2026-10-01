@@ -6,6 +6,46 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-09-30
+
+Patch release. Adds the M3.1-Flash thinking-depth control and fixes
+a latent HTTP 400 that the 0.9.0 catalog addition made reachable.
+
+### Fixed
+
+- **M3.1-Flash no longer 400s when `m3ThinkingMode` is `"disabled"`.**
+  The MiniMax OpenAPI spec is explicit that
+  `MiniMax-M3.1-Flash-Preview` "always thinks" and that
+  `thinking: { type: 'disabled' }` "returns HTTP 400" for it.
+  0.9.0 added the model to the catalog, so any user who had set
+  `mightyMax.m3ThinkingMode = "disabled"` (a long-standing
+  setting, for M3 latency) and then selected M3.1-Flash hit a
+  hard, unexplained 400 on **every** request.
+  `getThinkingConfig` now clamps the mode to `adaptive` for the
+  M3.1 family and logs an `info` line explaining the clamp. The
+  user's depth intent is preserved through the new effort setting
+  below.
+
+### Added
+
+- **`mightyMax.m31ThinkingEffort` — M3.1-Flash thinking depth.**
+  Sends `output_config.effort` on the Anthropic-compatible
+  endpoint, implementing the "tunable thinking depth" the
+  M3.1-Flash announcement advertises but 0.9.0 did not expose.
+  Five levels — `low` / `medium` / `high` / `xhigh` / `max` —
+  defaulting to `max`, which is the API's own default when the
+  field is omitted, so "unset" and "explicitly max" behave
+  identically.
+
+  Per the spec, this field is **M3.1-Flash-only**: "Other models
+  ignore this field." M3 and the M2.x family therefore never see
+  `output_config` on the wire.
+
+  `none` is deliberately not offered. The spec states it "is not
+  supported for `MiniMax-M3.1-Flash-Preview` and returns HTTP
+  400", and M3.1-Flash cannot disable thinking at all — `low` is
+  the cheapest available option.
+
 ## [0.9.0] — 2026-09-30
 
 Minor release — two additive features, no breaking changes.

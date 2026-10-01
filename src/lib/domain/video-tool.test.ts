@@ -40,9 +40,19 @@ describe('buildGenerateVideoDescriptor', () => {
     assert.deepEqual([...d.inputSchema.required].sort(), ['durationSec', 'model', 'prompt']);
   });
 
-  it('input schema disallows additional properties', () => {
+  it('input schema is a closed object (no additionalProperties)', () => {
+    // The manifest schema for `languageModelTools[].inputSchema`
+    // rejects `additionalProperties`, and `sanitizeAnthropicSchema`
+    // strips `additionalProperties: false` before the wire anyway —
+    // so carrying it was dead weight on both ends. Unrecognised
+    // keys are dropped by `validateVideoToolInput` regardless,
+    // which is the behaviour that actually protects the request.
     const d = buildGenerateVideoDescriptor();
-    assert.equal(d.inputSchema.additionalProperties, false);
+    assert.equal(
+      Object.hasOwn(d.inputSchema, 'additionalProperties'),
+      false,
+      'additionalProperties must not be emitted',
+    );
   });
 
   it('input schema constrains durationSec to 6 or 10', () => {

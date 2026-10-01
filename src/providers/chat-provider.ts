@@ -52,7 +52,11 @@ import {
   getMaxTokensForModel,
   getModelSampler,
   getThinkingConfig,
+  coerceThinkingEffort,
+  DEFAULT_THINKING_EFFORT,
+  isM31FlashFamily,
   type M3ThinkingMode,
+  type ThinkingEffort,
 } from '../lib/domain/anthropic-transform.js';
 import { LruMap } from '../lib/domain/lru.js';
 import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
@@ -400,12 +404,26 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // M3 native thinking: opt the model in to its reasoning block
     // (Anthropic interface defaults thinking OFF, unlike Chat
     // Completions). Without this, M3 rushes the first tool call.
+    //
+    // For M3.1-Flash this ALSO carries the `output_config.effort`
+    // depth knob (the spec: M3.1-Flash always thinks and rejects
+    // `thinking: { type: 'disabled' }` with 400, so `getThinkingConfig`
+    // clamps the mode and surfaces the depth here instead).
+    const thinkingMode = this.readM3ThinkingMode();
     const thinkingConfig = getThinkingConfig(
       model.id,
       thinkingStyle,
       maxTokens,
-      this.readM3ThinkingMode(),
+      thinkingMode,
+      this.readM31ThinkingEffort(),
     );
+    if (isM31FlashFamily(model.id) && thinkingMode === 'disabled') {
+      // A user with `m3ThinkingMode: 'disabled'` on M3.1-Flash
+      // would otherwise get an unexplained HTTP 400 on every turn.
+      this.logger.info('M3.1-Flash always thinks — ignoring m3ThinkingMode=disabled', {
+        model: model.id,
+      });
+    }
     // User-overridable system prompt.
     const systemPrompt = this.readSystemPromptOverride();
 
@@ -422,6 +440,9 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       stream: true,
       dialect,
       ...(thinkingConfig !== undefined ? { thinking: thinkingConfig.thinking } : {}),
+      ...(thinkingConfig?.outputConfig !== undefined
+        ? { outputConfig: thinkingConfig.outputConfig }
+        : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
       ...(mappingResult.cacheMarkers.length > 0
         ? { cacheMarkers: mappingResult.cacheMarkers }
@@ -738,6 +759,20 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   private readM3ThinkingMode(): M3ThinkingMode {
     const raw = this.readMightyMaxSetting('m3ThinkingMode');
     return raw === 'disabled' ? 'disabled' : 'adaptive';
+  }
+
+  /**
+   * Read `mightyMax.m31ThinkingEffort` (M3.1-Flash thinking depth).
+   *
+   * Falls back to `DEFAULT_THINKING_EFFORT` on an unknown value so
+   * a typo or a future MiniMax-only level degrades to the spec's own
+   * default (`max`) rather than 400-ing the request.
+   */
+  private readM31ThinkingEffort(): ThinkingEffort {
+    return (
+      coerceThinkingEffort(this.readMightyMaxSetting('m31ThinkingEffort')) ??
+      DEFAULT_THINKING_EFFORT
+    );
   }
 
   private readToolResultMaxChars(): number {

@@ -1,4 +1,7 @@
 import type { Logger } from './logger.js';
+import type { ThinkingEffort } from '../lib/domain/anthropic-transform.js';
+
+export type { ThinkingEffort } from '../lib/domain/anthropic-transform.js';
 
 /**
  * A single content part of a MiniMax wire message. The OpenAI-compatible
@@ -96,6 +99,26 @@ export interface MiniMaxCompletionRequest {
   thinking?: {
     type: 'enabled' | 'adaptive' | 'disabled';
     budgetTokens?: number;
+  };
+  /**
+   * `output_config.effort` — thinking-depth tuning. Serialized as
+   * `output_config: { effort }` on the Anthropic dialect.
+   *
+   * **M3.1-Flash-Preview only.** Per the MiniMax OpenAPI spec, the
+   * field "is used to tune thinking depth for `MiniMax-M3.1-Flash-Preview`
+   * … Other models ignore this field." We therefore only populate it
+   * for the M3.1 family and leave M3 / M2.x requests untouched —
+   * sending it to a model that ignores it is harmless but noise, and
+   * omitting it keeps the wire body minimal.
+   *
+   * `none` is NOT a valid effort: the spec says it "returns HTTP 400"
+   * for M3.1-Flash-Preview. To turn thinking off there, use the
+   * `m3ThinkingMode` setting instead — but note M3.1-Flash always
+   * thinks and rejects `thinking: { type: 'disabled' }` with 400
+   * (see `getThinkingConfig`).
+   */
+  outputConfig?: {
+    effort: ThinkingEffort;
   };
   /**
    * Optional system prompt the chat-provider prepends to the

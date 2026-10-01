@@ -455,7 +455,10 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
       if (count === undefined) {
         throw new MiniMaxClientError('parse', 'MiniMax token-count response omitted input_tokens');
       }
-      logger.debug('MiniMax native token count complete', { model: request.model, inputTokens: count });
+      logger.debug('MiniMax native token count complete', {
+        model: request.model,
+        inputTokens: count,
+      });
       return count;
     } catch (err) {
       if (err instanceof MiniMaxClientError) throw err;
@@ -1079,6 +1082,13 @@ interface AnthropicRequest {
   top_p?: number;
   top_k?: number;
   thinking?: { type: 'enabled' | 'adaptive' | 'disabled'; budget_tokens?: number };
+  /**
+   * M3.1-Flash thinking-depth tuning. Mirrors the
+   * `output_config.effort` field on the Anthropic wire body; see
+   * `MiniMaxCompletionRequest.outputConfig` for why this is
+   * M3.1-only.
+   */
+  output_config?: { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' };
 }
 
 /** The subset of an Anthropic request accepted by the token-count endpoint. */
@@ -1293,6 +1303,14 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
         : {}),
     };
   }
+  // `output_config.effort` — M3.1-Flash thinking depth. The
+  // OpenAPI spec says other models ignore this field, so the
+  // chat-provider only populates it for the M3.1 family; we
+  // forward it verbatim when present. `none` is intentionally
+  // not representable (the spec 400s on it for M3.1-Flash).
+  if (request.outputConfig !== undefined) {
+    out.output_config = { effort: request.outputConfig.effort };
+  }
 
   // Cache markers: stamp `cache_control: { type: 'ephemeral' }`
   // on the last 1-2 user-history messages. The mapper's
@@ -1311,9 +1329,7 @@ function serializeAnthropicRequest(request: MiniMaxCompletionRequest): Anthropic
         // Convert string content to a single text block with the
         // cache_control marker; preserves the wire compatibility
         // for the chat-provider.
-        msg.content = [
-          { type: 'text', text: content, cache_control: { type: 'ephemeral' } },
-        ];
+        msg.content = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
       } else if (Array.isArray(content)) {
         // Find the last text or tool_use block. Skip image
         // blocks (Anthropic does not honor cache_control on
@@ -2063,9 +2079,7 @@ function summarizeRequestForLog(
  * `{ bodyParseFailed: true }` marker so the failure is
  * diagnosable without exposing HTML / echoed input / etc.
  */
-function summarizeErrorBody(
-  bodyText: string,
-): {
+function summarizeErrorBody(bodyText: string): {
   errorType?: string;
   errorMessage?: string;
   errorCode?: string | number;

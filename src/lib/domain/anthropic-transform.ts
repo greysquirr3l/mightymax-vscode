@@ -42,10 +42,7 @@
  */
 
 import type { ThinkingStyle } from '../../ports/model-catalog.js';
-import type {
-  MiniMaxWireContentPart,
-  MiniMaxWireMessage,
-} from '../../ports/minimax-client.js';
+import type { MiniMaxWireContentPart, MiniMaxWireMessage } from '../../ports/minimax-client.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Surrogate sanitization
@@ -297,11 +294,7 @@ function isCompositionKey(o: Record<string, unknown>): boolean {
 }
 
 function inferTypeFromKeywords(input: Record<string, unknown>): string[] | null {
-  if (
-    'properties' in input ||
-    'required' in input ||
-    'additionalProperties' in input
-  ) {
+  if ('properties' in input || 'required' in input || 'additionalProperties' in input) {
     return ['object'];
   }
   if ('items' in input || 'prefixItems' in input) {
@@ -598,6 +591,14 @@ export interface ThinkingConfig {
     readonly type: 'enabled' | 'adaptive' | 'disabled';
     readonly budgetTokens?: number;
   };
+  /**
+   * Set on the Anthropic request body as `output_config: { effort }`.
+   * Only ever populated for the M3.1 Flash family — the spec says
+   * other models ignore the field.
+   */
+  readonly outputConfig?: {
+    readonly effort: ThinkingEffort;
+  };
 }
 
 /**
@@ -617,11 +618,70 @@ export interface ThinkingConfig {
  */
 export type M3ThinkingMode = 'adaptive' | 'disabled';
 
+/**
+ * Thinking-depth levels for `output_config.effort`.
+ *
+ * Grounded in the MiniMax OpenAPI `CreateMessageReq` schema
+ * (`api-reference/text/api/openapi-chat-anthropic.json`), which
+ * documents `output_config.effort` as:
+ *
+ * > Thinking depth for `MiniMax-M3.1-Flash-Preview`. Accepts `low`,
+ * > `medium`, `high`, `xhigh`, or `max`; defaults to `max` when
+ * > omitted. **Other models ignore this field.** `none` is not
+ * > supported for `MiniMax-M3.1-Flash-Preview` and returns HTTP 400.
+ *
+ * Two consequences drive the code below:
+ *
+ *  1. `none` is deliberately NOT a member. Turning thinking off is
+ *     the `m3ThinkingMode` setting's job, and for M3.1-Flash even
+ *     that is a 400 (see `getThinkingConfig`).
+ *  2. This is M3.1-only. M3 and the M2.x family ignore the field, so
+ *     `getThinkingConfig` never emits it for them.
+ */
+export type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
+ * The spec's own default when `output_config` is omitted. We default
+ * the setting to this so that "unset" and "set to default" produce
+ * identical behaviour rather than silently downgrading depth.
+ */
+export const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'max';
+
+/** Every valid effort value, in ascending order of depth. */
+export const THINKING_EFFORT_VALUES: ReadonlyArray<ThinkingEffort> = Object.freeze([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]);
+
+/** Narrow an unknown setting value to a `ThinkingEffort`, or `undefined`. */
+export function coerceThinkingEffort(raw: unknown): ThinkingEffort | undefined {
+  return typeof raw === 'string' && (THINKING_EFFORT_VALUES as ReadonlyArray<string>).includes(raw)
+    ? (raw as ThinkingEffort)
+    : undefined;
+}
+
+/**
+ * True for the M3.1 Flash family (`MiniMax-M3.1-Flash-Preview` and
+ * any future M3.1 variant).
+ *
+ * This predicate must be checked BEFORE the broader M3 branch: the
+ * plain `includes('minimax-m3')` test also matches
+ * `minimax-m3.1-flash-preview`, and the two families need opposite
+ * handling for the `thinking` block.
+ */
+export function isM31FlashFamily(modelId: string): boolean {
+  return modelId.toLowerCase().includes('minimax-m3.1');
+}
+
 export function getThinkingConfig(
   modelId: string,
   thinkingStyle: ThinkingStyle,
   _maxTokens: number,
   mode: M3ThinkingMode = 'adaptive',
+  effort: ThinkingEffort = DEFAULT_THINKING_EFFORT,
 ): ThinkingConfig | undefined {
   if (thinkingStyle !== 'anthropic') return undefined;
   const id = modelId.toLowerCase();
@@ -630,9 +690,22 @@ export function getThinkingConfig(
   // does not take a budget, so the chat-provider's 32K
   // request-clamp is irrelevant here.
   void _maxTokens;
+
+  // M3.1-Flash ALWAYS thinks. The spec is explicit that
+  // `thinking: { type: 'disabled' }` "returns HTTP 400" for this
+  // model, and that `adaptive` is "the only value accepted".
+  // Honouring the `m3ThinkingMode: 'disabled'` setting here would
+  // turn every request into a hard 400, so we clamp to `adaptive`
+  // and let `output_config.effort` carry the user's depth intent.
+  const isFlash = isM31FlashFamily(id);
+  const effectiveMode: 'adaptive' | 'disabled' = isFlash && mode === 'disabled' ? 'adaptive' : mode;
+
   return {
     thinking: {
-      type: mode,
+      type: effectiveMode,
     },
+    // `output_config` is M3.1-only per the spec; M3 and M2.x
+    // ignore it, so we don't send it there.
+    ...(isFlash ? { outputConfig: { effort } } : {}),
   };
 }

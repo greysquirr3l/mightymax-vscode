@@ -55,6 +55,18 @@ export interface ModelCapabilities {
   imageInput: boolean;
   /** Native thinking blocks (M3 exposes these on the Anthropic-compatible endpoint). */
   thinking: boolean;
+  /**
+   * Video input via Anthropic-compatible content blocks.
+   *
+   * Only `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` accept it —
+   * the MiniMax docs state "The M2.7, M2.5, M2.1, and M2 series
+   * support text and tool-call content blocks only", so sending a
+   * video part to an M2.x model is a guaranteed rejection. The
+   * message mapper consults this flag to downgrade the part to an
+   * `unsupported-content` warning instead of putting a doomed
+   * request on the wire.
+   */
+  videoInput: boolean;
 }
 
 export interface ModelCatalog {

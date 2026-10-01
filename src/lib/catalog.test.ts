@@ -58,6 +58,48 @@ describe('BUILT_IN_CATALOG', () => {
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
 
+  it('M3.1-Flash-Preview advertises video input', () => {
+    // MiniMax docs: "MiniMax-M3.1-Flash-Preview and MiniMax-M3
+    // support image and video input through Anthropic-compatible
+    // content blocks."
+    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.ok(flash, 'M3.1-Flash-Preview entry must exist');
+    assert.equal(flash.capabilities.videoInput, true);
+  });
+
+  it('M3 advertises video input', () => {
+    const m3 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3');
+    assert.ok(m3, 'M3 entry must exist');
+    assert.equal(m3.capabilities.videoInput, true);
+  });
+
+  it('the M2.x family does NOT advertise video input', () => {
+    // MiniMax docs: "The M2.7, M2.5, M2.1, and M2 series support
+    // text and tool-call content blocks only." Advertising video
+    // here would put a guaranteed-400 request on the wire.
+    for (const id of ['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2']) {
+      const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
+      assert.ok(entry, `${id} entry must exist`);
+      assert.equal(entry.capabilities.videoInput, false, `${id} must not advertise videoInput`);
+    }
+  });
+
+  it('M1 does NOT advertise video input', () => {
+    const m1 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M1');
+    assert.ok(m1, 'M1 entry must exist');
+    assert.equal(m1.capabilities.videoInput, false);
+  });
+
+  it('every entry declares videoInput as a boolean', () => {
+    for (const entry of BUILT_IN_CATALOG) {
+      assert.equal(
+        typeof entry.capabilities.videoInput,
+        'boolean',
+        `${entry.id}.capabilities.videoInput must be a boolean`,
+      );
+    }
+  });
+
   it('M3 advertises a 1M / 128K token budget matching models.dev', () => {
     // models.dev's "minimax" provider entry for MiniMax-M3 lists
     //   limit.context = 1_000_000
@@ -176,6 +218,7 @@ describe('validateCatalog', () => {
           // even though it would be a compile error in a typed call site.
           toolCalling: 'yes' as unknown as boolean,
           imageInput: false,
+          videoInput: false,
           thinking: false,
         },
         thinkingStyle: 'none',
@@ -205,7 +248,7 @@ describe('mergeCatalog', () => {
         family: 'minimax',
         maxInputTokens: 500_000,
         maxOutputTokens: 8_192,
-        capabilities: { toolCalling: false, imageInput: false, thinking: false },
+        capabilities: { toolCalling: false, imageInput: false, thinking: false, videoInput: true },
         thinkingStyle: 'none',
         detail: 'preview',
       },
@@ -229,7 +272,7 @@ describe('mergeCatalog', () => {
         family: 'minimax',
         maxInputTokens: 1,
         maxOutputTokens: 1,
-        capabilities: { toolCalling: false, imageInput: false, thinking: false },
+        capabilities: { toolCalling: false, imageInput: false, thinking: false, videoInput: true },
         thinkingStyle: 'none',
         detail: 'should be ignored',
       },
@@ -293,7 +336,7 @@ describe('mergeCatalog', () => {
         family: '',
         maxInputTokens: 123_000,
         maxOutputTokens: 7_000,
-        capabilities: { toolCalling: true, imageInput: false, thinking: false },
+        capabilities: { toolCalling: true, imageInput: false, thinking: false, videoInput: true },
         thinkingStyle: 'none',
         detail: '',
       },
@@ -354,6 +397,7 @@ function makeEntry(overrides: Partial<CatalogEntry>): CatalogEntry {
       toolCalling: true,
       imageInput: false,
       thinking: false,
+      videoInput: false,
     },
     thinkingStyle: overrides.thinkingStyle ?? 'none',
     detail: overrides.detail ?? 'test',

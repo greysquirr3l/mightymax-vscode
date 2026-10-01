@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -73,6 +73,11 @@
       {
         "command": "mightyMax.generateVideo",
         "title": "Mighty Max: Generate Video (Hailuo-03)",
+        "category": "Mighty Max"
+      },
+      {
+        "command": "mightyMax.generateImage",
+        "title": "Mighty Max: Generate Image (image-01)",
         "category": "Mighty Max"
       }
     ],
@@ -312,6 +317,12 @@
           "maximum": 1800000,
           "description": "Total timeout for a single Hailuo-03 video generation pipeline run. Default 10 minutes; range 30s–30 minutes. Longer tasks surface as 'video generation timed out' errors; bump this if you queue 10s H3-Max subject-reference videos.",
           "scope": "window"
+        },
+        "mightyMax.allowImageToolInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the chat model to invoke the `mightyMax_generateImage` tool (MiniMax image-01). When disabled, only the `Mighty Max: Generate Image` command palette entry can run the pipeline. Use this to gate accidental autonomous image spend.",
+          "scope": "window"
         }
       }
     },
@@ -470,6 +481,79 @@
             "model",
             "prompt",
             "durationSec"
+          ]
+        }
+      },
+      {
+        "name": "mightyMax_generateImage",
+        "displayName": "Mighty Max: Generate Image",
+        "toolReferenceName": "mightyMax_generateImage",
+        "userDescription": "Generate an image with MiniMax image-01. Saves to disk and returns the path.",
+        "modelDescription": "Generate an image from a text prompt using MiniMax image-01. Returns the absolute path of the saved PNG on disk; describe the result to the user. Use aspectRatio for a standard shape, or width+height together for exact pixel dimensions (each must be a multiple of 8 between 512 and 2048; cannot be combined with aspectRatio).",
+        "tags": [
+          "minimax",
+          "media",
+          "image"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "enum": [
+                "image-01"
+              ],
+              "description": "Which MiniMax image model to invoke."
+            },
+            "prompt": {
+              "type": "string",
+              "maxLength": 1500,
+              "description": "Plain-text description of the desired image. Required. Max 1500 characters."
+            },
+            "aspectRatio": {
+              "type": "string",
+              "enum": [
+                "1:1",
+                "16:9",
+                "4:3",
+                "3:2",
+                "2:3",
+                "3:4",
+                "9:16",
+                "21:9"
+              ],
+              "description": "Output aspect ratio. Default 1:1."
+            },
+            "width": {
+              "type": "number",
+              "minimum": 512,
+              "maximum": 2048,
+              "description": "Explicit output width in pixels. Must be a multiple of 8 and set together with height. Cannot be combined with aspectRatio."
+            },
+            "height": {
+              "type": "number",
+              "minimum": 512,
+              "maximum": 2048,
+              "description": "Explicit output height in pixels. Must be a multiple of 8 and set together with width. Cannot be combined with aspectRatio."
+            },
+            "count": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 9,
+              "description": "Number of images to generate (1-9). Default 1."
+            },
+            "seed": {
+              "type": "number",
+              "description": "Random seed. The same seed and parameters produce a reproducible image."
+            },
+            "promptOptimizer": {
+              "type": "boolean",
+              "description": "Let MiniMax expand the prompt before generating. Default false."
+            }
+          },
+          "required": [
+            "model",
+            "prompt"
           ]
         }
       }

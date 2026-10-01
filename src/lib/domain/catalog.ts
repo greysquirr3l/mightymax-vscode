@@ -143,9 +143,10 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: true,
       thinking: true,
+      videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + tools + thinking',
+    detail: '1M ctx · 128K out · image + video + tools + thinking',
   }),
   Object.freeze({
     id: 'MiniMax-M3.1-Flash-Preview',
@@ -158,9 +159,10 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: true,
       thinking: true,
+      videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + tools + thinking (preview)',
+    detail: '1M ctx · 128K out · image + video + tools + thinking (preview)',
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',
@@ -173,6 +175,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: true,
       thinking: true,
+      videoInput: false,
     }),
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning',
@@ -188,6 +191,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: true,
       thinking: true,
+      videoInput: false,
     }),
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning',
@@ -203,6 +207,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: true,
       thinking: true,
+      videoInput: false,
     }),
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools + reasoning · structured outputs',
@@ -218,6 +223,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       toolCalling: true,
       imageInput: false,
       thinking: false,
+      videoInput: false,
     }),
     thinkingStyle: 'none',
     detail: '32K ctx · 4K out · tools',
@@ -243,6 +249,12 @@ export const DEFAULT_LIVE_MODEL_CAPS: Readonly<ModelCapabilities> = Object.freez
   toolCalling: true,
   imageInput: true,
   thinking: true,
+  // Conservative for unknown future models: video input is only
+  // documented for the M3 family, so an unrecognised live model does
+  // NOT get the flag. The cost of a false positive is a hard 400 on a
+  // request that carries a video part; the cost of a false negative is
+  // one `unsupported-content` warning. Asymmetric — default to false.
+  videoInput: false,
 });
 
 export interface LiveModelDefaults {
@@ -358,6 +370,7 @@ function fillLiveDefaults(
     toolCalling: defaults.capabilities.toolCalling,
     imageInput: defaults.capabilities.imageInput,
     thinking,
+    videoInput: defaults.capabilities.videoInput,
   };
 
   const detail =

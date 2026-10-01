@@ -58,6 +58,11 @@ const EXCLUDED = new Set([
   // under the stub runner, not here.
   'out/adapters/generate-video-tool-adapter.test.js',
   'out/commands/generate-video-command.test.js',
+  // T36 (image) — same story as the video pair: the tool adapter
+  // wraps `vscode.lm.registerTool` and the command test references
+  // `vscode.QuickPickItem` / `vscode.Uri`.
+  'out/adapters/generate-image-tool-adapter.test.js',
+  'out/commands/generate-image-command.test.js',
 ]);
 
 // Recursive *.test.js collector. CI pins Node 20, which predates

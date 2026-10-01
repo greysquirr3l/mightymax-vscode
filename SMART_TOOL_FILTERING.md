@@ -36,11 +36,12 @@ All settings are in the VS Code Settings UI under "Mighty Max" or in `settings.j
 ### `mightyMax.alwaysIncludeTools`
 
 - **Type**: Array of strings
-- **Default**: `["copilot_", "vscode_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search", "view_image", "runSubagent", "manage_todo_list"]`
+- **Default**: `["copilot_", "vscode_", "run_in_terminal", "apply_patch", "grep_search", "file_search", "semantic_search", "view_image", "runSubagent", "minimax_subagent", "mightyMax_generateVideo", "mightyMax_generateImage", "manage_todo_list"]`
 - **Description**: Tools to keep regardless of relevance scoring. Supports three match modes:
   - **Exact**: `"run_in_terminal"` matches the tool whose `.name === "run_in_terminal"`.
   - **Prefix**: `"copilot_"` matches any tool whose `.name` STARTS with `"copilot_"`. Captures every Copilot Chat built-in (renames don't rot the pin).
   - **Substring**: A pin without a trailing `_` matches any tool containing it as a fragment (e.g. `"grep"` matches `grep_search`, `grep_file_contents`).
+- Sub-agent delegation is reserved in both directions: `"runSubagent"` is a **substring** pin, so it covers the bare `runSubagent` name AND the namespaced `agent/runSubagent` / `vscode/runSubagent` forms VS Code has shipped. `"minimax_subagent"` is our custom single-box wrapper (T35) and is pinned alongside it — both are always present, because the cap silently evicting sub-agent delegation is a correctness bug, not a performance tradeoff.
 - Tools referenced by the current request's `tool_use` / `tool_result` history are pinned automatically and cannot be silently dropped by the cap.
 
 ## How It Works
@@ -52,6 +53,15 @@ All settings are in the VS Code Settings UI under "Mighty Max" or in `settings.j
 ### 2. Priority Tools (Always Included)
 
 Tools matched by `alwaysIncludeTools` (exact / prefix / substring), PLUS every tool referenced by the current request's `tool_use` / `tool_result` history, are sent first regardless of the cap. The history pin is what stops the filter from silently dropping in-flight tool calls mid agent-loop — the failure mode this feature was rebuilt to prevent.
+
+On top of that, three groups are **reserved unconditionally** — merged into the effective config on every request, outside the user's control:
+
+| Reserved set                                               | Why                                                                                                                                                                                       |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runSubagent`, `minimax_subagent`                          | Sub-agent delegation. A user-configured `alwaysIncludeTools` replaces the default list wholesale, so trimming it would otherwise silently cost the agent its ability to spawn sub-agents. |
+| MCP discovery tools (`list servers`, `list tools`, `load`) | The only path by which the model can reach an MCP tool the LRU dropped.                                                                                                                   |
+
+Membership in the reserved set is a compatibility decision, not a tuning one: if a tool renders _nicer_ (`minimax_subagent`) it belongs here, but a tool the agent loop is structurally incomplete without belongs here too.
 
 ### 3. Cap enforcement
 

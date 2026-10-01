@@ -39,6 +39,8 @@ import {
   filterTools,
   discoverMcpTools,
   selectMcpToolsToInclude,
+  DEFAULT_ALWAYS_INCLUDE_TOOLS,
+  MANDATORY_ALWAYS_INCLUDE_TOOLS,
   type ToolFilterConfig,
 } from '../lib/domain/tool-filter.js';
 import {
@@ -375,6 +377,12 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       ...filterConfig,
       alwaysIncludeTools: [
         ...mcpSearchTools,
+        // T37: sub-agent delegation is reserved unconditionally —
+        // a user who trimmed `mightyMax.alwaysIncludeTools` must
+        // not lose it. Ordered FIRST so `filterTools` emits the
+        // sub-agent tools before the rest of the pinned set when
+        // the budget is exhausted.
+        ...MANDATORY_ALWAYS_INCLUDE_TOOLS,
         ...filterConfig.alwaysIncludeTools,
         ...mcpSelection.included,
       ],
@@ -1195,6 +1203,11 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
       // context and on the wire payload if a user wants to find
       // unserializable tool results.
       const resultContent: string[] = [];
+      // T38 — image/video parts lifted out of the tool result, in
+      // encounter order. Flushed onto the parent turn after the
+      // tool-result part so the model sees the result text and the
+      // image it describes as one coherent user turn.
+      const deferredBinary: ChatMessageContentPart[] = [];
       for (const c of part.content) {
         if (c instanceof vscode.LanguageModelTextPart) {
           resultContent.push(c.value);
@@ -1207,17 +1220,46 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
           // own `cacheMarkers` in the domain mapper, so the host's
           // breakpoint hints are redundant on this wire.
           if (METADATA_DATA_PART_MIMES.has(dataPart.mimeType)) continue;
+          const mime = dataPart.mimeType.toLowerCase();
           // Textual payloads (text/*, application/json, *+json) are
           // real tool output — decode the bytes instead of
           // stringifying the Uint8Array into a byte map.
-          const mime = dataPart.mimeType.toLowerCase();
           if (mime.startsWith('text/') || mime === 'application/json' || mime.endsWith('+json')) {
             resultContent.push(new TextDecoder().decode(dataPart.data));
             continue;
           }
-          // Binary payloads (images etc.) cannot ride the
-          // string-only tool-result wire; a short marker keeps the
-          // omission visible without dumping bytes into context.
+          // T38 — images and video returned by a tool (the
+          // `view_image` shape) are model-visible CONTENT, not
+          // opaque blobs. On 0.9.2 they were collapsed to
+          // `[tool result data omitted: image/png, 9328978 bytes]`,
+          // so an agent could never see an image it had just
+          // looked at — verified live against the real tool.
+          //
+          // The tool-result wire is string-only, so the image
+          // cannot live INSIDE `resultContent`. It is pushed as a
+          // sibling `image` part on the same user turn instead
+          // (the domain content array already has the variant, and
+          // the existing image pipeline encodes it downstream).
+          if (mime.startsWith('image/')) {
+            deferredBinary.push({
+              type: 'image',
+              mimeType: dataPart.mimeType,
+              data: dataPart.data,
+            });
+            continue;
+          }
+          if (mime.startsWith('video/')) {
+            deferredBinary.push({
+              type: 'video',
+              mimeType: dataPart.mimeType,
+              data: dataPart.data,
+            });
+            continue;
+          }
+          // Genuinely opaque binary (application/octet-stream and
+          // friends) has no domain content part that can carry it.
+          // A short marker keeps the omission visible without
+          // dumping a byte map into context.
           resultContent.push(
             `[tool result data omitted: ${dataPart.mimeType}, ${dataPart.data.byteLength} bytes]`,
           );
@@ -1253,6 +1295,11 @@ export function vscodeToDomainMessage(msg: vscode.LanguageModelChatRequestMessag
           content: resultContent,
         },
       });
+      // T38 — flush any images/video lifted out of this tool
+      // result onto the turn, immediately after the result they
+      // belong to. Order matters: the model reads the text first,
+      // then the image it refers to.
+      content.push(...deferredBinary);
     } else {
       // A pasted/attached image arrives as a `LanguageModelDataPart`,
       // structurally `{mimeType, data}` (same shape recognized by
@@ -1401,18 +1448,15 @@ function readToolFilterConfig(): ToolFilterConfig {
     enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
     maxTools: config.get?.<number>('maxTools', 60) ?? 60,
     alwaysIncludeTools:
-      config.get?.<string[]>('alwaysIncludeTools', [
-        'copilot_',
-        'vscode_',
-        'run_in_terminal',
-        'apply_patch',
-        'grep_search',
-        'file_search',
-        'semantic_search',
-        'view_image',
-        'runSubagent',
-        'manage_todo_list',
-      ]) ?? [],
+      config.get?.<string[]>(
+        'alwaysIncludeTools',
+        // Fallback only fires when the host exposes no settings
+        // API at all (unit-test stub). Read from the domain
+        // constant so the two cannot drift — this list used to
+        // be a hand-copied duplicate that lost `runSubagent`,
+        // `minimax_subagent`, and the media tools.
+        [...DEFAULT_ALWAYS_INCLUDE_TOOLS],
+      ) ?? [],
   };
 }
 

@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -202,16 +202,23 @@
           "type": "array",
           "default": [
             "copilot_",
+            "vscode_",
             "run_in_terminal",
             "apply_patch",
             "grep_search",
             "file_search",
-            "semantic_search"
+            "semantic_search",
+            "view_image",
+            "runSubagent",
+            "minimax_subagent",
+            "mightyMax_generateVideo",
+            "mightyMax_generateImage",
+            "manage_todo_list"
           ],
           "items": {
             "type": "string"
           },
-          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). Tools referenced by the current request's tool_use/tool_result history are also pinned automatically.",
+          "description": "Tools to keep regardless of relevance scoring when filtering is enabled. Supports exact names (run_in_terminal), prefix pins (copilot_ matches every copilot_* built-in), and substring matches (grep matches grep_search, grep_file_contents). 'runSubagent' is a substring pin, so it also covers the namespaced `agent/runSubagent` form VS Code ships today — sub-agent delegation is never evictable by the cap. Tools referenced by the current request's tool_use/tool_result history are also pinned automatically.",
           "scope": "window"
         },
         "mightyMax.toolFilterStrategy": {

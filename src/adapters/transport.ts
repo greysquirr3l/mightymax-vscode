@@ -1099,7 +1099,15 @@ interface AnthropicTokenCountRequest {
   tools?: ReadonlyArray<unknown>;
 }
 
-function serializeAnthropicRequest(request: MiniMaxCompletionRequest): AnthropicRequest {
+/**
+ * Serialize a request to the Anthropic-compatible wire body.
+ *
+ * Exported for tests: the content-block shape is the part of this
+ * adapter with no other coverage, and T38 shipped a malformed
+ * `image` block for an entire release because of it. Tests assert
+ * on the serialized `messages[].content[]` blocks directly.
+ */
+export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): AnthropicRequest {
   const systemParts: string[] = [];
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> = [];
   let hasSeenUserMessage = false;
@@ -1380,6 +1388,54 @@ function extractNativeInputTokenCount(payload: unknown): number | undefined {
   return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? count : undefined;
 }
 
+/**
+ * Parse a `data:<media-type>;base64,<payload>` URI.
+ *
+ * Exported for tests: the Anthropic image/video `source` shape has
+ * a strict schema (`base64` with a media_type, or a real remote
+ * `url`) and there is no `url` variant that accepts a data URI, so
+ * this parse is load-bearing rather than a convenience. Shared by
+ * the image and video branches below so the two can never drift
+ * apart again.
+ */
+export function parseDataUri(url: string): { mediaType: string; data: string } | undefined {
+  // `([^;,]+)` captures the media type and stops at the first
+  // separator; `(?:;[^;,]+)*` then tolerates the extra parameters a
+  // `data:` URI may carry (`;charset=utf-8`, `;name=...`) before the
+  // terminal `;base64,`. Backtracking resolves the greedy star if
+  // one of those parameters is literally `base64`. Parameters are
+  // deliberately NOT folded into the returned media_type — Anthropic
+  // wants a bare `image/png`, not `image/png;charset=utf-8`.
+  const m = /^data:([^;,]+)(?:;[^;,]+)*;base64,([A-Za-z0-9+/]*={0,2})$/.exec(url);
+  if (m?.[1] === undefined || m[2] === undefined) return undefined;
+  return { mediaType: m[1], data: m[2] };
+}
+
+/**
+ * Emit an Anthropic `image` block for a wire `image_url` part.
+ *
+ * T38: on 0.9.2 every image was emitted as
+ * `source: {type: 'url', url: 'data:image/png;base64,...'}`.
+ * Anthropic's image source schema has no URL variant that accepts a
+ * data URI — it wants either `base64` (with a `media_type`) or a
+ * genuine remote `url` — so every image was a server-side reject on
+ * the Anthropic-compatible endpoint. The domain mapper
+ * (`buildImageContentPart` in `messages.ts`) ALWAYS produces a data
+ * URI, so in practice the `url` fallback below is unreachable; it
+ * is kept only so a future remote-URL image source still serializes
+ * rather than throwing.
+ */
+function anthropicImageBlock(url: string): unknown {
+  const parsed = parseDataUri(url);
+  if (parsed !== undefined) {
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: parsed.mediaType, data: parsed.data },
+    };
+  }
+  return { type: 'image', source: { type: 'url', url } };
+}
+
 function convertAnthropicContentPart(part: MiniMaxWireContentPart): unknown {
   if (part.type === 'text') {
     return { type: 'text', text: part.text };
@@ -1393,19 +1449,19 @@ function convertAnthropicContentPart(part: MiniMaxWireContentPart): unknown {
     return block;
   }
   if (part.type === 'video_url') {
-    const dataUri = /^data:([^;]+);base64,([A-Za-z0-9+/=]+)$/.exec(part.video_url.url);
-    if (dataUri?.[1] !== undefined && dataUri[2] !== undefined) {
+    // T38: use the same shared parser as images so the two
+    // branches cannot drift. The video branch was already correct
+    // on 0.9.2 — its regex is what this refactor generalizes.
+    const parsed = parseDataUri(part.video_url.url);
+    if (parsed !== undefined) {
       return {
         type: 'video',
-        source: { type: 'base64', media_type: dataUri[1], data: dataUri[2] },
+        source: { type: 'base64', media_type: parsed.mediaType, data: parsed.data },
       };
     }
     return { type: 'video', source: { type: 'url', url: part.video_url.url } };
   }
-  return {
-    type: 'image',
-    source: { type: 'url', url: part.image_url.url },
-  };
+  return anthropicImageBlock(part.image_url.url);
 }
 
 function extractTextFromParts(parts: ReadonlyArray<MiniMaxWireContentPart>): string {

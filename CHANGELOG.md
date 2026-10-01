@@ -6,6 +6,79 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.3] — 2026-10-01
+
+Patch release. Two themes: sub-agent delegation is structurally
+guaranteed rather than incidentally available, and images reach the
+model through both entry points. Six separate paths could each drop a
+built-in capability on the floor; all are now closed.
+
+### Fixed
+
+- **Images returned by a tool now reach the model.** Asking the agent
+  to look at an image and report back produced
+  `[tool result data omitted: image/png, 9328978 bytes]` in place of
+  the image — the agent could see a file the _user_ attached, but
+  never one it had just fetched itself (reproduced live against the
+  real `view_image` tool). The tool-result wire is string-only, but
+  the domain content array already has an `image` variant, so the
+  image is now emitted as a sibling content part on the same user
+  turn, immediately after the result text it belongs to. Opaque
+  binary with no matching content part (`application/octet-stream`
+  and friends) still collapses to the short marker.
+
+- **Attached images were rejected on the Anthropic-compatible
+  endpoint.** Every image was serialized as
+  `source: {type: 'url', url: 'data:image/png;base64,...'}`, but
+  Anthropic's image source schema accepts either `base64` (with a
+  `media_type`) or a genuine remote `url` — a data URI is neither.
+  Since the domain mapper always produces a data URI, **every** image
+  was a server-side rejection on the `anthropic` dialect (M3, M3.1
+  Flash Preview). Data URIs are now parsed into a proper `base64`
+  source. The video branch already did this; images and video now
+  share one `parseDataUri` helper so they cannot drift apart again.
+
+  `convertAnthropicContentPart` had **no test coverage at all**,
+  which is how a malformed block shipped a full release — every image
+  test stopped at the domain mapper. It is now covered directly, and
+  `serializeAnthropicRequest` is exported for that purpose.
+
+- **Sub-agent delegation can no longer be evicted by the tool cap.** T35
+  removed `runSubagent` from the always-include pin list so the model
+  would prefer our `minimax_subagent` wrapper (single chat box
+  instead of a wall of blank boxes). That made the built-in sub-agent
+  tool _droppable_: on an install with 80+ tools, `mightyMax.maxTools`
+  could remove sub-agent delegation for a whole turn with no visible
+  error. "Prefer our wrapper" is a description-ordering concern; "the
+  built-in is always available" is a correctness one, so both are now
+  reserved. `runSubagent` is pinned as a substring entry, which
+  covers every name shape VS Code has shipped — bare `runSubagent`
+  and the namespaced `agent/runSubagent`. The pin is also
+  **unconditional**: a user-configured `mightyMax.alwaysIncludeTools`
+  replaces the default list wholesale, so the provider force-merges
+  the sub-agent pair into the effective config on every request
+  (same precedent as the MCP discovery tools). A user who trims
+  their always-include list still keeps sub-agent delegation.
+
+- **The contributed default for `mightyMax.alwaysIncludeTools` was
+  stale.** VS Code returns the value from `package.json` when the user
+  has not set the setting, so the domain constant
+  (`DEFAULT_ALWAYS_INCLUDE_TOOLS`) was only used by the test suite —
+  production ran on a 6-entry list missing `vscode_`, `view_image`,
+  `runSubagent`, `minimax_subagent`, `manage_todo_list`, and both
+  media-generator tools. The manifest default is now in sync with the
+  domain constant, and the provider's stub-only fallback reads from
+  that constant instead of a hand-copied duplicate.
+
+- **Sub-agent results from the namespaced tool are collapsed again.**
+  The result-collapsing step matched the tool name by exact
+  membership, so `agent/runSubagent` results were passed through
+  un-collapsed and rendered as a wall of blank boxes — the exact
+  failure T35 exists to prevent. Matching is now segment-aware
+  (`runSubagent`, or `…/runSubagent`), which covers the namespaced
+  form without over-matching a look-alike such as
+  `runSubagent_report`.
+
 ## [0.9.2] — 2026-09-30
 
 Minor release. Closes out the 0.9.x follow-ups: the `videoInput`

@@ -75,15 +75,34 @@ export interface ToolFilterDecision {
  * VS Code does not put them in the `copilot_` namespace — so
  * each set is pinned explicitly below.
  *
- * T35: `runSubagent` is removed from the pin list and `minimax_subagent`
- * takes its place. Our custom tool wraps VS Code's built-in and
- * synthesizes the multi-part sub-agent result into a single `<task>`
- * text block (one box in the chat widget) instead of N parts.
- * `runSubagent` itself is NOT removed from VS Code — the user can
- * still invoke it directly via @-mention — but our model won't
- * reach for it, so sub-agents our MODEL invokes render as a single
- * box. (User-@-invoked sub-agents are a separate, out-of-scope case:
- * VS Code renders them outside the LM provider API.)
+ * T35: `minimax_subagent` is our custom tool — it wraps VS Code's
+ * built-in and synthesizes the multi-part sub-agent result into a
+ * single `<task>` text block (one box in the chat widget) instead
+ * of N parts. It is the *preferred* path, but it does NOT replace
+ * the built-in pin: sub-agent delegation is a hard capability of
+ * the agent loop, so VS Code's own sub-agent tool must never be
+ * evictable by the cap.
+ *
+ * T37: `runSubagent` is pinned AGAIN, alongside `minimax_subagent`.
+ * The T35 removal made the built-in sub-agent tool droppable — a
+ * user with 80+ tools installed could lose sub-agent delegation
+ * entirely on a turn where the cap bit, silently. "Preferred" is a
+ * description-ordering concern; "always available" is a
+ * correctness concern. Both are now reserved.
+ *
+ * The pin is the bare family name `runSubagent`, which the
+ * substring rule resolves against every shape VS Code has used for
+ * this tool across versions:
+ *
+ *   - `runSubagent`        (1.97–1.104 bare name)
+ *   - `agent/runSubagent`  (current namespaced form)
+ *   - `vscode/runSubagent` (hypothetical server-qualified form)
+ *
+ * `matchesAlwaysInclude` substring-matches, so one pin covers the
+ * whole family — the same reason `grep_search` also covers
+ * `grep_file_contents`. Do NOT pin `agent/` as a separate prefix:
+ * `agent_` and `agent/` are different separators and a bare
+ * `agent` substring would over-pin unrelated tools.
  */
 export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   // Prefix pin: matches every Copilot Chat built-in tool the agent
@@ -105,8 +124,15 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   'file_search',
   'semantic_search',
   'view_image',
-  // T35: prefer our custom `minimax_subagent` over VS Code's
-  // `runSubagent` (see header comment).
+  // T37: VS Code's built-in sub-agent tool. Substring pin, so it
+  // matches every name shape the tool has shipped under
+  // (`runSubagent`, `agent/runSubagent`, `vscode/runSubagent`).
+  // NEVER drop this pin: with a populated toolset the cap can
+  // otherwise evict sub-agent delegation for a whole turn.
+  'runSubagent',
+  // T35: our custom single-box wrapper. Pinned alongside the
+  // built-in (not instead of it) so the model has both a
+  // clean-rendering path and a guaranteed-present one.
   'minimax_subagent',
   // T36: the Hailuo-03 video generator. Pinned so the chat model
   // always has access regardless of relevance score; the actual
@@ -123,6 +149,31 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
 
 export const DEFAULT_ENABLE_SMART_TOOL_FILTERING = true;
 export const DEFAULT_MAX_TOOLS = 64;
+
+/**
+ * Pins the chat-provider force-merges into the effective filter
+ * config on EVERY request, regardless of what
+ * `mightyMax.alwaysIncludeTools` is set to.
+ *
+ * A user-configured list replaces the default list wholesale — a
+ * user who trimmed the setting to a handful of entries would
+ * otherwise silently lose sub-agent delegation. Same precedent as
+ * the MCP discovery tools (`MCP_LIST_SERVERS_TOOLS` and friends),
+ * which the provider also merges outside the user's control.
+ *
+ * Membership here means "the agent loop is structurally incomplete
+ * without this". Adding an entry is a compatibility decision, not
+ * a tuning one — a tool that merely renders *nicer* does not
+ * belong.
+ */
+export const MANDATORY_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
+  // VS Code's built-in sub-agent tool (covers `agent/runSubagent`).
+  'runSubagent',
+  // Our single-box wrapper (T35). Pinned because it is the path
+  // the model SHOULD take, and a user who trimmed their always-
+  // include list should not lose it either.
+  'minimax_subagent',
+];
 
 /**
  * Maximum number of MCP tools the chat-provider will keep in

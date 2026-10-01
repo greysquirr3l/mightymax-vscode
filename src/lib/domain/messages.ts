@@ -251,15 +251,23 @@ const EMPTY_OPTIONS: MessageMappingOptions = Object.freeze({});
  *  - Tool-call parts in user-supplied request content emit an
  *    `unsupported-content` warning and are skipped — the model
  *    has the wire history of the prior assistant turn.
- *  - A final reconciliation pass drops any `tool` wire message
+ *  - A final reconciliation pass ADOPTS any `tool` wire message
  *    whose `toolCallId` does not match a `tool_call` id from the
- *    immediately preceding assistant turn. Anthropic rejects the
- *    request outright (error 2013, "tool result's tool id not
- *    found") if a `tool_result` references a `tool_use_id` that
- *    the assistant never emitted, and the chat-provider's
- *    history scrubber can occasionally emit a `tool-result` part
- *    whose `tool-call` half was already dropped on a previous
- *    turn. The reconciler closes the gap and surfaces a warning.
+ *    immediately preceding assistant turn, by synthesizing a
+ *    minimal assistant `tool_use` carrying the orphan id. Anthropic
+ *    rejects the request outright (error 2013, "tool result's tool
+ *    id not found") if a `tool_result` references a `tool_use_id`
+ *    the assistant never emitted, and the chat-provider's history
+ *    scrubber can occasionally emit a `tool-result` part whose
+ *    `tool-call` half was already dropped on a previous turn.
+ *
+ *    NOTE: this pass previously DROPPED the orphan and emitted an
+ *    `unsupported-content` warning. That silenced the 400 but
+ *    destroyed tool output — the model re-ran the tool, looped, or
+ *    hallucinated. T18 replaced it with adoption; this comment used
+ *    to still describe the old drop behaviour and was itself a
+ *    source of drift. See the implementation block below for the
+ *    reconciliation pass.
  *  - An empty `content` array emits an `empty-message` warning
  *    and the message is dropped from the output.
  */

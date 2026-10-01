@@ -67,6 +67,8 @@ require('../out/providers/stream-pump.test.js');
 require('../out/providers/chat-provider.test.js');
 require('../out/commands/manage-command.test.js');
 require('../out/commands/generate-video-command.test.js');
+require('../out/commands/generate-image-command.test.js');
 require('../out/adapters/status-bar.test.js');
 require('../out/adapters/generate-video-tool-adapter.test.js');
+require('../out/adapters/generate-image-tool-adapter.test.js');
 require('../out/test/tool-filtering.test.js');

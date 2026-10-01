@@ -6,6 +6,69 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-09-30
+
+Minor release. Closes out the 0.9.x follow-ups: the `videoInput`
+capability, the image-01 generator, and repo visibility for
+`PROGRESS.md`.
+
+### Fixed
+
+- **Video attachments on M2.x models are now dropped with a warning
+  instead of being put on the wire.** MiniMax documents that "The
+  M2.7, M2.5, M2.1, and M2 series support text and tool-call
+  content blocks only", so a video part on those models was a
+  guaranteed rejection with no local explanation. The mapper now
+  emits an `unsupported-content` warning naming the model.
+
+  **Correction to the 0.9.0 changelog.** That entry said video input
+  "requires a new `videoInput` capability flag + message-mapping
+  change". Only the flag was missing — `buildVideoContentPart`, the
+  `video_url` wire part, the Anthropic block emission in the
+  transport, and the round-trip tests all already existed. The real
+  gap was the ungated send, which is what this release fixes.
+
+- **M3 / M3.1-Flash-Preview now advertise `videoInput` in the picker**
+  and accept video attachments end-to-end, which they already
+  could but never advertised.
+
+### Added
+
+- **Image-01 generation.** MiniMax's `image-01` is wired as both an
+  LM tool (`mightyMax_generateImage`) and a command-palette entry
+  (`Mighty Max: Generate Image`). The pipeline is
+  generate → persist on the same `MediaArtifactStore` and
+  `KeyProvider` as video — synchronous, so no polling loop and no
+  timeout knob. Supports all 8 documented aspect ratios, or exact
+  `width`/`height` (512–2048, multiples of 8), 1–9 images per
+  request, reproducible `seed`, and `promptOptimizer`. New setting
+  `mightyMax.allowImageToolInChat` (default `true`) gates the
+  chat-model surface; the command is always available.
+
+  Two spec details worth calling out:
+
+  - The adapter requests `response_format: "base64"` rather than
+    the default `"url"`. The spec warns *"⚠️ Note: url expires in
+    24 hours"*, and the artifact store wants bytes on disk, so
+    this avoids a second round-trip and removes the expiry window.
+  - `aspectRatio` combined with `width`/`height` is **rejected**
+    rather than resolved. The spec says `aspect_ratio` "takes
+    precedence", which would silently discard the caller's explicit
+    dimensions; picking a winner for the caller is worse than
+    telling them.
+
+  Speech (T2A) remains unbuilt — it is a streaming-audio shape
+  rather than the synchronous request/response these media ports
+  assume. Music generation is deliberately **not** being built:
+  MiniMax closed the paid Music API to new users on 2026-08-20.
+
+- **`PROGRESS.md` is tracked again.** It is the orchestrator's
+  canonical project status and had been sitting in `.gitignore`
+  alongside the `tasks/` scaffolding, so its history was invisible
+  to anyone cloning the repo. `tasks/`, `AGENTS.md`,
+  `IMPLEMENTATION_PLAN.md`, and `features.json` stay ignored —
+  those remain local working files.
+
 ## [0.9.1] — 2026-09-30
 
 Patch release. Adds the M3.1-Flash thinking-depth control and fixes

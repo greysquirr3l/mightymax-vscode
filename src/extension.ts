@@ -27,9 +27,12 @@ import {
 } from './adapters/mcp-search-adapter.js';
 import { registerSubAgentTool } from './adapters/subagent-tool-adapter.js';
 import { HailuoVideoAdapter } from './adapters/hailuo-video-adapter.js';
+import { Image01Adapter } from './adapters/image-01-adapter.js';
 import { LocalMediaStore, resolveMediaOutputDirectory } from './adapters/local-media-store.js';
 import { registerGenerateVideoTool } from './adapters/generate-video-tool-adapter.js';
+import { registerGenerateImageTool } from './adapters/generate-image-tool-adapter.js';
 import { runGenerateVideoCommand } from './commands/generate-video-command.js';
+import { runGenerateImageCommand } from './commands/generate-image-command.js';
 
 const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const SLOT_LABELS_STATE_KEY = 'mightyMax.slotLabels';
@@ -60,6 +63,59 @@ interface VsCodeUi {
   showInfoMessage(message: string): Promise<string | undefined>;
   showWarningMessage(message: string): Promise<string | undefined>;
   showErrorMessage(message: string): Promise<string | undefined>;
+}
+
+/**
+ * Shared UI surface for the media-generation commands
+ * (`mightyMax.generateVideo` / `mightyMax.generateImage`).
+ *
+ * Both need a QuickPick, an InputBox, a message with action
+ * buttons, and Open / Reveal affordances for the saved artifact.
+ * Extracted so the two command registrations stay a handful of
+ * lines each instead of two ~50-line inline UI blocks that drift.
+ */
+function createMediaUi() {
+  return {
+    showQuickPick: async <T extends vscode.QuickPickItem>(
+      items: ReadonlyArray<T>,
+      options?: {
+        title?: string;
+        placeHolder?: string;
+        canPickMany?: boolean;
+        ignoreFocusOut?: boolean;
+      },
+    ): Promise<T | undefined> =>
+      vscode.window.showQuickPick<T>(items, {
+        ...(options?.title !== undefined ? { title: options.title } : {}),
+        ...(options?.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
+        ...(options?.canPickMany !== undefined ? { canPickMany: options.canPickMany } : {}),
+        ...(options?.ignoreFocusOut !== undefined
+          ? { ignoreFocusOut: options.ignoreFocusOut }
+          : {}),
+      }),
+    showInputBox: async (options: {
+      title?: string;
+      prompt?: string;
+      placeHolder?: string;
+      ignoreFocusOut?: boolean;
+    }): Promise<string | undefined> =>
+      vscode.window.showInputBox({
+        ...(options.title !== undefined ? { title: options.title } : {}),
+        ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+        ...(options.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
+        ...(options.ignoreFocusOut !== undefined ? { ignoreFocusOut: options.ignoreFocusOut } : {}),
+      }),
+    showInformationMessage: async (message: string, ...actions: string[]) =>
+      vscode.window.showInformationMessage(message, ...actions),
+    showErrorMessage: async (message: string, ...actions: string[]) =>
+      vscode.window.showErrorMessage(message, ...actions),
+    openExternal: async (uri: vscode.Uri) => {
+      await vscode.env.openExternal(uri);
+    },
+    revealFile: async (uri: vscode.Uri) => {
+      await vscode.commands.executeCommand('revealFileInOS', uri);
+    },
+  };
 }
 
 function createVsCodeUi(): VsCodeUi {
@@ -209,6 +265,27 @@ export function activate(context: vscode.ExtensionContext): void {
     baseUrl: baseUrl(),
     logger,
   });
+
+  // T36 — image-01 generation. Synchronous (one POST, bytes back),
+  // so the pipeline is generate → persist with no polling. Shares
+  // `mediaStore` with the video pipeline: same output directory,
+  // same filename discipline, same Open / Reveal / Copy-path
+  // notification surface. Gated by `mightyMax.allowImageToolInChat`
+  // for the LM-tool surface; the command is always available.
+  const imageGenerator = new Image01Adapter({ baseUrl: baseUrl(), logger });
+  context.subscriptions.push(
+    registerGenerateImageTool({
+      logger,
+      keyProvider,
+      imageGenerator,
+      mediaStore,
+      config: {
+        getToolEnabled: () =>
+          vscode.workspace.getConfiguration('mightyMax').get<boolean>('allowImageToolInChat') !==
+          false,
+      },
+    }),
+  );
   context.subscriptions.push(
     registerGenerateVideoTool({
       logger,
@@ -374,50 +451,7 @@ export function activate(context: vscode.ExtensionContext): void {
         keyProvider,
         videoGenerator,
         mediaStore,
-        ui: {
-          showQuickPick: async <T extends vscode.QuickPickItem>(
-            items: ReadonlyArray<T>,
-            options?: {
-              title?: string;
-              placeHolder?: string;
-              canPickMany?: boolean;
-              ignoreFocusOut?: boolean;
-            },
-          ): Promise<T | undefined> => {
-            const picked = await vscode.window.showQuickPick<T>(items, {
-              ...(options?.title !== undefined ? { title: options.title } : {}),
-              ...(options?.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
-              ...(options?.canPickMany !== undefined ? { canPickMany: options.canPickMany } : {}),
-              ...(options?.ignoreFocusOut !== undefined
-                ? { ignoreFocusOut: options.ignoreFocusOut }
-                : {}),
-            });
-            return picked;
-          },
-          showInputBox: async (options) => {
-            return vscode.window.showInputBox({
-              ...(options.title !== undefined ? { title: options.title } : {}),
-              ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
-              ...(options.placeHolder !== undefined ? { placeHolder: options.placeHolder } : {}),
-              ...(options.value !== undefined ? { value: options.value } : {}),
-              ...(options.ignoreFocusOut !== undefined
-                ? { ignoreFocusOut: options.ignoreFocusOut }
-                : {}),
-            });
-          },
-          showInformationMessage: async (message, ...actions) => {
-            return vscode.window.showInformationMessage(message, ...actions);
-          },
-          showErrorMessage: async (message, ...actions) => {
-            return vscode.window.showErrorMessage(message, ...actions);
-          },
-          openExternal: async (uri) => {
-            await vscode.env.openExternal(uri);
-          },
-          revealFile: async (uri) => {
-            await vscode.commands.executeCommand('revealFileInOS', uri);
-          },
-        },
+        ui: createMediaUi(),
         config: {
           getPollIntervalMs: () => {
             const raw = vscode.workspace
@@ -436,6 +470,17 @@ export function activate(context: vscode.ExtensionContext): void {
           getFileExtension: (): 'mp4' => 'mp4',
           getToolEnabled: () => true,
         },
+      });
+    }),
+    vscode.commands.registerCommand('mightyMax.generateImage', () => {
+      logger.info('Mighty Max generate-image command invoked');
+      return runGenerateImageCommand({
+        logger,
+        keyProvider,
+        imageGenerator,
+        mediaStore,
+        ui: createMediaUi(),
+        config: { getToolEnabled: () => true },
       });
     }),
     vscode.commands.registerCommand('mightyMax.showDiagnostics', () => {

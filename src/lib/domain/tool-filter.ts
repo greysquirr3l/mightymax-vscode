@@ -114,6 +114,10 @@ export const DEFAULT_ALWAYS_INCLUDE_TOOLS: ReadonlyArray<string> = [
   // registration time (the prepareInvocation throws when the
   // setting is `false`, so the chat host never sees the tool fire).
   'mightyMax_generateVideo',
+  // T36: the image-01 generator. Same gating story as the video
+  // tool — pinned here, refused at `prepareInvocation` time when
+  // `mightyMax.allowImageToolInChat` is `false`.
+  'mightyMax_generateImage',
   'manage_todo_list',
 ];
 

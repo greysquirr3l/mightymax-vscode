@@ -252,12 +252,26 @@ options:
   `chat.byokUtilityModelDefault = "copilot"`. Utility tasks run on
   Copilot's hosted models.
 
-## Media generation (Hailuo-03 video)
+## Media generation (video + image)
 
-Mighty Max wires MiniMax's **Hailuo-03** video generation endpoint
-(`MiniMax-H3`, `MiniMax-H3-Max`) as both an **LM tool** and a
-**command palette entry**. Both run the same submit → poll →
-download → save pipeline.
+Mighty Max wires two of MiniMax's non-chat media APIs — **Hailuo-03
+video** (`MiniMax-H3`, `MiniMax-H3-Max`) and **image-01** — as both
+an **LM tool** and a **command palette entry**.
+
+| | Video | Image |
+| --- | --- | --- |
+| Models | `MiniMax-H3`, `MiniMax-H3-Max` | `image-01` |
+| Command | `Mighty Max: Generate Video (Hailuo-03)` | `Mighty Max: Generate Image (image-01)` |
+| LM tool | `mightyMax_generateVideo` | `mightyMax_generateImage` |
+| API shape | async (submit → poll → download) | synchronous |
+| Inputs | prompt, duration, first/last frame, subject refs | prompt, aspect ratio or exact W×H, count, seed |
+| Output | 6s / 10s MP4 | PNG |
+| Chat-tool gate | `mightyMax.allowVideoToolInChat` | `mightyMax.allowImageToolInChat` |
+
+Both share the same `KeyProvider` and `MediaArtifactStore`, so a
+video and an image generated in the same session land in the same
+directory with the same filename discipline. Both surface
+**Open** / **Reveal** / **Copy path** on success.
 
 ### Use the command
 
@@ -275,14 +289,28 @@ download → save pipeline.
 
 ### Use the chat tool
 
-Any M-series chat model can call `mightyMax_generateVideo` during a
-turn. The chat-model invocation is gated by `mightyMax.allowVideoToolInChat`
-(setting, default `true`) — flip it off to disable autonomous video
-spend while keeping the command working. The tool returns a single
-text result with the absolute path of the saved video; the model
-describes it back to you.
+Any M-series chat model can call `mightyMax_generateVideo` or
+`mightyMax_generateImage` during a turn. Each chat-model invocation
+is gated by its own setting (`mightyMax.allowVideoToolInChat`,
+`mightyMax.allowImageToolInChat`, both default `true`) — flip one off
+to disable autonomous spend on that medium while keeping the command
+working. Both tools return a single text result with the absolute
+path of the saved file; the model describes it back to you.
 
-### Reference shapes
+### Image shapes
+
+- **Aspect ratio** — pass `aspectRatio`. Eight are supported:
+  `1:1` (1024×1024), `16:9` (1280×720), `4:3` (1152×864),
+  `3:2` (1248×832), `2:3` (832×1248), `3:4` (864×1152),
+  `9:16` (720×1280), `21:9` (1344×576). Defaults to `1:1`.
+- **Exact pixels** — pass `width` **and** `height` together, each
+  between 512 and 2048 and a multiple of 8. Cannot be combined
+  with `aspectRatio`.
+- **Batch** — `count` 1–9, default 1.
+- **Reproducible** — pass `seed`; same seed plus same parameters
+  gives the same image.
+
+### Reference shapes (video)
 
 - **Text-to-video** — only `prompt` + `durationSec`. Both models.
 - **Image-to-video** — also pass `firstFrameImageUri`. Both models.
@@ -292,23 +320,37 @@ describes it back to you.
   **H3-Max only.** H3 rejects this with a clear error; H3-Max
   accepts it.
 
-### Where videos land
+### Where generated files land
 
-By default, saved videos land in `<extension-storage>/media/` —
-the VS Code per-extension directory you don't normally see. Set
+By default, saved media lands in `<extension-storage>/media/` — the
+VS Code per-extension directory you don't normally see. Set
 `mightyMax.mediaOutputDir` to redirect (e.g. `/Users/me/Movies/mighty-max`).
-Add the path to your workspace `.gitignore`; generated MP4s are
-large and shouldn't be committed.
+Add the path to your workspace `.gitignore`; generated MP4s and PNGs
+are large and shouldn't be committed.
 
 ### What this is NOT
 
-- **Not a chat model.** Hailuo-03 video lives on a different API
-  path (`/v2/video_generation`, not `/anthropic/v1/messages`) and
-  has no streaming completion. It's wired as a tool, not as a model
-  catalog entry.
-- **Not free.** H3 / H3-Max are pay-as-you-go. Set the API key in
-  **Mighty Max: Manage** as usual — the same key covers chat and
-  media.
+- **Not chat models.** Both endpoints live on different API paths
+  (`/v2/video_generation` and `/v1/image_generation`, not
+  `/anthropic/v1/messages`) and neither has a streaming completion.
+  They're wired as tools, not as model catalog entries.
+- **Not free.** H3 / H3-Max and image-01 are pay-as-you-go. Set
+  the API key in **Mighty Max: Manage** as usual — the same key
+  covers chat and media.
+
+### Not video *input*
+
+Video **output** (above) is supported. Video **input** — attaching a
+clip and asking a question about it — works on M3 and M3.1 Flash
+Preview only, because those are the models MiniMax documents as
+accepting video content blocks. On the M2.x family a video attachment
+is dropped with a warning rather than sent, since the API would
+reject the request outright.
+
+Speech and music generation are **not** built. Speech is a
+streaming-audio shape that doesn't fit the synchronous media ports
+here; music generation is closed to new MiniMax users as of
+2026-08-20.
 
 ## Bundled agents & skills
 
@@ -377,13 +419,13 @@ Mighty Max covers every BYOK-supported surface in VS Code Chat:
 | Custom/local agents            | ✅ Supported | User-authored agent definitions work with MiniMax models                                                                                                                                                                 |
 | Utility tasks                  | ✅ Supported | Commit messages, doc generation via `chat.utilityModel` setting                                                                                                                                                          |
 | Tool calling                   | ✅ Supported | Built-in (apply-edit, run-in-terminal), extension tools, MCP servers                                                                                                                                                     |
-| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                       |
-| Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning. M3.1 Flash always thinks — tune depth with `mightyMax.m31ThinkingEffort`.                                                                          |
+| Image input                    | ✅ Supported | M3.1 Flash Preview, M3, M2.7, M2.5, M2 accept images via data URIs                                                                                                                                                       || Video input                    | ✅ Partial | M3.1 Flash Preview and M3 accept video via Anthropic content blocks. On M2.x a video attachment is dropped with a warning rather than sent.                                                                               || Thinking blocks                | ✅ Supported | M3 surfaces native Anthropic-style thinking; M2.x surfaces reasoning. M3.1 Flash always thinks — tune depth with `mightyMax.m31ThinkingEffort`.                                                                          |
 | Multi-round agent loops        | ✅ Supported | Tool results fed back across many rounds without dropping calls                                                                                                                                                          |
 | Single-box sub-agent rendering | ✅ Supported | Our custom `minimax_subagent` tool wraps VS Code's `runSubagent` and synthesizes the multi-part result into one `<task>` text block, so sub-agents our model invokes render as a single box (not N collapsible parts)    |
 | Multi-key rotation             | ✅ Supported | Up to 3 stored keys with per-slot cooldown, sticky fallback, auto-rotation toggle, flight-deck status dashboard                                                                                                          |
 | Token usage tracking           | ✅ Supported | Accurate context-window widget via prompt + completion token counts                                                                                                                                                      |
 | Media generation (Hailuo-03)   | ✅ Tool-only | `mightyMax_generateVideo` LM tool + `Mighty Max: Generate Video` command. H3 and H3-Max; 6s/10s; image-to-video, start-end-to-video, and (H3-Max) subject-reference. Saved to disk; the chat model describes the result. |
+| Media generation (image-01)    | ✅ Tool-only | `mightyMax_generateImage` LM tool + `Mighty Max: Generate Image` command. Synchronous; 8 aspect ratios or exact width/height; 1–9 images; reproducible via `seed`. Shares the video pipeline's output directory. |
 
 ## What Mighty Max does NOT provide
 

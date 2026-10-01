@@ -80,7 +80,6 @@
       {
         "vendor": "minimax",
         "displayName": "Mighty Max (MiniMax)",
-        "managementCommand": "mightyMax.manage",
         "configuration": {
           "properties": {
             "apiKey": {
@@ -471,8 +470,7 @@
             "model",
             "prompt",
             "durationSec"
-          ],
-          "additionalProperties": false
+          ]
         }
       }
     ]

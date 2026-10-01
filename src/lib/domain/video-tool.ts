@@ -38,7 +38,6 @@ export interface VideoToolInputSchema {
   readonly type: 'object';
   readonly properties: Readonly<Record<string, unknown>>;
   readonly required: ReadonlyArray<string>;
-  readonly additionalProperties: boolean;
 }
 
 export interface VideoToolDescriptor {
@@ -113,7 +112,6 @@ export function buildGenerateVideoDescriptor(): VideoToolDescriptor {
         },
       },
       required: ['model', 'prompt', 'durationSec'],
-      additionalProperties: false,
     },
   };
 }

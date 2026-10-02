@@ -9,9 +9,11 @@
   pattern. The published artifact is identical either way; the point
   is a readable, bisectable `main` where each release is one commit.
 
-  If GitHub offers "Create a merge commit" as the default on this
-  repo, switch the repo setting back to squash-merge, or use the
-  squash option on the PR itself.
+  This is now enforced, not just documented: the repo has
+  `allow_merge_commit` and `allow_rebase_merge` disabled, so
+  "Squash and merge" is the only merge button GitHub offers. If you
+  ever need a merge commit here, re-enable it in the repo settings
+  first — and then fix the process, not just the one PR.
 -->
 
 ## Before opening

@@ -88,9 +88,12 @@ Gates: compile clean · `eslint src --max-warnings 0` clean ·
 - **Release PRs are squash-merged.** v0.9.0–v0.9.3 each landed on
   `main` as a single `Release X.Y.Z — …` commit; v0.9.4 was merged
   with a merge commit and left five commits in `main`. The published
-  artifact is identical either way, but the pattern is now written
-  down in `.github/pull_request_template.md` so `git log` on `main`
-  stays one-line-per-release and bisectable.
+  artifact is identical either way, but the pattern is now enforced
+  rather than documented: the repository has merge-commit and
+  rebase-merge disabled, so "Squash and merge" is the only option
+  GitHub offers on a PR. The release checklist lives in
+  `.github/pull_request_template.md`; branch deletion on merge is
+  also enabled now.
 
 - **`PROGRESS.md` is no longer tracked.** 0.9.1 re-tracked it as the
   orchestrator's canonical project status, on the grounds that its

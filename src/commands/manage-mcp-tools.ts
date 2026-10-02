@@ -42,7 +42,7 @@
  * when it dispatches the picker.
  */
 import type { Logger } from '../ports/logger.js';
-import { DEFAULT_ALWAYS_INCLUDE_TOOLS } from '../lib/domain/tool-filter.js';
+import { DEFAULT_ALWAYS_INCLUDE_TOOLS, matchesToolName } from '../lib/domain/tool-filter.js';
 
 /** Names of platform tools the user can't remove. Displayed as read-only. */
 const PLATFORM_TOOL_HINTS: ReadonlyArray<string> = [...DEFAULT_ALWAYS_INCLUDE_TOOLS];
@@ -158,14 +158,18 @@ function buildItems(args: BuildItemsArgs): ManageMcpPickItem[] {
     });
   } else {
     for (const entry of reserved) {
+      // Issue #88 — this preview used to implement prefix matching
+      // inline while the filter used an exact `Array.includes`, so
+      // a prefix could be shown as "Matches N loaded tools" while
+      // reserving nothing. Both surfaces now share
+      // `matchesToolName`, so the preview cannot over-promise.
+      const matchedNames = Array.from(liveMcpNames).filter((n) => matchesToolName(n, entry));
+      const matched = matchedNames.length > 0;
       const isPrefix = entry.endsWith('_');
-      const matched = isPrefix
-        ? Array.from(liveMcpNames).some((n) => n.startsWith(entry))
-        : liveMcpNames.has(entry);
       const icon = matched ? '$(check)' : '$(warning)';
       const status = matched
         ? isPrefix
-          ? `Matches ${String(Array.from(liveMcpNames).filter((n) => n.startsWith(entry)).length)} loaded tools`
+          ? `Matches ${String(matchedNames.length)} loaded tools`
           : 'Loaded'
         : 'No loaded MCP tool matches this entry';
       items.push({

@@ -229,6 +229,13 @@ export interface MessageMappingResult {
 export interface MessageMappingOptions {
   /** Optional per-tool-result character budget; default remains 4096. */
   readonly toolResultMaxChars?: number;
+  /**
+   * Optional TOTAL history budget in characters. Bounds the whole
+   * request, not each result — the gap that let a session reach
+   * 186 messages / 269k chars and a hard 500. Defaults to
+   * `DEFAULT_HISTORY_MAX_CHARS`.
+   */
+  readonly historyMaxChars?: number;
 }
 
 const EMPTY_OPTIONS: MessageMappingOptions = Object.freeze({});
@@ -584,6 +591,30 @@ export function mapRequestToMiniMax(
     reconciled.push(m);
   }
 
+  // T40 — bound the TOTAL history, not just each tool result.
+  // `truncateToolResults` caps each result at 4096 chars, but
+  // nothing capped the message COUNT: a captured 0.9.2 session grew
+  // to 186 messages / ~269k chars and ended in a hard HTTP 500 —
+  // which the key pool then misread as an auth problem, since a 500
+  // classifies as `kind: 'http'` and rotates slots.
+  //
+  // Runs HERE, after truncation and orphan reconciliation, so every
+  // result is already capped and adopted. That ordering is what
+  // makes the pruner's "drop whole exchanges" guarantee sound: a
+  // result cannot be separated from the `tool_use` that answers it.
+  const pruning = pruneHistory(
+    reconciled,
+    options.historyMaxChars !== undefined ? { maxChars: options.historyMaxChars } : {},
+  );
+  if (pruning.droppedMessages > 0) {
+    warnings.push({
+      kind: 'unsupported-content',
+      reason:
+        `history pruned: ${String(pruning.droppedMessages)} message(s) dropped, ` +
+        `${String(pruning.droppedChars)} chars reclaimed`,
+    });
+  }
+
   // Anthropic pre-flight: strip empty text parts / empty messages
   // (Anthropic rejects with 400), and return the cache-control
   // markers for the last 2 surviving messages. System messages are
@@ -593,7 +624,7 @@ export function mapRequestToMiniMax(
   // separately.
   const systemTexts: string[] = [];
   const nonSystem: MiniMaxWireMessage[] = [];
-  for (const m of reconciled) {
+  for (const m of pruning.messages) {
     if (m.role === 'system') {
       const text = typeof m.content === 'string' ? m.content : extractTextFromParts(m.content);
       if (text.length > 0) systemTexts.push(text);
@@ -656,6 +687,14 @@ export interface ToolResultTruncationResult {
   /** Total characters dropped across all tool results. */
   readonly droppedChars: number;
 }
+
+// T40 — the total-history budget. `pruneHistory` applies the
+// default internally; the constant is re-exported so the
+// chat-provider can name it in a setting description and in a
+// fallback read without reaching into the pruner module.
+import { pruneHistory } from './history-prune.js';
+
+export { DEFAULT_HISTORY_MAX_CHARS } from './history-prune.js';
 
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 4096;
 export const DEFAULT_TOOL_RESULT_TRUNCATION_MARKER =

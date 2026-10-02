@@ -59,6 +59,42 @@ nothing.
 Gates: compile clean · `eslint src --max-warnings 0` clean ·
 890 tests pass, 0 fail (+12).
 
+### Added
+
+- **`mightyMax.historyMaxChars` caps the whole request.** New setting
+  (default 500,000) bounding total conversation history, complementing
+  `toolResultMaxChars`, which caps each result. Nothing previously
+  bounded the message _count_ — a captured session grew to 186
+  messages / ~269k chars and ended in a hard 500. When history
+  exceeds the budget the **oldest complete exchanges** are dropped. A
+  tool call and its result are always dropped together, never split,
+  because Anthropic rejects a `tool_result` with no matching
+  `tool_use` (error 2013) — a naive "keep the last N messages" slice
+  would trade a 500 for a 400. The opening user request and the
+  newest exchange are always kept, and pruning emits a
+  `history pruned: N message(s), M chars reclaimed` warning.
+
+- **`mightyMax.mcpMaxTools` and `mightyMax.reservedMcpTools` are now
+  declared settings.** Both were read by the provider and documented
+  in the changelog as user-facing, but were absent from
+  `contributes.configuration` — so neither appeared in the Settings UI
+  and neither had schema validation. `reservedMcpTools` is the
+  setting behind the Manage MCP Tools UI, which could edit a setting
+  the user could not otherwise discover. Both are now declared with
+  bounds matching the provider's clamp.
+
+### Changed
+
+- **`PROGRESS.md` is no longer tracked.** 0.9.1 re-tracked it as the
+  orchestrator's canonical project status, on the grounds that its
+  history had been invisible to anyone cloning the repo. In practice it
+  had drifted: it stops at T36 and mentions neither 0.9.3 nor 0.9.4, so
+  it described a project five releases behind rather than its current
+  state — the same silent-staleness failure mode this release is about.
+  It is now ignored alongside `tasks/`, `AGENTS.md`, and
+  `IMPLEMENTATION_PLAN.md`, the other local working files. Git history
+  retains every prior revision, so the 0.9.1 rationale is not lost.
+
 ## [0.9.3] — 2026-10-01
 
 Patch release. Two themes: sub-agent delegation is structurally

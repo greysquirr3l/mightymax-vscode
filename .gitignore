@@ -2,6 +2,12 @@ tasks/
 AGENTS.md
 features.json
 IMPLEMENTATION_PLAN.md
+# Re-tracked in 0.9.1 as the orchestrator's canonical project status,
+# un-tracked again in 0.9.4: it had drifted to T36 with no mention of
+# 0.9.3/0.9.4, so it was tracking five releases behind rather than
+# describing current state. Kept local alongside `tasks/` and
+# `AGENTS.md`. Git history retains it.
+PROGRESS.md
 .vscode/
 .github/copilot-instructions.md
 mighty-max-plan.toml

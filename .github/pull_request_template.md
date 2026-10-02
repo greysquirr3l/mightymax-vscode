@@ -9,11 +9,12 @@
   pattern. The published artifact is identical either way; the point
   is a readable, bisectable `main` where each release is one commit.
 
-  This is now enforced, not just documented: the repo has
-  `allow_merge_commit` and `allow_rebase_merge` disabled, so
-  "Squash and merge" is the only merge button GitHub offers. If you
-  ever need a merge commit here, re-enable it in the repo settings
-  first — and then fix the process, not just the one PR.
+  This is enforced, not just documented: the repo has
+  `allow_merge_commit` disabled, so "Create a merge commit" is not
+  offered. Rebase-merge stays ENABLED on purpose — for a small
+  two-commit PR it loses nothing, and squashing is a choice you make
+  per-PR rather than a constraint the UI imposes. Use squash for
+  releases, rebase for anything else.
 -->
 
 ## Before opening

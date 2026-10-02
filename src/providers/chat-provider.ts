@@ -30,6 +30,7 @@ import type { FailureKind } from '../lib/domain/key-pool.js';
 import type { ChatMessage, ChatMessageContentPart } from '../ports/message-mapping.js';
 
 import { mapRequestToMiniMax, countMessageMappingErrors } from '../lib/domain/messages.js';
+import { DEFAULT_HISTORY_MAX_CHARS } from '../lib/domain/history-prune.js';
 import {
   buildCallIdToToolNameMap,
   collapseSubAgentToolResultsInDomain,
@@ -40,6 +41,7 @@ import {
   discoverMcpTools,
   selectMcpToolsToInclude,
   DEFAULT_ALWAYS_INCLUDE_TOOLS,
+  DEFAULT_MCP_MAX_TOOLS,
   MANDATORY_ALWAYS_INCLUDE_TOOLS,
   type ToolFilterConfig,
 } from '../lib/domain/tool-filter.js';
@@ -270,6 +272,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       enrichedMessages,
       {
         toolResultMaxChars: this.readToolResultMaxChars(),
+        historyMaxChars: this.readHistoryMaxChars(),
       },
     );
 
@@ -307,7 +310,9 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const historyToolNames = collectHistoryReferencedToolNames(messages);
     const mcpMaxTools = this.readMightyMaxSetting('mcpMaxTools');
     const mcpMaxToolsN =
-      typeof mcpMaxTools === 'number' && Number.isFinite(mcpMaxTools) ? mcpMaxTools : 60;
+      typeof mcpMaxTools === 'number' && Number.isFinite(mcpMaxTools)
+        ? Math.min(500, Math.max(0, Math.floor(mcpMaxTools)))
+        : DEFAULT_MCP_MAX_TOOLS;
     // User's explicit always-on MCP tools (set via
     // `mightyMax.reservedMcpTools`). These reduce the LRU
     // budget by one slot each. The chat-provider warns the
@@ -754,7 +759,13 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           videoInput: modelInfo?.capabilities.videoInput,
         },
         [domainMessage],
-        { toolResultMaxChars: this.readToolResultMaxChars() },
+        {
+          toolResultMaxChars: this.readToolResultMaxChars(),
+          // A single message is well under any sane budget, but
+          // pass the value so the mapper call shape stays
+          // identical to the streaming path.
+          historyMaxChars: this.readHistoryMaxChars(),
+        },
       );
       if (mapped.messages.length === 0) {
         return fallback;
@@ -816,6 +827,21 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // Keep malformed user configuration from either disabling the safety
     // cap or creating a payload so tiny it consists only of the marker.
     return Math.min(65_536, Math.max(512, Math.floor(raw)));
+  }
+
+  /**
+   * T40 — total history budget in characters. Bounds the WHOLE
+   * request, complementing the per-tool-result cap. A captured
+   * 0.9.2 session reached 186 messages / ~269k chars and a hard
+   * 500, which the key pool then misread as an auth failure.
+   */
+  private readHistoryMaxChars(): number {
+    const raw = this.readMightyMaxSetting('historyMaxChars');
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_HISTORY_MAX_CHARS;
+    // Floor keeps the pruner meaningful; ceiling stays well under
+    // the M3 family's 1M-token context so a user cannot configure
+    // their way back into the 500 this setting exists to prevent.
+    return Math.min(4_000_000, Math.max(8_000, Math.floor(raw)));
   }
 
   private readMightyMaxSetting(key: string): unknown {

@@ -291,6 +291,31 @@
           "description": "Maximum characters retained for each tool result sent back to MiniMax. Larger values preserve more terminal/search output but consume more context and may increase latency.",
           "scope": "window"
         },
+        "mightyMax.mcpMaxTools": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "maximum": 500,
+          "description": "Maximum number of MCP tools sent to MiniMax in one request. MCP tools are otherwise selected by a rolling recency LRU: tools the model has called are kept for the session, and newly-installed servers displace unused ones. Set to 0 to send no MCP tools at all. Exceeding the cap with reservedMcpTools logs a warning rather than failing.",
+          "scope": "window"
+        },
+        "mightyMax.reservedMcpTools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "MCP tools pinned on every request, ahead of the recency LRU. Accepts an exact tool name (mcp_github_mcp_se_list_issues) or a prefix ending in an underscore (mcp_github_ — matches every tool from that server). Edit this from 'Mighty Max: Manage MCP reserved tools', which also shows how many loaded tools each entry currently matches. Entries matching nothing are logged as a warning so a typo is diagnosable.",
+          "scope": "window"
+        },
+        "mightyMax.historyMaxChars": {
+          "type": "number",
+          "default": 500000,
+          "minimum": 8000,
+          "maximum": 4000000,
+          "description": "Maximum characters of conversation history sent to MiniMax in one request. Complements toolResultMaxChars: that caps each tool result, this caps the whole request. When the history exceeds this budget the OLDEST complete exchanges are dropped (a tool call and its result are always dropped together, never split). Raise it for long sessions with large file reads; lower it if requests fail with HTTP 500 on long-running chats.",
+          "scope": "window"
+        },
         "mightyMax.enableAutoKeyRotation": {
           "type": "boolean",
           "default": true,

@@ -48,6 +48,10 @@ const EXCLUDED = new Set([
   'out/lib/no-vscode.test.js',
   'out/lib/messages.test.js',
   'out/lib/messages-id-fidelity.test.js',
+  // T40 — the history-pruning end-to-end test imports
+  // `domain/messages.js`, which transitively requires `vscode` via
+  // `ports/message-mapping.js`. Runs under the stub runner.
+  'out/lib/messages-history-prune.test.js',
   // T32 — the status-bar test transitively requires `vscode`
   // (the adapter imports `vscode.MarkdownString`, `vscode.ThemeColor`,
   // etc.). It runs under the stub runner, not here.

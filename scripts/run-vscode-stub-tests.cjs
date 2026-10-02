@@ -62,6 +62,10 @@ require('./vscode-stub.cjs').install();
 // provider files.
 require('../out/lib/messages.test.js');
 require('../out/lib/messages-id-fidelity.test.js');
+// T40 — the history-pruning end-to-end test. Imports
+// `domain/messages.js`, which pulls in `ports/message-mapping.js`
+// and therefore `vscode`; runs here with the stub installed.
+require('../out/lib/messages-history-prune.test.js');
 
 require('../out/providers/stream-pump.test.js');
 require('../out/providers/chat-provider.test.js');

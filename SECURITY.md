@@ -2,10 +2,15 @@
 
 ## Supported Versions
 
+Only the latest published release receives security fixes. Older
+versions are not patched; please update before reporting an issue
+against them.
+
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1.0 | :x:                |
+| 0.10.x  | :white_check_mark: |
+| 0.9.x   | :x:                |
+| < 0.9.0 | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -40,6 +45,24 @@ This extension implements several security safeguards:
 - Authorization headers are redacted from all logs
 - Keys are only transmitted over HTTPS to platform.minimax.io
 
+### Diagnostic Stream Capture
+
+The opt-in `mightyMax.captureStream` setting is the one setting that
+writes model output to disk. It is designed so it cannot weaken the
+guarantees above:
+
+- **Disabled by default.** Nothing is captured unless explicitly enabled
+- **Response events only** — text deltas, tool deltas, finish reasons. The transport calls it from the response-parsing loop, so it never receives the API key, the `Authorization` header, or a request body
+- **Written outside the log channel** to a private directory under the extension's global storage, so the log channel's no-bodies rule is unaffected
+- **No predictable path.** The capture directory is created with `mkdtemp` (an unpredictable name, mode `0700`) and the file itself is `0600`. A fixed filename in a shared world-writable temp directory would let a local attacker pre-create it as a symlink and redirect the write — CodeQL flags that as `js/insecure-temporary-file`, high severity
+- **Capped** at a rolling 2 MB window, so it cannot grow without bound
+- **Fail-safe** — every filesystem error is swallowed, because a diagnostic must never break streaming
+
+It does contain model output, which can echo content from your
+conversation. That is why it is off by default. Enable it only to
+investigate a suspected rendering defect, then turn it off and delete
+the file.
+
 ### Workspace Trust
 
 - The `mightyMax.baseUrl` setting is restricted in untrusted workspaces
@@ -48,10 +71,10 @@ This extension implements several security safeguards:
 
 ### Dependency Security
 
-- All dependencies are audited via `npm audit` in CI
-- Dependabot monitors for security updates
-- Dependencies are pinned in package-lock.json
-- High-severity vulnerabilities block CI/CD
+- Production dependencies are audited on every push and on a weekly cron (`npm audit --omit=dev --audit-level=moderate`), which **does** block CI on moderate-and-above findings
+- The full audit including dev dependencies runs at `--audit-level=high` but is `continue-on-error`, so a dev-only advisory does not block CI
+- Dependencies are pinned in `package-lock.json`, which the release workflow enforces via `npm ci`
+- Dependabot raises pull requests for dependency updates
 
 ### Code Security
 

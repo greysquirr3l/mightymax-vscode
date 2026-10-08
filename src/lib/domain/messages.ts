@@ -469,6 +469,35 @@ export function mapRequestToMiniMax(
       continue;
     }
 
+    // T41 — a tool result must IMMEDIATELY follow the assistant `tool_use`
+    // it answers. T38 lifts an image out of a `LanguageModelToolResultPart`
+    // and flushes the binary onto the SAME turn, so a result-carrying turn
+    // looks like [tool-result, image]. `richParts.length > 0` then made the
+    // user wire message (carrying the image) push BEFORE the tool-result
+    // flush below, producing:
+    //
+    //   assistant(tool_use X) | user([image]) | tool(result X)
+    //
+    // Anthropic/MiniMax reject that with HTTP 400, error 2013 "invalid
+    // params, tool call result does not follow tool call". The orphan
+    // reconciler further down cannot catch it: it checks id MEMBERSHIP in
+    // a conversation-wide set, not adjacency.
+    //
+    // Fix: on a user-role turn the results flush FIRST and the user turn
+    // (text + images) follows. An assistant-role turn keeps its original
+    // order, because that message is the one carrying the tool_use — pushing
+    // its results first would invert them ahead of the call.
+    const flushToolResults = (): void => {
+      for (const result of toolResults) {
+        wireMessages.push({
+          role: 'tool',
+          content: result.content,
+          toolCallId: result.callId,
+        });
+      }
+    };
+    if (msg.role === 'user') flushToolResults();
+
     if (
       textParts.length > 0 ||
       richParts.length > 0 ||
@@ -524,13 +553,7 @@ export function mapRequestToMiniMax(
       wireMessages.push({ role: 'assistant', content: '' });
     }
 
-    for (const result of toolResults) {
-      wireMessages.push({
-        role: 'tool',
-        content: result.content,
-        toolCallId: result.callId,
-      });
-    }
+    if (msg.role !== 'user') flushToolResults();
   }
 
   // Tool-result truncation (T27 perf): cap each role:'tool'

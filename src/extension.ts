@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { StreamCapture } from './adapters/stream-capture.js';
 import { LoggerAdapter, type LogLevel } from './adapters/logger.js';
 import { SecretStoreAdapter } from './adapters/secret-store.js';
 import { KeyProviderAdapter } from './adapters/key-provider.js';
@@ -195,6 +196,33 @@ export function activate(context: vscode.ExtensionContext): void {
       await context.globalState.update(SLOT_LABELS_STATE_KEY, serializeLabelsToGlobalState(labels));
     },
   };
+  // T41 — opt-in response-stream capture. Armed explicitly and
+  // dormant by default: the suspected defect is intermittent and
+  // cannot be reproduced on demand, so the sink has to be sitting
+  // there before the bad stream arrives. Records response events
+  // only, to its own file in global storage — never the log
+  // channel, so the redaction rule is untouched.
+  const captureEnabled =
+    vscode.workspace.getConfiguration('mightyMax').get<boolean>('captureStream') ?? false;
+  // T41 — resolve a CAPTURE DIR rather than a full path, and let
+  // StreamCapture create it privately via mkdtemp. Two CodeQL
+  // findings (js/insecure-temporary-file, high) came from the old
+  // shape: a predictable filename in a shared world-writable `/tmp`.
+  // A local attacker can pre-create `stream-capture.txt` as a
+  // symlink and have the extension write model output — which can
+  // echo conversation content — into a file they own. When
+  // globalStorageUri is absent there is no extension-owned directory
+  // to write into, so the capture stays off rather than falling back
+  // to somewhere unsafe.
+  const captureDir = context.globalStorageUri?.fsPath ?? context.storageUri?.fsPath;
+  const streamCapture =
+    captureEnabled && captureDir !== undefined ? new StreamCapture({ dir: captureDir }) : undefined;
+  context.subscriptions.push(
+    new vscode.Disposable(() => {
+      void streamCapture?.close();
+    }),
+  );
+
   // Watchdog timeouts are callbacks (like baseUrl) so settings
   // changes apply on the next request without an extension-host
   // restart. Out-of-range values are clamped to the transport's
@@ -205,6 +233,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.getConfiguration('mightyMax').get<number>('firstByteTimeoutMs') ?? 45_000,
     idleTimeoutMs: () =>
       vscode.workspace.getConfiguration('mightyMax').get<number>('idleTimeoutMs') ?? 60_000,
+    streamCapture,
   });
   const catalog = new CatalogAdapter(logger);
   const recentTurnUsage = new RecentTurnUsageStore();
@@ -599,6 +628,8 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   // Disposables pushed to context.subscriptions are released automatically;
   // this function exists for vsce packaging and explicit shutdown hooks.
+  // T41's capture sink is registered as a subscription above, so its
+  // final flush happens on deactivate without an explicit hook here.
 }
 
 // Surface the Logger port as a public export so T02–T07 can re-use it

@@ -6,6 +6,76 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-08
+
+Minor release. Fixes a hard 400 that broke any agent turn where a
+tool returned an image, and adds an opt-in diagnostic for a separate,
+still-unconfirmed stream-corruption report.
+
+### Fixed
+
+- **A tool result carrying an image reordered itself ahead of its own
+  `tool_use`, and the request was rejected outright.** T38 lifts an
+  image out of a `LanguageModelToolResultPart` and flushes the binary
+  onto the same turn, so a result-carrying turn looks like
+  `[tool-result, image]`. Because that turn had image parts, the user
+  wire message carrying the image was pushed _before_ the tool-result
+  flush, producing:
+
+  ```
+  assistant(tool_use X) | user([image]) | tool(result X)
+  ```
+
+  Anthropic and MiniMax both reject that with HTTP 400,
+  `invalid_request_error`: _invalid params, tool call result does not
+  follow tool call (2013)_. The orphan reconciler could not catch it —
+  that pass checks id **membership** in a conversation-wide set, not
+  adjacency, so the result still "found" its call.
+
+  The impact was not marginal. A captured session showed 167 tool
+  results against 160 assistant turns, 59 tools in play, and the
+  request rejected on every key in the pool — which then rotated all
+  three slots looking for an auth fault that did not exist.
+
+  On a `user`-role turn the results now flush _first_ and the user
+  turn (text plus images) follows. An `assistant`-role turn keeps its
+  original order, because that message is the one carrying the
+  `tool_use`; flushing its results early would invert them ahead of
+  the call they answer. Covered by a regression test that asserts
+  strict adjacency.
+
+### Added
+
+- **`mightyMax.captureStream`** (default `off`). A dormant diagnostic
+  for intermittent garbled model output — specifically, MiniMax
+  emitting its native tool-call protocol into the Anthropic `text`
+  channel instead of a structured `tool_use` block, which would
+  render raw markup in the chat.
+
+  This is not fixable from the log channel, and not fixable by
+  reproducing on demand — the log never contains response bodies (by
+  design), and the symptom is unpredictable. So the capture is armed
+  in advance: enable the setting, use the extension normally, and the
+  rolling 2 MB window will hold the offending stream whenever you next
+  notice the garbling. Paste that file, then turn the setting off.
+
+  Writes to `stream-capture.txt` in global storage, deliberately
+  **outside** the log channel so the redaction rule is untouched. It
+  records response events only — text deltas, tool deltas, finish
+  reasons — so it never sees the API key, the `Authorization` header,
+  or a request body. It does contain model output, which can echo
+  conversation content, which is why it is off by default and should
+  be deleted once used. Every filesystem error is swallowed: a
+  diagnostic can never break streaming.
+
+  The capture directory is created with `mkdtemp` and mode `0700`,
+  and the file itself `0600`. An earlier draft wrote to a fixed
+  `stream-capture.txt` with a `/tmp` fallback, which CodeQL flagged as
+  `js/insecure-temporary-file` (high severity) — a predictable path in
+  a shared world-writable directory is a symlink-attack target. When
+  no extension-owned storage directory is available the capture now
+  stays off rather than falling back somewhere unsafe.
+
 ## [0.9.4] — 2026-10-01
 
 Patch release. Two silent-failure fixes, both the same shape: a

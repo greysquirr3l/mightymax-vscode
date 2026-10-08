@@ -91,6 +91,86 @@ describe('mapRequestToMiniMax — text', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T41 — image lifted out of a tool result must not split the exchange
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mapRequestToMiniMax — image inside a tool result', () => {
+  // Regression: error 2013, "invalid params, tool call result does not
+  // follow tool call". T38 lifts an image out of a
+  // LanguageModelToolResultPart and flushes it onto the SAME turn,
+  // immediately after the result. In the mapper that turns the turn into
+  // [tool-result, image]:
+  //
+  //   richParts.length > 0  ->  the user wire message (carrying the image)
+  //                             is pushed BEFORE the `for (const result of
+  //                             toolResults)` flush
+  //   -> wire order: assistant(tool_use X) | user([image]) | tool(result X)
+  //
+  // Anthropic/MiniMax require the tool_result to IMMEDIATELY follow its
+  // tool_use. The spliced-in user image turn breaks that adjacency.
+  it('emits the tool result immediately after its tool_use, never after an image turn', () => {
+    const assistantTurn: ChatMessage = {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCall: { callId: 'call_shot_1', name: 'screenshot', input: {} } },
+      ],
+    };
+    // One user turn carrying the tool result AND the image lifted out of it.
+    const resultTurn: ChatMessage = {
+      role: 'user',
+      content: [
+        { type: 'tool-result', toolResult: { callId: 'call_shot_1', content: ['ok'] } },
+        { type: 'image', mimeType: 'image/png', data: new Uint8Array([1, 2, 3, 4]) },
+      ],
+    };
+
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      assistantTurn,
+      resultTurn,
+    ]);
+
+    const roles = result.messages.map((m) => m.role);
+    // The tool message must sit at index 1 — directly after the assistant
+    // tool_use, with no user turn wedged between them.
+    equal(result.messages[1]?.role, 'tool', `expected tool at index 1, got ${roles.join(',')}`);
+    equal(result.messages[1]?.toolCallId, 'call_shot_1');
+    // And the image must still reach the wire, just AFTER the result.
+    equal(result.messages[2]?.role, 'user');
+    ok(Array.isArray(result.messages[2]?.content), 'image turn keeps its content array');
+  });
+
+  it('keeps every tool result adjacent to its tool_use when text and images are both present', () => {
+    const assistantTurn: ChatMessage = {
+      role: 'assistant',
+      content: [
+        { type: 'tool-call', toolCall: { callId: 'call_a', name: 'read_file', input: {} } },
+        { type: 'tool-call', toolCall: { callId: 'call_b', name: 'screenshot', input: {} } },
+      ],
+    };
+    const resultTurn: ChatMessage = {
+      role: 'user',
+      content: [
+        { type: 'text', value: 'here you go' },
+        { type: 'tool-result', toolResult: { callId: 'call_a', content: ['contents'] } },
+        { type: 'tool-result', toolResult: { callId: 'call_b', content: ['ok'] } },
+        { type: 'image', mimeType: 'image/png', data: new Uint8Array([9, 9]) },
+      ],
+    };
+
+    const result = mapRequestToMiniMax({ id: 'MiniMax-M3', thinkingStyle: 'anthropic' }, [
+      assistantTurn,
+      resultTurn,
+    ]);
+
+    const roles = result.messages.map((m) => m.role);
+    equal(result.messages[1]?.role, 'tool', `got ${roles.join(',')}`);
+    equal(result.messages[1]?.toolCallId, 'call_a');
+    equal(result.messages[2]?.role, 'tool');
+    equal(result.messages[2]?.toolCallId, 'call_b');
+  });
+});
+
 describe('mapRequestToMiniMax — image', () => {
   it('encodes a PNG image part to a data URI on the image_url wire shape', () => {
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

@@ -11,6 +11,7 @@ import {
   type MiniMaxWireToolCall,
 } from '../ports/minimax-client.js';
 import { sanitizeAnthropicSchema } from '../lib/domain/anthropic-transform.js';
+import { formatCaptureLine, type StreamCapture } from './stream-capture.js';
 
 /**
  * MiniMaxClientAdapter — SSE streaming HTTP client against
@@ -105,6 +106,17 @@ export interface MiniMaxClientOptions {
    * non-positive values fall back to the default.
    */
   idleTimeoutMs?: number | (() => number);
+  /**
+   * T41 — optional diagnostic sink for RESPONSE events.
+   *
+   * When provided, every event yielded to the consumer is also
+   * serialized into the sink. Records response output only; the
+   * API key, Authorization header, and request bodies never
+   * reach it because it is called from the response-parsing
+   * loop. Omitted by default — see `stream-capture.ts` for why
+   * an intermittent defect requires an armed-but-dormant sink.
+   */
+  streamCapture?: StreamCapture | undefined;
 }
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -361,6 +373,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly firstByteTimeoutMs: () => number;
   private readonly idleTimeoutMs: () => number;
   private readonly semaphore: Semaphore;
+  /** T41 diagnostic sink; `undefined` unless explicitly enabled. */
+  private readonly streamCapture: StreamCapture | undefined;
 
   constructor(options: MiniMaxClientOptions) {
     this.baseUrl = options.baseUrl;
@@ -375,6 +389,24 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     this.firstByteTimeoutMs = timeoutGetter(options.firstByteTimeoutMs, FIRST_BYTE_TIMEOUT_MS);
     this.idleTimeoutMs = timeoutGetter(options.idleTimeoutMs, IDLE_TIMEOUT_MS);
     this.semaphore = new Semaphore(options.maxConcurrentRequests ?? DEFAULTS.maxConcurrentRequests);
+    this.streamCapture = options.streamCapture;
+  }
+
+  /**
+   * Mirror one response event into the diagnostic sink, if armed.
+   *
+   * Deliberately total: a capture failure must never interrupt a
+   * stream, so both the serialization and the append are guarded.
+   */
+  private captureEvent(event: MiniMaxStreamEvent): void {
+    const capture = this.streamCapture;
+    if (capture === undefined) return;
+    try {
+      const line = formatCaptureLine(event);
+      if (line !== undefined) capture.append(line);
+    } catch {
+      // Never let diagnostics break streaming.
+    }
   }
 
   /**
@@ -565,7 +597,17 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         pendingThinking: undefined,
       };
       try {
-        yield* this.runCompletionAttempt(request, apiKey, signal, dialect, logger, parseState);
+        for await (const event of this.runCompletionAttempt(
+          request,
+          apiKey,
+          signal,
+          dialect,
+          logger,
+          parseState,
+        )) {
+          this.captureEvent(event);
+          yield event;
+        }
         return;
       } catch (err) {
         const retriableBeforeFirstEvent =

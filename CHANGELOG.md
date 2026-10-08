@@ -68,6 +68,14 @@ still-unconfirmed stream-corruption report.
   be deleted once used. Every filesystem error is swallowed: a
   diagnostic can never break streaming.
 
+  The capture directory is created with `mkdtemp` and mode `0700`,
+  and the file itself `0600`. An earlier draft wrote to a fixed
+  `stream-capture.txt` with a `/tmp` fallback, which CodeQL flagged as
+  `js/insecure-temporary-file` (high severity) — a predictable path in
+  a shared world-writable directory is a symlink-attack target. When
+  no extension-owned storage directory is available the capture now
+  stays off rather than falling back somewhere unsafe.
+
 ## [0.9.4] — 2026-10-01
 
 Patch release. Two silent-failure fixes, both the same shape: a

@@ -187,7 +187,7 @@
         "mightyMax.captureStream": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "**Diagnostic.** Writes raw response-stream events (text deltas, tool deltas, finish reasons) to `stream-capture.txt` in the extension's global storage, capped at 2 MB rolling. For debugging intermittent garbled or malformed model output that the log channel cannot show, because logs never contain response bodies. OFF by default. Enable it, reproduce the problem, then paste the file and turn it OFF. The file contains model output, which can echo content from your conversation — it is written outside the log channel so the usual redaction rules still hold, but delete it when you are done.",
+          "markdownDescription": "**Diagnostic.** Writes raw response-stream events (text deltas, tool deltas, finish reasons) to a `stream-capture.txt` file inside a private, owner-only (`0700`) directory under the extension's global storage, capped at 2 MB rolling. Use it to debug intermittent garbled or malformed model output that the log channel cannot show, because logs never contain response bodies. OFF by default. Enable it, reproduce the problem, then paste the file and turn it OFF. The capture directory is created with `mkdtemp` (unpredictable name) rather than a fixed path, so it cannot be pre-created as a symlink by another local user. The file contains model output, which can echo content from your conversation — it is written outside the log channel so the usual redaction rules still hold, but delete it when you are done.",
           "scope": "window"
         },
         "mightyMax.enableSmartToolFiltering": {

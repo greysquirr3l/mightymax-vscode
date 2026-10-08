@@ -37,7 +37,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { dirname } from 'node:path';
+import { join } from 'node:path';
 
 /** Default retained bytes before the oldest records are dropped. */
 export const DEFAULT_CAPTURE_MAX_BYTES = 2_000_000;
@@ -45,9 +45,18 @@ export const DEFAULT_CAPTURE_MAX_BYTES = 2_000_000;
 /** Default debounce between a dirty buffer and its disk flush. */
 export const DEFAULT_CAPTURE_FLUSH_MS = 2_000;
 
+/** Name of the private subdirectory created under the parent dir. */
+const CAPTURE_DIR_PREFIX = 'stream-capture-';
+
+/** Name of the capture file inside that private directory. */
+export const CAPTURE_FILE_NAME = 'stream-capture.txt';
+
 export interface StreamCaptureOptions {
-  /** Absolute path of the capture file. */
-  readonly path: string;
+  /**
+   * Parent directory the private capture directory is created
+   * inside — normally VS Code's `globalStorageUri.fsPath`.
+   */
+  readonly dir: string;
   /** Rolling window size in characters. Defaults to 2 MB. */
   readonly maxBytes?: number;
   /** Debounce before writing a dirty buffer. Defaults to 2000ms. */
@@ -70,6 +79,12 @@ export class StreamCapture {
 
   private readonly maxBytes: number;
   private readonly flushIntervalMs: number;
+  /**
+   * Set once the private directory exists. Until then writes are
+   * buffered in memory only, so a failure to create it degrades to
+   * "capture unavailable" rather than throwing into the stream.
+   */
+  private resolvedPath: string | undefined;
 
   constructor(private readonly options: StreamCaptureOptions) {
     this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_CAPTURE_MAX_BYTES);
@@ -102,6 +117,15 @@ export class StreamCapture {
     return this.buffer.length;
   }
 
+  /**
+   * Absolute path of the capture file, once the private directory
+   * has been created. Exposed so the user (and the tests) can find
+   * the file without having to reconstruct the `mkdtemp` suffix.
+   */
+  get filePath(): string {
+    return this.resolvedPath ?? join(this.options.dir, CAPTURE_FILE_NAME);
+  }
+
   /** Stop accepting writes and flush whatever is pending. */
   async close(): Promise<void> {
     if (this.timer !== undefined) {
@@ -125,17 +149,43 @@ export class StreamCapture {
     if (!this.dirty) return;
     const payload = this.buffer;
     this.dirty = false;
-    const path = this.options.path;
     this.inflight = this.inflight
       .then(async () => {
         try {
-          await fs.mkdir(dirname(path), { recursive: true });
-          await fs.writeFile(path, payload, 'utf8');
+          const path = await this.ensureDir();
+          if (path === undefined) return;
+          await fs.writeFile(path, payload, { encoding: 'utf8', mode: 0o600 });
         } catch {
           // Unwritable capture target is not an error worth raising.
         }
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * Create (once) a private directory and return the capture path.
+   *
+   * `mkdtemp` builds a unpredictable name and `mkdir` with mode
+   * 0700 keeps it owner-only, so no other local user can pre-create
+   * the path as a symlink and redirect the write. Writing the file
+   * 0600 applies the same protection to the file itself.
+   *
+   * Returns `undefined` when the directory cannot be created, which
+   * silently disables the capture rather than throwing.
+   */
+  private async ensureDir(): Promise<string | undefined> {
+    if (this.resolvedPath !== undefined) return this.resolvedPath;
+    try {
+      // `mkdtemp` creates only the FINAL directory, so any missing
+      // intermediate parents (globalStorage normally exists, but the
+      // path can point somewhere new) must be made first.
+      await fs.mkdir(this.options.dir, { recursive: true });
+      const dir = await fs.mkdtemp(join(this.options.dir, CAPTURE_DIR_PREFIX));
+      this.resolvedPath = join(dir, CAPTURE_FILE_NAME);
+      return this.resolvedPath;
+    } catch {
+      return undefined;
+    }
   }
 }
 

@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { join } from 'node:path';
 import { StreamCapture } from './adapters/stream-capture.js';
 import { LoggerAdapter, type LogLevel } from './adapters/logger.js';
 import { SecretStoreAdapter } from './adapters/secret-store.js';
@@ -205,14 +204,19 @@ export function activate(context: vscode.ExtensionContext): void {
   // channel, so the redaction rule is untouched.
   const captureEnabled =
     vscode.workspace.getConfiguration('mightyMax').get<boolean>('captureStream') ?? false;
-  const streamCapture = captureEnabled
-    ? new StreamCapture({
-        path: join(
-          context.globalStorageUri?.fsPath ?? context.storageUri?.fsPath ?? '/tmp',
-          'stream-capture.txt',
-        ),
-      })
-    : undefined;
+  // T41 — resolve a CAPTURE DIR rather than a full path, and let
+  // StreamCapture create it privately via mkdtemp. Two CodeQL
+  // findings (js/insecure-temporary-file, high) came from the old
+  // shape: a predictable filename in a shared world-writable `/tmp`.
+  // A local attacker can pre-create `stream-capture.txt` as a
+  // symlink and have the extension write model output — which can
+  // echo conversation content — into a file they own. When
+  // globalStorageUri is absent there is no extension-owned directory
+  // to write into, so the capture stays off rather than falling back
+  // to somewhere unsafe.
+  const captureDir = context.globalStorageUri?.fsPath ?? context.storageUri?.fsPath;
+  const streamCapture =
+    captureEnabled && captureDir !== undefined ? new StreamCapture({ dir: captureDir }) : undefined;
   context.subscriptions.push(
     new vscode.Disposable(() => {
       void streamCapture?.close();

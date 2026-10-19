@@ -249,6 +249,12 @@
           "description": "Optional system prompt sent on every M3 request. When empty, Mighty Max uses a short preamble that nudges M3 to plan before the first tool call. The prompt is sanitized for UTF-16 surrogate code points and sent with `cache_control: ephemeral` so it is reused across requests.",
           "scope": "window"
         },
+        "mightyMax.showDeprecatedModels": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show models MiniMax has deprecated (the M1 and M2.x families) in the chat model picker. Deprecated models are hidden by default so the picker reflects the models MiniMax currently supports. Nothing is revoked: a chat session already using a hidden model keeps working, and a hidden model can still be selected explicitly by id.",
+          "scope": "window"
+        },
         "mightyMax.enableNativeTokenCounting": {
           "type": "boolean",
           "default": true,

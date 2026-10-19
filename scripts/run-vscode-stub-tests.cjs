@@ -73,6 +73,9 @@ require('../out/commands/manage-command.test.js');
 require('../out/commands/generate-video-command.test.js');
 require('../out/commands/generate-image-command.test.js');
 require('../out/adapters/status-bar.test.js');
+// CatalogAdapter imports `vscode.EventEmitter` and reads the
+// `mightyMax` config store, so it needs the stub installed.
+require('../out/adapters/catalog.test.js');
 require('../out/adapters/generate-video-tool-adapter.test.js');
 require('../out/adapters/generate-image-tool-adapter.test.js');
 // T39: imports `./subagent-tool-adapter.js`, which does

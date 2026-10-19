@@ -33,7 +33,7 @@
  * host-glue-but-otherwise-pure tests.
  */
 
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import * as vscode from 'vscode';
@@ -330,6 +330,62 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // provideLanguageModelChatResponse
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('ChatProvider — deprecated model warning', () => {
+  const DEPRECATED_M2_7: ModelInfo = {
+    id: 'MiniMax-M2.7',
+    displayName: 'M2.7 (MiniMax)',
+    vendor: 'minimax',
+    family: 'minimax',
+    maxInputTokens: 196_608,
+    maxOutputTokens: 8_192,
+    capabilities: {
+      toolCalling: 60,
+      imageInput: true,
+      thinking: true,
+      videoInput: false,
+    },
+    thinkingStyle: 'openai',
+    detail: '200K ctx, 8K out',
+    deprecated: true,
+  };
+
+  const runOnce = async (entry: ModelInfo): Promise<ReturnType<typeof makeRecordingLogger>> => {
+    const logger = makeRecordingLogger();
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    const provider = new ChatProvider(
+      logger,
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([entry]),
+    );
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(entry),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    return logger;
+  };
+
+  it('warns and names the setting when a request runs on a deprecated model', async () => {
+    const logger = await runOnce(DEPRECATED_M2_7);
+    const warning = logger.calls.find(
+      (c) => c.level === 'warn' && c.message.includes('deprecated model'),
+    );
+    ok(warning, 'expected a deprecation warning');
+    match(warning?.message ?? '', /mightyMax\.showDeprecatedModels/);
+    strictEqual(warning?.context?.model, 'MiniMax-M2.7');
+  });
+
+  it('stays silent for a current model', async () => {
+    const logger = await runOnce(M3);
+    const warning = logger.calls.find((c) => c.message.includes('deprecated model'));
+    strictEqual(warning, undefined);
+  });
+});
 
 describe('ChatProvider.provideLanguageModelChatResponse', () => {
   it('reports text → tool call → usage in order via progress.report', async () => {

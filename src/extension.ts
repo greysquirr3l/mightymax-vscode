@@ -236,6 +236,10 @@ export function activate(context: vscode.ExtensionContext): void {
     streamCapture,
   });
   const catalog = new CatalogAdapter(logger);
+  // The adapter holds a config subscription (so toggling
+  // `showDeprecatedModels` refreshes the picker) — register it so the
+  // extension host tears it down on deactivate.
+  context.subscriptions.push(catalog);
   const recentTurnUsage = new RecentTurnUsageStore();
   const mcpRecency = new McpToolRecencyTracker();
   const chatProvider = new ChatProvider(

@@ -22,7 +22,10 @@ import { describe, it } from 'node:test';
 
 import {
   BUILT_IN_CATALOG,
+  CURRENT_MODEL_IDS,
   DEFAULT_LIVE_DEFAULTS,
+  filterDeprecated,
+  isDeprecatedModel,
   mergeCatalog,
   normalizeModelId,
   validateCatalog,
@@ -427,6 +430,60 @@ describe('mergeCatalog', () => {
     assert.equal(entry.vendor, 'minimax');
     assert.equal(entry.family, 'minimax');
     assert.equal(entry.detail, '130K ctx · 7K out');
+  });
+});
+
+describe('deprecation filter', () => {
+  it('marks exactly the M1 and M2.x families deprecated', () => {
+    const deprecated = BUILT_IN_CATALOG.filter((e) => e.deprecated === true)
+      .map((e) => e.id)
+      .sort();
+    assert.deepEqual(deprecated, ['MiniMax-M1', 'MiniMax-M2', 'MiniMax-M2.5', 'MiniMax-M2.7']);
+  });
+
+  it('leaves M3 and M3.1-Flash-Preview current', () => {
+    for (const id of CURRENT_MODEL_IDS) {
+      const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
+      assert.ok(entry, `${id} must exist`);
+      assert.notEqual(entry?.deprecated, true);
+    }
+  });
+
+  it('RETAINS every deprecated entry — deprecation hides, never deletes', () => {
+    // A session already pinned to M2 must keep resolving, so the
+    // catalog itself is unchanged; only the picker's view is filtered.
+    assert.equal(BUILT_IN_CATALOG.length, 6);
+    assert.equal(filterDeprecated(BUILT_IN_CATALOG, false).length, 2);
+  });
+
+  it('shows only current models by default', () => {
+    const visible = filterDeprecated(BUILT_IN_CATALOG, false);
+    assert.deepEqual(visible.map((e) => e.id), ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview']);
+  });
+
+  it('shows everything when deprecated models are enabled', () => {
+    const all = filterDeprecated(BUILT_IN_CATALOG, true);
+    assert.equal(all.length, BUILT_IN_CATALOG.length);
+    // Returns the same array — enabling must not rebuild anything.
+    assert.equal(all, BUILT_IN_CATALOG);
+  });
+
+  it('reports deprecation by id for the warn-in-log path', () => {
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M2.7'), true);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M1'), true);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash-Preview'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'does-not-exist'), false);
+  });
+
+  it('keeps a deprecated entry fully usable once re-enabled', () => {
+    const m27 = filterDeprecated(BUILT_IN_CATALOG, true).find(
+      (e) => e.id === 'MiniMax-M2.7',
+    );
+    assert.ok(m27);
+    assert.equal(m27?.capabilities.toolCalling, 60);
+    assert.equal(m27?.thinkingStyle, 'openai');
+    assert.equal(m27?.maxInputTokens, 196_608);
   });
 });
 

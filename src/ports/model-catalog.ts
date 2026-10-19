@@ -48,6 +48,18 @@ export interface ModelInfo {
   thinkingStyle: ThinkingStyle;
   /** Short, human-readable subtitle shown in the picker ("200K ctx, 8K out"). */
   detail: string;
+  /**
+   * True when the model is past its deprecation window and is hidden
+   * from the chat model picker unless `mightyMax.showDeprecatedModels`
+   * is enabled.
+   *
+   * The entry is RETAINED, not removed: a hidden model still resolves
+   * by id, keeps all of its metadata, and keeps serving requests, so
+   * an existing chat session pinned to it does not break. MiniMax is
+   * winding down the M1 and M2.x families; hiding them steers new
+   * users to M3 without revoking access from anyone who depends on it.
+   */
+  deprecated?: boolean;
 }
 
 export interface ModelCapabilities {

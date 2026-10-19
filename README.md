@@ -9,9 +9,11 @@ MiniMax M-series language models for VS Code Chat (BYOK).
 ## What this is
 
 Mighty Max is a Visual Studio Code and VS Code Insiders extension that
-contributes the MiniMax M-series models (M3.1 Flash Preview, M3, M2.7, M2.5, M2, M1) to
-VS Code Chat via the Language Model Chat Provider API (finalized in
-VS Code 1.109). It registers under the `minimax` vendor and works as
+contributes the current MiniMax M-series models (M3.1 Flash Preview and
+M3) to VS Code Chat via the Language Model Chat Provider API (finalized
+in VS Code 1.109), with the wound-down M1 and M2.x families available
+behind `mightyMax.showDeprecatedModels`. It registers under the
+`minimax` vendor and works as
 a complete drop-in backend for Ask, Edit, Inline Chat, Agent mode,
 custom and local agents, and utility tasks (commit messages, etc).
 
@@ -80,10 +82,11 @@ code --install-extension mighty-max.vsix
 3. Select a MiniMax model:
    - `minimax:MiniMax-M3.1-Flash-Preview` — Frontier Flash preview (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
    - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
-   - `minimax:MiniMax-M2.7` — High performance (1M context)
-   - `minimax:MiniMax-M2.5` — Balanced (1M context)
-   - `minimax:MiniMax-M2` — Fast (196K context)
-   - `minimax:MiniMax-M1` — Lightweight (32K context)
+
+   MiniMax is winding down the M1 and M2.x families, so they are hidden
+   from the picker by default. Nothing is revoked: a chat already using
+   one keeps working, and setting `mightyMax.showDeprecatedModels` to
+   `true` brings M2.7, M2.5, M2, and M1 back into the list.
 
 ### 4. Start Chatting
 

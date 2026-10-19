@@ -195,6 +195,11 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
@@ -211,6 +216,11 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
@@ -227,6 +237,11 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
     detail: '200K ctx · 8K out · image + tools (≤60) + reasoning · structured outputs',
   }),
@@ -247,6 +262,11 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       thinking: false,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'none',
     detail: '32K ctx · 4K out · tools (≤30)',
   }),
@@ -254,6 +274,47 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
 
 /** Helper used by the test suite to assert token-budget formatting. */
 export const _internal = { formatTokenCount, DEFAULT_MAX_OUTPUT_TOKENS };
+
+// -----------------------------------------------------------------------------
+// Deprecation filtering
+// -----------------------------------------------------------------------------
+
+/**
+ * The models MiniMax still considers current. Everything else in
+ * `BUILT_IN_CATALOG` is retained but carries `deprecated: true`.
+ */
+export const CURRENT_MODEL_IDS: ReadonlyArray<string> = Object.freeze([
+  'MiniMax-M3',
+  'MiniMax-M3.1-Flash-Preview',
+]);
+
+/**
+ * Decide which catalog entries the chat model picker should show.
+ *
+ * Deprecation hides an entry from the picker; it never deletes it. A
+ * model that is already selected in an open chat session keeps
+ * working, and `getModel` still resolves deprecated ids, so flipping
+ * this filter off is a display change rather than a capability
+ * change.
+ *
+ * Pure: no I/O, no vscode. The caller reads the setting and passes it
+ * in.
+ */
+export function filterDeprecated(
+  entries: ReadonlyArray<CatalogEntry>,
+  showDeprecated: boolean,
+): ReadonlyArray<CatalogEntry> {
+  if (showDeprecated) return entries;
+  return entries.filter((entry) => entry.deprecated !== true);
+}
+
+/** True when `id` names a model MiniMax has wound down. */
+export function isDeprecatedModel(
+  entries: ReadonlyArray<CatalogEntry>,
+  id: string,
+): boolean {
+  return entries.some((entry) => entry.id === id && entry.deprecated === true);
+}
 
 // -----------------------------------------------------------------------------
 // Live-merge

@@ -49,6 +49,27 @@ rendering as raw markup in the chat.
   ordering is intentional: the host-side cap stops an oversized set
   reaching us, and the filter keeps the payload small for latency.
 
+- **`mightyMax.showDeprecatedModels` (default `false`) — MiniMax is
+  winding down the M1 and M2.x families, so they now hide from the
+  model picker.** The picker shows `MiniMax-M3` and
+  `MiniMax-M3.1-Flash-Preview`; `M2.7`, `M2.5`, `M2`, and `M1` carry a
+  `deprecated` flag and are filtered out unless the new setting is
+  enabled.
+
+  Deprecation hides, it never deletes. Every entry stays in the
+  catalog with all of its metadata, `getModel` still resolves a
+  deprecated id, and a chat session already pinned to one keeps
+  serving requests — so hiding a model is a display decision, not a
+  revocation, and nobody's existing workflow breaks overnight. The
+  setting is read fresh at the picker rather than cached, and
+  `onDidChangeConfiguration` refreshes the list immediately instead of
+  waiting for the next API-key rotation.
+
+  When a request does run on a deprecated model, the log carries a
+  warning naming both the model and this setting, so anyone debugging
+  "why did this model disappear from the picker?" finds the answer
+  without having to guess.
+
 ### Fixed
 
 - **MiniMax's native tool-call protocol no longer renders as raw

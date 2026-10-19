@@ -262,6 +262,14 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const thinkingStyle: ThinkingStyle = modelInfo?.thinkingStyle ?? 'openai';
     const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
+    if (modelInfo?.deprecated === true) {
+      this.logger.warn(
+        'ChatProvider: request on a deprecated model — MiniMax is winding this family down; ' +
+          'set `mightyMax.showDeprecatedModels` to keep it in the picker, or pick M3',
+        { model: model.id },
+      );
+    }
+
     // Map messages to MiniMax wire format (model first, then messages)
     const mappingResult = mapRequestToMiniMax(
       {

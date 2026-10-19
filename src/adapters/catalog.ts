@@ -18,16 +18,60 @@ import * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
-import { BUILT_IN_CATALOG, type CatalogEntry, mergeCatalog } from '../lib/domain/catalog.js';
+import {
+  BUILT_IN_CATALOG,
+  type CatalogEntry,
+  filterDeprecated,
+  mergeCatalog,
+} from '../lib/domain/catalog.js';
+
+/** Settings key that re-exposes deprecated models in the picker. */
+const SHOW_DEPRECATED_KEY = 'showDeprecatedModels';
 
 export class CatalogAdapter implements ModelCatalog {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private liveModels: ReadonlyArray<CatalogEntry> = [];
   private cachedMerged: ReadonlyArray<ModelInfo> | undefined;
   private cachedMergedLiveKey: ReadonlyArray<CatalogEntry> | undefined;
+  private cachedShowDeprecated: boolean | undefined;
+  private readonly configSub: vscode.Disposable;
 
   constructor(private readonly logger: Logger) {
     this.logger.debug('CatalogAdapter constructed');
+
+    // Read fresh at the use-site, but do not re-read on every call:
+    // subscribe so a settings change drops the cache and refreshes
+    // the picker instead of waiting for the next API-key rotation.
+    this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration(`mightyMax.${SHOW_DEPRECATED_KEY}`)) return;
+      const next = this.readShowDeprecated();
+      if (this.cachedShowDeprecated === next) return;
+      this.cachedShowDeprecated = next;
+      this.logger.debug(
+        `CatalogAdapter: ${SHOW_DEPRECATED_KEY}=${next} — picker list changed`,
+      );
+      // `computeMerged` is unfiltered so it stays cached; only the
+      // picker's view of it changed.
+      this.changeEmitter.fire();
+    });
+  }
+
+  /**
+   * Whether deprecated (wound-down) models stay visible in the picker.
+   * Defaults to `false` so the list reflects what MiniMax still
+   * supports; flipping it on restores every catalog entry.
+   */
+  private readShowDeprecated(): boolean {
+    return (
+      vscode.workspace
+        .getConfiguration('mightyMax')
+        .get<boolean>(SHOW_DEPRECATED_KEY, false) === true
+    );
+  }
+
+  public dispose(): void {
+    this.configSub.dispose();
+    this.changeEmitter.dispose();
   }
 
   /** Fires when the live list changes. Subscribed by `ChatProvider`. */
@@ -37,11 +81,15 @@ export class CatalogAdapter implements ModelCatalog {
     // Returned synchronously but typed as a Promise to match the
     // ModelCatalog port and to keep the public surface async-only
     // (live-list updates may be async in the future).
-    return Promise.resolve(this.computeMerged());
+    return Promise.resolve(filterDeprecated(this.computeMerged(), this.readShowDeprecated()));
   }
 
-  async getModel(id: string): Promise<ModelInfo | undefined> {
-    return (await this.listModels()).find((entry) => entry.id === id);
+  getModel(id: string): Promise<ModelInfo | undefined> {
+    // Deliberately resolves against the UNFILTERED catalog. A chat
+    // session already pinned to a deprecated model must keep working
+    // after that model leaves the picker — hiding it is a display
+    // decision, not a revocation.
+    return Promise.resolve(this.computeMerged().find((entry) => entry.id === id));
   }
 
   /**

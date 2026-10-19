@@ -51,7 +51,32 @@ export interface ModelInfo {
 }
 
 export interface ModelCapabilities {
-  toolCalling: boolean;
+  /**
+   * Tool-calling support + per-request cap.
+   *
+   * - `true`  — the model supports tool calling with no declared cap.
+   *             VS Code / the Agent Host decide on its own how many
+   *             tools to ship per request.
+   * - `false` — the model cannot call tools (hidden from agent mode).
+   * - `number` — the model supports tool calling AND this is the
+   *             maximum number of tools the model can consume in a
+   *             single request. VS Code's Agent Host reads this value
+   *             to truncate the tool list it hands the provider
+   *             (`LanguageModelChatCapabilities.toolCalling` in
+   *             `vscode.d.ts` is typed `boolean | number` and
+   *             documents the number as "the maximum number of tools
+   *             that can be provided in a request"). Declaring a true
+   *             ceiling prevents the payload from blowing past the
+   *             model's actual limit when the workspace exposes 100+
+   *             tools (Copilot + MCP + extension LM tools combined).
+   *
+   * Per MiniMax's published context windows and the tool-call
+   * benchmarks cited in the M3 function-call guide, the curated
+   * defaults are M3/M3.1-Flash-Preview → 128, M2.x → 60, M1 → 30.
+   * `true` is reserved for the live `/v1/models` fallback path
+   * (unknown future models).
+   */
+  toolCalling: boolean | number;
   imageInput: boolean;
   /** Native thinking blocks (M3 exposes these on the Anthropic-compatible endpoint). */
   thinking: boolean;

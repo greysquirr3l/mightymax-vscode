@@ -242,6 +242,50 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
     ok(result[0]?.capabilities.toolCalling === true, 'M3 must advertise toolCalling=true');
   });
 
+  it('forwards a numeric tool cap to the host as a number', () => {
+    // Regression: the publish site collapsed `toolCalling` to
+    // `? true : false`, so a per-request cap never reached the Agent
+    // Host even though the model picker advertised it.
+    const capped: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: 128 },
+      detail: '1M ctx, 16K out, tools (<=128)',
+    };
+    const info = toLanguageModelChatInformation(capped);
+    strictEqual(info.capabilities.toolCalling, 128);
+  });
+
+  it('forwards toolCalling=false for a model that cannot call tools', () => {
+    const noTools: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: false },
+    };
+    strictEqual(toLanguageModelChatInformation(noTools).capabilities.toolCalling, false);
+  });
+
+  it('forwards boolean toolCalling unchanged', () => {
+    strictEqual(toLanguageModelChatInformation(M3).capabilities.toolCalling, true);
+    strictEqual(toLanguageModelChatInformation(M2_5).capabilities.toolCalling, true);
+  });
+
+  it('publishes the catalog caps as numbers end to end', async () => {
+    const capped: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: 60 },
+    };
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([capped]),
+    );
+    const result = await provider.provideLanguageModelChatInformation(
+      { silent: false },
+      new vscode.CancellationTokenSource().token,
+    );
+    strictEqual(result[0]?.capabilities.toolCalling, 60);
+  });
+
   it('returns [] with silent=true when no API key is stored (no prompt)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);

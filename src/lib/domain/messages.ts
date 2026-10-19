@@ -792,21 +792,162 @@ function extractTextFromParts(parts: ReadonlyArray<MiniMaxWireContentPart>): str
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * State carried across stream deltas. Reserved for future
- * block-level tracking (e.g. an open Anthropic thinking block
- * that spans multiple text deltas in the same event). Today
- * the transport (T05) is expected to split the Anthropic stream
- * into per-block deltas, so the mapping is stateless. The
- * argument is kept for forward-compat.
+ * State carried across stream deltas.
+ *
+ * The reserved `_placeholder` from T04 is now in use: `carry` holds
+ * back the tail of a text delta that might be the prefix of MiniMax's
+ * native protocol marker, so a marker split across two deltas is
+ * still recognised once the rest of it arrives. See
+ * `scrubLeakedProtocol`.
  */
 export interface StreamMappingState {
-  // Reserved.
-
-  readonly _placeholder?: never;
+  /**
+   * Trailing text withheld from the previous delta because it could be
+   * part of a protocol marker or tag. Never grows past
+   * `MAX_PROTOCOL_CARRY` characters.
+   */
+  carry: string;
+  /**
+   * True when `carry` sits inside a protocol region (a marker was seen
+   * but the tag it introduces has not yet closed), so `carry` is
+   * dropped rather than re-examined.
+   */
+  awaitingTag: boolean;
 }
 
 export function createStreamMappingState(): StreamMappingState {
-  return {};
+  return { carry: '', awaitingTag: false };
+}
+
+/**
+ * Drain whatever the scrubber is still withholding and return it as
+ * visible text. Called once the stream is known to be over: a
+ * withheld fragment that never completed a marker is ordinary text
+ * after all, and must reach the widget rather than vanish. A fragment
+ * left mid-protocol is dropped, because the marker that introduced it
+ * did arrive.
+ *
+ * Takes the state explicitly so a caller can never accidentally read
+ * (or drain) another in-flight stream's carry.
+ */
+export function takeProtocolCarry(state: StreamMappingState): string {
+  const out = state.awaitingTag ? '' : state.carry;
+  state.carry = '';
+  state.awaitingTag = false;
+  return out;
+}
+
+/**
+ * The MiniMax native protocol marker that leaks into the Anthropic
+ * `text` channel, byte-for-byte as captured in `stream-capture.txt`:
+ * `]` U+003C `]` `minimax` `[` U+003E `[`.
+ *
+ * Matched case-insensitively and tolerant of the U+200B that some
+ * chat surfaces inject between the bracket and the tag name.
+ */
+const PROTOCOL_MARKER = /\]\u003c\]\u200b?minimax\[\u003e\[/i;
+
+/**
+ * Literal forms the marker can take, used to recognise a partial
+ * marker straddling a delta boundary.
+ */
+const MARKER_LITERALS = [
+  '\u005D\u003C\u005Dminimax\u005B\u003E\u005B',
+  '\u005D\u003C\u005D\u200Bminimax\u005B\u003E\u005B',
+] as const;
+
+/**
+ * Longest run of text we will ever withhold awaiting a marker. The
+ * ZWSP variant is 14 characters, so 13 is the longest proper prefix
+ * that could still grow into one.
+ */
+const MAX_PROTOCOL_CARRY = 13;
+
+/**
+ * Length of the longest suffix of `text` that could still grow into a
+ * complete marker, or 0 when the tail is already safe to emit.
+ */
+function pendingMarkerLength(text: string): number {
+  const max = Math.min(text.length, MAX_PROTOCOL_CARRY);
+  for (let k = max; k > 0; k--) {
+    const suffix = text.slice(text.length - k);
+    if (MARKER_LITERALS.some((lit) => lit.startsWith(suffix))) return k;
+  }
+  return 0;
+}
+
+/**
+ * Strip MiniMax's native protocol that leaks into the Anthropic
+ * `text` channel.
+ *
+ * M3.1 sometimes writes its tool-call protocol as visible text
+ * instead of a structured `tool_use` block. What lands in the chat
+ * widget looks like:
+ *
+ *     Compiles.<tool_call>
+ *     ]<]minimax[>[<invoke name="run_in_terminal">
+ *     ...
+ *
+ * The structured call still arrives alongside it (every stream in
+ * the capture that leaked also produced real tool deltas), so this
+ * removes the duplicate rendering only — it never parses the text
+ * back into a tool call, and so can never swallow a call the model
+ * sent only as text.
+ *
+ * Two shapes are removed, both anchored on the protocol marker so
+ * that ordinary prose is never touched:
+ *
+ *  1. A marker followed by a protocol tag (`<invoke …>`,
+ *     `</tool_call>`) — the whole run is dropped, since a marker
+ *     only ever introduces protocol.
+ *  2. A bare marker.
+ *
+ * A trailing fragment that could still grow into a marker is held
+ * back in the carry and re-examined with the next delta, so a
+ * marker split across deltas is still recognised. Anything held back
+ * is emitted verbatim if the stream ends before the marker completes.
+ */
+function scrubLeakedProtocol(
+  text: string,
+  carry: string,
+  awaitingTag: boolean,
+): { visible: string; carry: string; awaitingTag: boolean } {
+  let buffered = carry + text;
+  let visible = '';
+  let suppressed = awaitingTag;
+
+  for (;;) {
+    if (suppressed) {
+      // Inside a protocol region: drop everything up to the tag's `>`.
+      const gt = buffered.indexOf('>');
+      if (gt < 0) {
+        // The tag has not closed yet. Keep withholding, bounded.
+        const keep = Math.min(buffered.length, MAX_PROTOCOL_CARRY);
+        return {
+          visible,
+          carry: buffered.slice(buffered.length - keep),
+          awaitingTag: true,
+        };
+      }
+      buffered = buffered.slice(gt + 1);
+      suppressed = false;
+    }
+
+    const marker = new RegExp(PROTOCOL_MARKER.source, 'i').exec(buffered);
+    if (marker === null) break;
+    visible += buffered.slice(0, marker.index);
+    buffered = buffered.slice(marker.index + marker[0].length);
+    // A marker only ever introduces protocol, so the tag that follows
+    // it goes too.
+    suppressed = true;
+  }
+
+  const pending = pendingMarkerLength(buffered);
+  return {
+    visible: visible + buffered.slice(0, buffered.length - pending),
+    carry: buffered.slice(buffered.length - pending),
+    awaitingTag: suppressed,
+  };
 }
 
 /**
@@ -827,22 +968,33 @@ export function createStreamMappingState(): StreamMappingState {
 export function mapStreamDeltaToResponseParts(
   delta: MiniMaxStreamEvent,
   thinkingStyle: ThinkingStyle,
-  _state: StreamMappingState = createStreamMappingState(),
+  state: StreamMappingState = createStreamMappingState(),
 ): ReadonlyArray<ChatResponsePart | MessageMappingError> {
-  void _state;
   const parts: Array<ChatResponsePart | MessageMappingError> = [];
 
   // 1. Text deltas — may include interleaved Anthropic thinking
-  //    blocks (M3). Strip them and surface as thinking parts.
+  //    blocks (M3). Strip them and surface as thinking parts, then
+  //    scrub any MiniMax protocol M3.1 leaked into the text channel.
   if (delta.textDelta !== undefined && delta.textDelta.length > 0) {
     if (thinkingStyle === 'anthropic') {
       const extracted = extractAnthropicThinking(delta.textDelta);
       for (const part of extracted.parts) {
         if (part.value.length === 0) continue;
-        parts.push(part.type === 'thinking' ? { type: 'thinking', value: part.value } : part);
+        if (part.type === 'thinking') {
+          parts.push({ type: 'thinking', value: part.value });
+          continue;
+        }
+        const scrubbed = scrubLeakedProtocol(part.value, state.carry, state.awaitingTag);
+        state.carry = scrubbed.carry;
+        state.awaitingTag = scrubbed.awaitingTag;
+        if (scrubbed.visible.length > 0) {
+          parts.push({ type: 'text', value: scrubbed.visible });
+        }
       }
     } else {
       parts.push({ type: 'text', value: delta.textDelta });
+      state.carry = '';
+      state.awaitingTag = false;
     }
   }
 

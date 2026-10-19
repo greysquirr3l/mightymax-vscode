@@ -49,11 +49,14 @@ describe('BUILT_IN_CATALOG', () => {
     assert.deepEqual(validateCatalog(BUILT_IN_CATALOG), []);
   });
 
-  it('M3 advertises image input AND a truthy toolCalling', () => {
+  it('M3 advertises image input AND a 128-tool cap (Agent Host API)', () => {
     const m3 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3, 'M3 entry must exist');
     assert.equal(m3.capabilities.imageInput, true);
-    assert.equal(m3.capabilities.toolCalling, true);
+    // VS Code Insiders 1.142+ accepts `toolCalling: boolean | number`,
+    // where the number is the per-request tool cap. M3 is the frontier
+    // agentic model — matches what the Agent Host shows in the picker.
+    assert.equal(m3.capabilities.toolCalling, 128);
     assert.equal(m3.capabilities.thinking, true);
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
@@ -129,38 +132,42 @@ describe('BUILT_IN_CATALOG', () => {
     assert.ok(flash, 'M3.1-Flash-Preview entry must exist');
     assert.equal(flash.maxInputTokens, 1_000_000);
     assert.equal(flash.maxOutputTokens, 128_000);
-    assert.equal(flash.capabilities.toolCalling, true);
+    assert.equal(flash.capabilities.toolCalling, 128);
     assert.equal(flash.capabilities.imageInput, true);
     assert.equal(flash.capabilities.thinking, true);
     assert.equal(flash.thinkingStyle, 'anthropic');
     assert.match(flash.detail, /preview/);
   });
 
-  it('M2.x uses OpenAI-style thinking deltas', () => {
+  it('M2.x uses OpenAI-style thinking deltas and a 60-tool cap', () => {
     for (const id of ['MiniMax-M2', 'MiniMax-M2.5', 'MiniMax-M2.7']) {
       const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
       assert.ok(entry, `${id} entry must exist`);
       assert.equal(entry.thinkingStyle, 'openai');
       assert.equal(entry.capabilities.thinking, true);
-      assert.equal(entry.capabilities.toolCalling, true);
+      // M2.x family sits at the historical `mcpMaxTools` (60) ceiling
+      // that T21 perf testing validated.
+      assert.equal(entry.capabilities.toolCalling, 60);
     }
   });
 
-  it('M1 has no native thinking and no image input', () => {
+  it('M1 has no native thinking, no image input, and a 30-tool cap', () => {
     const m1 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M1');
     assert.ok(m1, 'M1 entry must exist');
     assert.equal(m1.thinkingStyle, 'none');
     assert.equal(m1.capabilities.thinking, false);
     assert.equal(m1.capabilities.imageInput, false);
-    assert.equal(m1.capabilities.toolCalling, true, 'M1 is still agent-capable');
+    assert.equal(m1.capabilities.toolCalling, 30, 'M1 is still agent-capable');
   });
 
-  it('every entry advertises toolCalling (agent-mode gate)', () => {
+  it('every entry advertises a truthy toolCalling (agent-mode gate)', () => {
     for (const entry of BUILT_IN_CATALOG) {
-      assert.equal(
-        entry.capabilities.toolCalling,
-        true,
-        `${entry.id} must advertise toolCalling=true; otherwise it is hidden from agent mode`,
+      const tc = entry.capabilities.toolCalling;
+      // `boolean | number` per Insiders 1.142 API — must be truthy (not
+      // `false`) so the model is not hidden from agent mode.
+      assert.ok(
+        tc === true || (typeof tc === 'number' && tc > 0),
+        `${entry.id} must advertise a truthy toolCalling; got ${String(tc)}`,
       );
     }
   });
@@ -228,6 +235,32 @@ describe('validateCatalog', () => {
     assert.equal(errors.length, 1);
     assert.equal(errors[0]?.code, 'invalid-capability');
   });
+
+  it('accepts positive-integer toolCalling caps (Agent Host API)', () => {
+    // VS Code Insiders 1.142+ permits `toolCalling: number` (per-request
+    // tool cap). The validator must accept any positive integer.
+    assert.deepEqual(
+      validateCatalog([
+        makeEntry({ id: 'a', capabilities: { toolCalling: 1, imageInput: false, thinking: false, videoInput: false } }),
+        makeEntry({ id: 'b', capabilities: { toolCalling: 128, imageInput: false, thinking: false, videoInput: false } }),
+        makeEntry({ id: 'c', capabilities: { toolCalling: true, imageInput: false, thinking: false, videoInput: false } }),
+      ]),
+      [],
+    );
+  });
+
+  it('rejects zero / negative / non-integer toolCalling caps', () => {
+    const base = (id: string, toolCalling: unknown) =>
+      makeEntry({
+        id,
+        capabilities: { toolCalling: toolCalling as never, imageInput: false, thinking: false, videoInput: false },
+      });
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const errors = validateCatalog([base('broken', bad)]);
+      assert.equal(errors.length, 1, `must reject toolCalling=${String(bad)}`);
+      assert.equal(errors[0]?.code, 'invalid-capability');
+    }
+  });
 });
 
 describe('mergeCatalog', () => {
@@ -261,6 +294,53 @@ describe('mergeCatalog', () => {
     assert.equal(m4.capabilities.toolCalling, true, 'default must force toolCalling=true');
     assert.equal(m4.capabilities.imageInput, true);
     assert.equal(m4.thinkingStyle, 'openai');
+  });
+
+  it('passes through a per-request tool cap from the live API for unknown models', () => {
+    // As of Insiders 1.142 the live `/v1/models` endpoint may report
+    // `toolCalling: <number>` to advertise the model's per-request tool
+    // cap. The merge must honour it for unknown models so the Agent Host
+    // gets the right cap without us shipping a curated entry first.
+    const live: CatalogEntry[] = [
+      {
+        id: 'MiniMax-M4-preview',
+        displayName: 'M4 Preview (MiniMax)',
+        vendor: 'minimax',
+        family: 'minimax',
+        maxInputTokens: 500_000,
+        maxOutputTokens: 8_192,
+        capabilities: { toolCalling: 200, imageInput: true, thinking: true, videoInput: false },
+        thinkingStyle: 'openai',
+        detail: 'preview',
+      },
+    ];
+    const merged = mergeCatalog(BUILT_IN_CATALOG, live);
+    const m4 = merged.find((e) => e.id === 'MiniMax-M4-preview');
+    assert.ok(m4, 'live model should be merged in');
+    assert.equal(m4.capabilities.toolCalling, 200, 'live number passes through unchanged');
+  });
+
+  it('passes through an explicit `true` toolCalling from the live API', () => {
+    // The carve-out for toolCalling also trusts `true` from the live
+    // API — it's the API's explicit confirmation that the model
+    // supports tools, no cap declared.
+    const live: CatalogEntry[] = [
+      {
+        id: 'MiniMax-M4-preview',
+        displayName: 'M4 Preview (MiniMax)',
+        vendor: 'minimax',
+        family: 'minimax',
+        maxInputTokens: 500_000,
+        maxOutputTokens: 8_192,
+        capabilities: { toolCalling: true, imageInput: false, thinking: false, videoInput: false },
+        thinkingStyle: 'none',
+        detail: 'preview',
+      },
+    ];
+    const merged = mergeCatalog(BUILT_IN_CATALOG, live);
+    const m4 = merged.find((e) => e.id === 'MiniMax-M4-preview');
+    assert.ok(m4);
+    assert.equal(m4.capabilities.toolCalling, true);
   });
 
   it('does NOT override a static entry when a live entry collides with its id', () => {

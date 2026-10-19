@@ -65,7 +65,15 @@ export function validateCatalog(entries: ReadonlyArray<CatalogEntry>): CatalogVa
 }
 
 function validateCapabilities(cap: ModelCapabilities): string | undefined {
-  if (typeof cap.toolCalling !== 'boolean') return 'capabilities.toolCalling must be a boolean';
+  if (
+    typeof cap.toolCalling !== 'boolean' &&
+    (typeof cap.toolCalling !== 'number' ||
+      !Number.isFinite(cap.toolCalling) ||
+      !Number.isInteger(cap.toolCalling) ||
+      cap.toolCalling < 1)
+  ) {
+    return 'capabilities.toolCalling must be a boolean or a positive integer';
+  }
   if (typeof cap.imageInput !== 'boolean') return 'capabilities.imageInput must be a boolean';
   if (typeof cap.thinking !== 'boolean') return 'capabilities.thinking must be a boolean';
   return undefined;
@@ -140,13 +148,17 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // Frontier agentic model. The Agent Host's tool picker advertises
+      // this number directly (Insiders 1.142+). Verified against live
+      // requests carrying 100+ MCP + extension tools with no model-side
+      // rejection in T21 testing; cap stays at 128 to leave headroom.
+      toolCalling: 128,
       imageInput: true,
       thinking: true,
       videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + video + tools + thinking',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking',
   }),
   Object.freeze({
     id: 'MiniMax-M3.1-Flash-Preview',
@@ -156,13 +168,15 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // Same frontier tier as M3; tunable `effort` parameter does not
+      // change the tool slot count.
+      toolCalling: 128,
       imageInput: true,
       thinking: true,
       videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + video + tools + thinking (preview)',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking (preview)',
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',
@@ -172,13 +186,17 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // M2.7 + the rest of the M2 family sit at the historical
+      // `mcpMaxTools` (default 60) ceiling that T21 perf testing
+      // validated. Conservative — bump only after confirming with
+      // a real wire request carrying >60 tools.
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
   Object.freeze({
     id: 'MiniMax-M2.5',
@@ -188,13 +206,13 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
   Object.freeze({
     id: 'MiniMax-M2',
@@ -204,13 +222,13 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning · structured outputs',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning · structured outputs',
   }),
   Object.freeze({
     id: 'MiniMax-M1',
@@ -220,13 +238,17 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 32_768,
     maxOutputTokens: 4_096,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // Smallest / oldest model — 30 tool slots matches its 32K
+      // context. Anything larger than ~30 tools blows past the
+      // available schema-budget once the system prompt and tool
+      // descriptions are added.
+      toolCalling: 30,
       imageInput: false,
       thinking: false,
       videoInput: false,
     }),
     thinkingStyle: 'none',
-    detail: '32K ctx · 4K out · tools',
+    detail: '32K ctx · 4K out · tools (≤30)',
   }),
 ]);
 
@@ -301,9 +323,14 @@ export function normalizeModelId(raw: string): string {
  *  2. Live entries that collide with a static id are dropped (we trust
  *     the curated entry's token budgets and thinking style).
  *  3. Live entries missing capabilities or thinking style are filled
- *     with `defaults` so the model is still advertised correctly
- *     (in particular, `toolCalling: true` is applied so the model is
- *     NOT silently hidden from agent mode).
+ *     with `defaults` so the model is still advertised correctly.
+ *     `toolCalling: true` is applied when the live entry is missing
+ *     the field entirely so the model is NOT silently hidden from
+ *     agent mode (AGENTS.md invariant). An explicit `false` from the
+ *     live API is still overridden to the default `true` for the
+ *     same reason; `true` and a positive integer are passed through
+ *     so the per-request tool cap reported by the live API reaches
+ *     VS Code's Agent Host.
  *  4. The merged list is stable-ordered: static entries first (in their
  *     declared order), then live entries sorted alphabetically by id.
  *
@@ -364,10 +391,33 @@ function fillLiveDefaults(
   // model silently hide it from agent mode (AGENTS.md: a model
   // WITHOUT `toolCalling` is hidden). Erring on the side of
   // advertising unknown models as agent-capable is the safer default.
+  //
+  // Tool-calling gets a carve-out: as of the Agent Host API change in
+  // VS Code Insiders 1.142 the `toolCalling` field is `boolean | number`,
+  // where a number is the model's per-request tool cap. If the live API
+  // reports a number (or `true`) for an unknown model we trust it — only
+  // an explicit `false` triggers the agent-mode-visibility override,
+  // because that is the one value that breaks AGENTS.md's invariant.
+  const liveToolCalling = raw.capabilities?.toolCalling;
+  let toolCalling: boolean | number;
+  if (liveToolCalling === false) {
+    toolCalling = defaults.capabilities.toolCalling;
+  } else if (
+    typeof liveToolCalling === 'number' &&
+    Number.isInteger(liveToolCalling) &&
+    liveToolCalling > 0
+  ) {
+    toolCalling = liveToolCalling;
+  } else if (typeof liveToolCalling === 'boolean') {
+    toolCalling = liveToolCalling;
+  } else {
+    toolCalling = defaults.capabilities.toolCalling;
+  }
+
   const thinkingStyle: ThinkingStyle = defaults.thinkingStyle;
   const thinking = thinkingStyle !== 'none';
   const capabilities: ModelCapabilities = {
-    toolCalling: defaults.capabilities.toolCalling,
+    toolCalling,
     imageInput: defaults.capabilities.imageInput,
     thinking,
     videoInput: defaults.capabilities.videoInput,

@@ -28,7 +28,12 @@ import * as vscode from 'vscode';
 
 import type { Logger } from '../ports/logger.js';
 import type { MiniMaxStreamEvent } from '../ports/minimax-client.js';
-import { mapStreamDeltaToResponseParts, isMessageMappingError } from '../lib/domain/messages.js';
+import {
+  createStreamMappingState,
+  mapStreamDeltaToResponseParts,
+  isMessageMappingError,
+  takeProtocolCarry,
+} from '../lib/domain/messages.js';
 import type { ChatUsageData } from '../ports/message-mapping.js';
 import {
   accumulatorSeed,
@@ -92,6 +97,20 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
   let latestUsage: ChatUsageData | undefined;
   let currentText = '';
   const currentToolCallIds: string[] = [];
+  // Per-request text-channel scrubber state. Owned here rather than in
+// the domain module so two streams running concurrently (a subagent
+// alongside its parent) cannot read or drain each other's carry.
+const mappingState = createStreamMappingState();
+
+  // Whatever the text-channel scrubber is still withholding at the end
+  // of the stream never completed a protocol marker, so it is ordinary
+  // text and has to reach the widget.
+  const flushProtocolCarry = (): void => {
+    const leftover = takeProtocolCarry(mappingState);
+    if (leftover.length === 0) return;
+    currentText += leftover;
+    deps.progress.report(toLanguageModelTextPart(leftover));
+  };
 
   try {
     for await (const event of deps.events) {
@@ -108,7 +127,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
       // Map stream deltas to response parts. T19 invariant:
       // thinking deltas surface via `reportThinkingPart` (NOT as
       // visible text); usage is logged at debug (NOT as visible text).
-      const parts = mapStreamDeltaToResponseParts(event, deps.thinkingStyle);
+      const parts = mapStreamDeltaToResponseParts(event, deps.thinkingStyle, mappingState);
 
       for (const part of parts) {
         if (isMessageMappingError(part)) {
@@ -215,11 +234,16 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
       }
 
       if (event.finishReason !== undefined) {
+        // `currentToolCallIds` is only populated by flushAccumulator,
+        // which runs after this event. Reporting it here always logged
+        // 0 and made every agent turn look like it produced no call.
+        // Report what the transport actually saw instead.
         deps.logger.info('Stream finished', {
           finishReason: event.finishReason,
           textLength: currentText.length,
           thinkingLength: currentThinking?.thinking.length ?? 0,
-          toolCallCount: currentToolCallIds.length,
+          toolCallDeltas: accumulatorState.perIndex.size,
+          toolCallIds: currentToolCallIds.length,
         });
       }
 
@@ -239,6 +263,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
       deps.logger,
       deps.recordToolUsage,
     );
+    flushProtocolCarry();
     deps.onStreamError?.(streamErr);
     throw streamErr;
   }
@@ -256,6 +281,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
       deps.recordToolUsage,
     );
   }
+  flushProtocolCarry();
 
   return {
     text: currentText,

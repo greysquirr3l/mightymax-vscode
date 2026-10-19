@@ -16,10 +16,12 @@ import { describe, it } from 'node:test';
 
 import {
   countMessageMappingErrors,
+  createStreamMappingState,
   isMessageMappingError,
   mapMiniMaxUsage,
   mapRequestToMiniMax,
   mapStreamDeltaToResponseParts,
+  takeProtocolCarry,
   truncateToolResults,
   type ChatMessage,
   type ChatResponsePart,
@@ -1190,6 +1192,104 @@ describe('extractAnthropicThinking (via text-delta with thinking style)', () => 
     if (thinkingParts[0]?.type === 'thinking') {
       equal(thinkingParts[0].value, 'line 1\nline 2\nline 3');
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MiniMax native protocol leaking into the text channel (T41 follow-up)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mapStreamDeltaToResponseParts — leaked MiniMax protocol', () => {
+  const textOf = (
+    deltas: ReadonlyArray<string>,
+    style: 'anthropic' | 'none' = 'anthropic',
+  ): string => {
+    const state = createStreamMappingState();
+    const values: string[] = [];
+    for (const textDelta of deltas) {
+      for (const p of partsOnly(mapStreamDeltaToResponseParts({ textDelta }, style, state))) {
+        if (p.type === 'text') values.push(p.value);
+      }
+    }
+    return values.join('');
+  };
+
+  it('strips the protocol marker that separates a leaked tag from its value', () => {
+    // Bytes lifted verbatim from a real stream-capture.txt tail.
+    const out = textOf(['Fixing read', '-only SQL login', ']<]minimax[>[</checkpoint_title>']);
+    equal(out, 'Fixing read-only SQL login');
+  });
+
+  it('strips a leaked tool_call block but keeps the prose around it', () => {
+    const out = textOf([
+      'Compiles.',
+      ']<]minimax[>[<tool_call>',
+      ']<]minimax[>[<invoke name="run_in_terminal">',
+      ']<]minimax[>[<command>cargo test',
+      ']<]minimax[>[</command>',
+      ']<]minimax[>[</tool_call>',
+      'Done.',
+    ]);
+    equal(out, 'Compiles.cargo testDone.');
+  });
+
+  it('reassembles a protocol marker split across two deltas', () => {
+    const out = textOf(['tail]<]min', 'imax[>[</checkpoint_ti', 'tle>end']);
+    equal(out, 'tailend');
+  });
+
+  it('reassembles a protocol tag split across two deltas', () => {
+    const out = textOf(['a]<]minimax[>[<checkpo', 'int_title>b]<]minimax[>[</checkpoint', '_title>c']);
+    equal(out, 'abc');
+  });
+
+  it('keeps a user-authored XML template that carries no protocol marker', () => {
+    const out = textOf(['<checkpoint_title>\nFixing login\n</checkpoint_title>']);
+    equal(out, '<checkpoint_title>\nFixing login\n</checkpoint_title>');
+  });
+
+  it('leaves ordinary XML-ish prose untouched', () => {
+    const out = textOf(['Use <div class="x"> here.</div>']);
+    equal(out, 'Use <div class="x"> here.</div>');
+  });
+
+  it('leaves a lone angle bracket alone', () => {
+    // A bare `<` must never be swallowed — that would eat real output.
+    const out = textOf(['5 < 7 and 9 > 2']);
+    equal(out, '5 < 7 and 9 > 2');
+  });
+
+  it('does not filter the text channel for non-anthropic dialects', () => {
+    const out = textOf([']<]minimax[>[</checkpoint_title>'], 'none');
+    equal(out, ']<]minimax[>[</checkpoint_title>');
+  });
+
+  it('caps the hold-back buffer so a long run of "<" cannot grow it', () => {
+    const out = textOf(['<'.repeat(400), 'tail']);
+    equal(out, '<'.repeat(400) + 'tail');
+  });
+
+  it('flushes a withheld fragment that never completed a marker', () => {
+    // The stream ended mid-marker: the withheld text is ordinary
+    // content after all and must still reach the widget.
+    const state = createStreamMappingState();
+    const parts = partsOnly(mapStreamDeltaToResponseParts({ textDelta: 'end]<]min' }, 'anthropic', state));
+    equal(parts.length, 1);
+    if (parts[0]?.type === 'text') equal(parts[0].value, 'end');
+    equal(takeProtocolCarry(state), ']<]min');
+  });
+
+  it('keeps two concurrent streams from sharing a carry', () => {
+    // A parent request and a subagent can stream at the same time; one
+    // stream's half-marked protocol must not suppress the other's.
+    const a = createStreamMappingState();
+    const b = createStreamMappingState();
+    partsOnly(mapStreamDeltaToResponseParts({ textDelta: 'alpha]<]min' }, 'anthropic', a));
+    const partsB = partsOnly(mapStreamDeltaToResponseParts({ textDelta: 'beta' }, 'anthropic', b));
+    equal(partsB.length, 1);
+    if (partsB[0]?.type === 'text') equal(partsB[0].value, 'beta');
+    equal(a.carry, ']<]min');
+    equal(b.carry, '');
   });
 });
 

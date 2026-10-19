@@ -1106,9 +1106,23 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
  * shape. Pure function — no I/O, no side effects — so it can be unit
  * tested independently of the chat provider.
  *
- * Per AGENTS.md: `capabilities.toolCalling = true` on every
- * agent-capable model is the gate that keeps the model in the agent
- * model picker. We forward `imageInput` from the domain capability.
+ * Per AGENTS.md: `capabilities.toolCalling` on every agent-capable
+ * model is the gate that keeps the model in the agent model picker.
+ * We forward `imageInput` from the domain capability.
+ *
+ * `toolCalling` is forwarded verbatim, which may be a NUMBER: VS Code
+ * reads a number as "the model can call tools, and at most this many
+ * per request", and uses it to truncate the tool list it hands us.
+ * Collapsing it to a boolean here silently discarded that cap while
+ * the model picker still advertised it.
+ *
+ * No version gate is needed. `@types/vscode` 1.125.0 — the version
+ * this extension floors at (`engines.vscode: ^1.125.0`) — already
+ * declares `LanguageModelChatCapabilities.toolCalling?: boolean |
+ * number` and documents the numeric form, so every host we are
+ * allowed to run on accepts it. A host that ignores the number and
+ * reads it truthily degrades to plain "tools supported", which is the
+ * pre-0.11 behaviour, so the failure mode is graceful.
  */
 export function toLanguageModelChatInformation(
   entry: ModelInfo,
@@ -1124,7 +1138,7 @@ export function toLanguageModelChatInformation(
     detail: entry.detail,
     capabilities: {
       imageInput: entry.capabilities.imageInput,
-      toolCalling: entry.capabilities.toolCalling ? true : false,
+      toolCalling: entry.capabilities.toolCalling,
     },
   };
 }

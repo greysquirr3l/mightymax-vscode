@@ -8,7 +8,8 @@ against them.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.10.x  | :white_check_mark: |
+| 0.11.x  | :white_check_mark: |
+| 0.10.x  | :x:                |
 | 0.9.x   | :x:                |
 | < 0.9.0 | :x:                |
 

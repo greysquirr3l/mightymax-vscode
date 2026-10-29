@@ -42,6 +42,7 @@ import {
   discoverMcpTools,
   selectMcpToolsToInclude,
   DEFAULT_ALWAYS_INCLUDE_TOOLS,
+  DEFAULT_MAX_TOOLS,
   DEFAULT_MCP_MAX_TOOLS,
   MANDATORY_ALWAYS_INCLUDE_TOOLS,
   type ToolFilterConfig,
@@ -1508,14 +1509,18 @@ function readToolFilterConfig(): ToolFilterConfig {
   if (ws?.getConfiguration === undefined) {
     return {
       enableSmartToolFiltering: true,
-      maxTools: 64,
+      maxTools: DEFAULT_MAX_TOOLS,
       alwaysIncludeTools: [],
     };
   }
   const config = ws.getConfiguration('mightyMax') as ConfigReader;
   return {
     enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
-    maxTools: config.get?.<number>('maxTools', 60) ?? 60,
+    // Read the cap from the domain constant so it cannot drift from
+    // the manifest default. The fallback used to be a hand-copied
+    // `60` while the manifest and the constant said `64` — the same
+    // class of bug as the `alwaysIncludeTools` duplicate below.
+    maxTools: config.get?.<number>('maxTools', DEFAULT_MAX_TOOLS) ?? DEFAULT_MAX_TOOLS,
     alwaysIncludeTools:
       config.get?.<string[]>(
         'alwaysIncludeTools',

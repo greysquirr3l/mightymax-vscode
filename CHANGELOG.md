@@ -6,12 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.11.0] — 2026-10-19
+## [0.11.0] — 2026-10-29
 
 Minor release. Declares a real per-request tool cap for every model so
 the Agent Host stops shipping tool sets larger than MiniMax can
-actually serve, and stops MiniMax's native tool-call protocol from
-rendering as raw markup in the chat.
+actually serve, hides the wound-down M1 and M2.x families from the
+model picker behind a setting, and stops MiniMax's native tool-call
+protocol from rendering as raw markup in the chat — without eating the
+model's answer along with it.
 
 ### Added
 
@@ -28,7 +30,7 @@ rendering as raw markup in the chat.
 
   **The cap was previously declared but discarded.** The publish site
   collapsed the field with `entry.capabilities.toolCalling ? true :
-  false`, so the Agent Host received a plain boolean and the cap did
+false`, so the Agent Host received a plain boolean and the cap did
   nothing — while the model picker already advertised `tools (<=128)`
   from the catalog's `detail` string. The picker promised a limit the
   code was not enforcing, which is the same class of bug as two
@@ -79,7 +81,7 @@ rendering as raw markup in the chat.
 ### Fixed
 
 - **The protocol scrubber no longer eats the model's answer.** The
-  first cut of the scrubber treated *any* marker as the start of
+  first cut of the scrubber treated _any_ marker as the start of
   protocol and suppressed everything up to the next `>`. A marker with
   no tag behind it — which happens whenever the model writes the
   sequence without a protocol tag — therefore swallowed the prose that
@@ -152,13 +154,44 @@ rendering as raw markup in the chat.
 
 - **`Stream finished` no longer logs `toolCallCount: 0` for every
   request.** The count came from `currentToolCallIds`, which
-  `flushAccumulator` only populates *after* the finish event is logged,
+  `flushAccumulator` only populates _after_ the finish event is logged,
   so the field could never report anything but zero — 800 of 800
   streams in a captured log. That makes every agent turn look like it
   produced no tool call, which is actively misleading when diagnosing
   exactly this class of bug. The log now reports `toolCallDeltas` (what
   the transport actually saw) alongside `toolCallIds` (what was
   finalized).
+
+- **The tool cap's fallback no longer disagrees with the manifest.**
+  `mightyMax.maxTools` is 64 in the manifest and 64 in the domain
+  constant, but the chat-provider's fallback read a hand-copied `60`.
+  That fallback only fires when the host exposes no settings API, so
+  the drift was invisible in normal use — and invisible in exactly the
+  situation where a wrong number is hardest to notice. Both fallbacks
+  now read the domain constant, so the cap cannot drift again.
+
+- **The README's settings table now matches the manifest.** Fifteen of
+  the twenty-four settings had no row at all, including
+  `mightyMax.showDeprecatedModels`, `mightyMax.m31ThinkingEffort`,
+  `mightyMax.systemPrompt`, and every media setting — a setting with
+  no README entry is a setting a user cannot discover. The
+  `alwaysIncludeTools` row also listed a six-entry pin list where the
+  manifest and the code have thirteen, so a user reading the README
+  would have overwritten a list that had silently lost
+  `runSubagent`, `minimax_subagent`, `view_image`, and the media tools.
+  The README also claimed a VS Code 1.109 floor when the manifest
+  declares `^1.125.0`, and three rows of the feature table had been
+  merged onto one line by an earlier edit, hiding the video-input and
+  thinking-block rows entirely.
+
+  A new test compares the manifest, the compiled constants, and the
+  README table on every run, so the three surfaces cannot disagree
+  again without a failing build.
+
+- **`package-lock.json` matches `package.json` again.** The lockfile
+  still said `0.10.0` while the manifest said `0.11.0`, so the
+  release workflow's `npm ci` and any audit of the lockfile were
+  reading a different version than the one being published.
 
 ## [0.10.0] — 2026-10-08
 

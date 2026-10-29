@@ -126,13 +126,16 @@ function formatTokenCount(tokens: number): string {
  *            chat-provider still clamps the actual request's
  *            `max_tokens` to 32K (opencode OUTPUT_TOKEN_MAX); the
  *            catalog value drives UI, not the request body.
- *  - M3.1-Flash-Preview — 1 000 000 ctx / 128 000 out, image input,
- *            tool calling, native thinking (Anthropic-style), frontier
- *            coding. Beta on the M Plan / MiniMax Code tier; served by
+ *  - M3.1-Flash — 1 000 000 ctx / 128 000 out, image input, tool
+ *            calling, native thinking (Anthropic-style), frontier
+ *            coding. GA on the M Plan / MiniMax Code tier; served by
  *            the same `minimax-m3` Anthropic sampler/thinking
  *            branches, so the id intentionally matches the existing
  *            `includes('minimax-m3')` predicates rather than spawning
  *            a new branch.
+ *  - M3.1-Flash-Preview — a deprecated alias for M3.1-Flash, kept so
+ *            a session pinned to the preview id still resolves. It
+ *            sends the GA id on the wire (`wireId`).
  *  - M2.7 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2.5 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2   — 196 608 ctx, tool calling, OpenAI-style reasoning deltas,
@@ -161,8 +164,8 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking',
   }),
   Object.freeze({
-    id: 'MiniMax-M3.1-Flash-Preview',
-    displayName: 'M3.1 Flash Preview (MiniMax)',
+    id: 'MiniMax-M3.1-Flash',
+    displayName: 'M3.1 Flash (MiniMax)',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 1_000_000,
@@ -176,7 +179,29 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
       videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking (preview)',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking',
+  }),
+  Object.freeze({
+    // The GA id above replaced the preview id. The preview id is kept
+    // as a deprecated alias so a chat session pinned to it keeps
+    // resolving; `wireId` sends the current GA id on the wire so the
+    // request still names a model MiniMax serves.
+    id: 'MiniMax-M3.1-Flash-Preview',
+    displayName: 'M3.1 Flash Preview (MiniMax)',
+    vendor: MINIMAX_VENDOR,
+    family: MINIMAX_FAMILY,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: Object.freeze({
+      toolCalling: 128,
+      imageInput: true,
+      thinking: true,
+      videoInput: true,
+    }),
+    wireId: 'MiniMax-M3.1-Flash',
+    deprecated: true,
+    thinkingStyle: 'anthropic',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking (alias for M3.1 Flash)',
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',
@@ -285,7 +310,7 @@ export const _internal = { formatTokenCount, DEFAULT_MAX_OUTPUT_TOKENS };
  */
 export const CURRENT_MODEL_IDS: ReadonlyArray<string> = Object.freeze([
   'MiniMax-M3',
-  'MiniMax-M3.1-Flash-Preview',
+  'MiniMax-M3.1-Flash',
 ]);
 
 /**
@@ -314,6 +339,21 @@ export function isDeprecatedModel(
   id: string,
 ): boolean {
   return entries.some((entry) => entry.id === id && entry.deprecated === true);
+}
+
+/**
+ * The model id to put on the wire for a catalog entry.
+ *
+ * Most entries are their own wire id. An entry that stands in for
+ * another model — the `MiniMax-M3.1-Flash-Preview` alias for the GA
+ * `MiniMax-M3.1-Flash` — carries a `wireId`, so a session pinned to
+ * the old id keeps sending a model MiniMax currently serves.
+ *
+ * Pure: no I/O, no vscode.
+ */
+export function wireModelId(entry: CatalogEntry | undefined): string | undefined {
+  if (entry === undefined) return undefined;
+  return entry.wireId ?? entry.id;
 }
 
 // -----------------------------------------------------------------------------
@@ -500,5 +540,8 @@ function fillLiveDefaults(
     capabilities,
     thinkingStyle,
     detail,
+    // Preserved so an entry that stands in for another model keeps
+    // sending that model, whatever path it came in by.
+    ...(raw.wireId !== undefined ? { wireId: raw.wireId } : {}),
   };
 }

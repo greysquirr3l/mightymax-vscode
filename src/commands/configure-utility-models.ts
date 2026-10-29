@@ -11,7 +11,7 @@
  *
  *   "Use MiniMax for utility tasks (recommended)"
  *       Writes `chat.utilityModel = "minimax/MiniMax-M3"` and
- *       `chat.utilitySmallModel = "minimax/MiniMax-M2.5"`.
+ *       `chat.utilitySmallModel = "minimax/MiniMax-M3.1-Flash"`.
  *   "Use the main agent model"
  *       Writes `chat.byokUtilityModelDefault = "mainAgent"`.
  *   "Use Copilot's models (uses Copilot quota)"
@@ -79,7 +79,17 @@ export const CHAT_UTILITY_SMALL_MODEL_KEY = 'chat.utilitySmallModel';
 export const CHAT_BYOK_UTILITY_MODEL_DEFAULT_KEY = 'chat.byokUtilityModelDefault';
 export const MINIMAX_VENDOR = 'minimax';
 export const MINIMAX_UTILITY_MODEL = 'MiniMax-M3';
-export const MINIMAX_UTILITY_SMALL_MODEL = 'MiniMax-M2.5';
+/**
+ * The small utility model.
+ *
+ * This must name a model the extension still advertises: VS Code
+ * builds the `chat.utilitySmallModel` enum from the advertised models
+ * only, so a hidden model can never be resolved. It was M2.5, which
+ * MiniMax has since retired — the requests would fail upstream even
+ * if the setting did resolve. M3.1 Flash is the GA, cheapest live
+ * model.
+ */
+export const MINIMAX_UTILITY_SMALL_MODEL = 'MiniMax-M3.1-Flash';
 
 export async function runConfigureUtilityModelsCommand(
   deps: ConfigureUtilityDeps,

@@ -1294,6 +1294,67 @@ describe('mapStreamDeltaToResponseParts — leaked MiniMax protocol', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The scrubber must never eat the model's answer. A protocol marker only
+// introduces protocol when a tag actually follows it; on its own it is
+// just a stray artifact and the prose behind it has to survive.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mapStreamDeltaToResponseParts — a marker alone is not protocol', () => {
+  /** The marker exactly as captured: `]<]` + ZWSP + `minimax[>[`. */
+  const MARKER = ']\u003C\u005D\u200Bminimax\u005B\u003E\u005B';
+
+  const textOf = (deltas: ReadonlyArray<string>): string => {
+    const state = createStreamMappingState();
+    const values: string[] = [];
+    for (const textDelta of deltas) {
+      for (const p of partsOnly(mapStreamDeltaToResponseParts({ textDelta }, 'anthropic', state))) {
+        if (p.type === 'text') values.push(p.value);
+      }
+    }
+    return values.join('');
+  };
+
+  it('keeps the prose that follows a bare marker in the same delta', () => {
+    const out = textOf([`Compiles.${MARKER} and this prose matters.`]);
+    equal(out, 'Compiles. and this prose matters.');
+  });
+
+  it('keeps the prose that follows a bare marker in a later delta', () => {
+    const out = textOf([`Compiles.${MARKER}`, ' and this prose matters.']);
+    equal(out, 'Compiles. and this prose matters.');
+  });
+
+  it('keeps prose that contains a ">" after a bare marker', () => {
+    // The old scrubber ended the suppressed region at the first ">",
+    // so "a > b and c" was truncated to " b and c".
+    const out = textOf([`Compiles.${MARKER}`, ' a > b and c']);
+    equal(out, 'Compiles. a > b and c');
+  });
+
+  it('strips a tag whose marker ended the previous delta', () => {
+    // The marker can be the last thing in a delta and the tag can start
+    // in the next one. The scrubber must not decide "no tag follows"
+    // before it has seen the next byte.
+    const out = textOf([`Compiles.${MARKER}`, '<invoke name="x">', 'Done.']);
+    equal(out, 'Compiles.Done.');
+  });
+
+  it('drops the marker itself when the stream ends right after it', () => {
+    const state = createStreamMappingState();
+    partsOnly(mapStreamDeltaToResponseParts({ textDelta: `Compiles.${MARKER}` }, 'anthropic', state));
+    equal(takeProtocolCarry(state), '');
+  });
+
+  it('keeps a marker whose case differs from the protocol literal', () => {
+    // The marker regex is case-insensitive, so the half-marker carry
+    // has to be case-insensitive too — otherwise a marker split across
+    // deltas leaks verbatim.
+    const out = textOf(['tail]\u003C\u005DMIN', 'imax\u005B\u003E\u005B</checkpoint_ti', 'tle>end']);
+    equal(out, 'tailend');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // isMessageMappingError type guard
 // ─────────────────────────────────────────────────────────────────────────────
 

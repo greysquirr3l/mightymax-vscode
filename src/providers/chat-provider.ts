@@ -36,6 +36,7 @@ import {
   collapseSubAgentToolResultsInDomain,
 } from '../lib/domain/subagent-synthesis.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
+import { wireModelId } from '../lib/domain/catalog.js';
 import {
   filterTools,
   discoverMcpTools,
@@ -262,11 +263,16 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const thinkingStyle: ThinkingStyle = modelInfo?.thinkingStyle ?? 'openai';
     const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
+    // The id MiniMax should see on the wire. Usually the same as the
+    // catalog id, but a deprecated alias (e.g. the M3.1 Flash preview
+    // id) sends the model it stands in for.
+    const wireId = wireModelId(modelInfo) ?? model.id;
+
     if (modelInfo?.deprecated === true) {
       this.logger.warn(
         'ChatProvider: request on a deprecated model — MiniMax is winding this family down; ' +
           'set `mightyMax.showDeprecatedModels` to keep it in the picker, or pick M3',
-        { model: model.id },
+        { model: model.id, wireModel: wireId },
       );
     }
 
@@ -473,7 +479,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
     // Build the request (conditionally include tools/toolChoice/sampling)
     const request: MiniMaxCompletionRequest = {
-      model: model.id,
+      model: wireId,
       messages: mappingResult.messages.filter((m) => m.role !== undefined),
       ...(miniMaxTools !== undefined ? { tools: miniMaxTools } : {}),
       ...(toolChoice !== undefined ? { toolChoice } : {}),

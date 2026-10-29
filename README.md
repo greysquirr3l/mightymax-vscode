@@ -80,13 +80,14 @@ code --install-extension mighty-max.vsix
 1. Open the Chat panel (View → Chat or Ctrl+Alt+I / Cmd+Alt+I)
 2. Click the model picker dropdown
 3. Select a MiniMax model:
-   - `minimax:MiniMax-M3.1-Flash-Preview` — Frontier Flash preview (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
+   - `minimax:MiniMax-M3.1-Flash` — Frontier Flash (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
    - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
 
    MiniMax is winding down the M1 and M2.x families, so they are hidden
-   from the picker by default. Nothing is revoked: a chat already using
-   one keeps working, and setting `mightyMax.showDeprecatedModels` to
-   `true` brings M2.7, M2.5, M2, and M1 back into the list.
+   from the picker by default. Hiding a model removes it from VS Code's
+   model list, so a chat already pinned to one falls back to the
+   default model; setting `mightyMax.showDeprecatedModels` to `true`
+   brings M2.7, M2.5, M2, and M1 back into the list.
 
 ### 4. Start Chatting
 
@@ -246,8 +247,8 @@ options:
 
 - **Use MiniMax for utility tasks (recommended)** — writes
   `chat.utilityModel = "minimax/MiniMax-M3"` and
-  `chat.utilitySmallModel = "minimax/MiniMax-M2.5"`. No extra quota;
-  usage is billed to your MiniMax account.
+  `chat.utilitySmallModel = "minimax/MiniMax-M3.1-Flash"`. No extra
+  quota; usage is billed to your MiniMax account.
 - **Use the main agent model** — writes
   `chat.byokUtilityModelDefault = "mainAgent"`. Copilot reuses the
   MiniMax model for utility tasks.

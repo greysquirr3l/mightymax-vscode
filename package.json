@@ -252,7 +252,7 @@
         "mightyMax.showDeprecatedModels": {
           "type": "boolean",
           "default": false,
-          "description": "Show models MiniMax has deprecated (the M1 and M2.x families) in the chat model picker. Deprecated models are hidden by default so the picker reflects the models MiniMax currently supports. Nothing is revoked: a chat session already using a hidden model keeps working, and a hidden model can still be selected explicitly by id.",
+          "description": "Show models MiniMax has deprecated (the M1 and M2.x families) in the chat model picker. Deprecated models are hidden by default so the picker reflects the models MiniMax currently supports. Hiding a model also removes it from VS Code's model list, so a chat session pinned to one falls back to the default model — enable this to keep them selectable.",
           "scope": "window"
         },
         "mightyMax.enableNativeTokenCounting": {
@@ -292,7 +292,7 @@
             "Deep reasoning for architecture and multi-step refactors.",
             "Fullest reasoning — slowest and most expensive. Matches the API's own default when the field is omitted."
           ],
-          "description": "Thinking depth for MiniMax-M3.1-Flash-Preview, sent as `output_config.effort` on the Anthropic-compatible endpoint. Affects M3.1 Flash only — MiniMax documents that M3 and the M2.x family ignore this field. M3.1 Flash cannot disable thinking entirely, so 'low' is the cheapest option. Higher levels increase latency and token spend.",
+          "description": "Thinking depth for MiniMax-M3.1-Flash, sent as `output_config.effort` on the Anthropic-compatible endpoint. Affects M3.1 Flash only — MiniMax documents that M3 and the M2.x family ignore this field. M3.1 Flash cannot disable thinking entirely, so 'low' is the cheapest option. Higher levels increase latency and token spend.",
           "scope": "window"
         },
         "mightyMax.toolResultMaxChars": {

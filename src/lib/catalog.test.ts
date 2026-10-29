@@ -29,6 +29,7 @@ import {
   mergeCatalog,
   normalizeModelId,
   validateCatalog,
+  wireModelId,
   _internal,
 } from './domain/catalog.js';
 import type { CatalogEntry } from './domain/catalog.js';
@@ -36,7 +37,7 @@ import type { CatalogEntry } from './domain/catalog.js';
 const { formatTokenCount } = _internal;
 
 describe('BUILT_IN_CATALOG', () => {
-  it('ships the full M-series: M1, M2, M2.5, M2.7, M3, M3.1-Flash-Preview', () => {
+  it('ships the full M-series: M1, M2, M2.5, M2.7, M3, M3.1-Flash (+ preview alias)', () => {
     const ids = BUILT_IN_CATALOG.map((e) => e.id);
     assert.deepEqual([...ids].sort(), [
       'MiniMax-M1',
@@ -44,6 +45,7 @@ describe('BUILT_IN_CATALOG', () => {
       'MiniMax-M2.5',
       'MiniMax-M2.7',
       'MiniMax-M3',
+      'MiniMax-M3.1-Flash',
       'MiniMax-M3.1-Flash-Preview',
     ]);
   });
@@ -122,24 +124,22 @@ describe('BUILT_IN_CATALOG', () => {
     assert.equal(m3.maxOutputTokens, 128_000);
   });
 
-  it('M3.1-Flash-Preview advertises image + tools + thinking on the Anthropic endpoint', () => {
-    // MiniMax-M3.1-Flash-Preview is the frontier multimodal Flash
-    // preview released to M Plan / MiniMax Code users. It mirrors
-    // M3's 1M / 128K token budget and ships on the Anthropic-
-    // compatible endpoint only, so it picks up the same Anthropic
-    // thinking block + cache_control wiring. The "preview" suffix
-    // in the id is a MiniMax convention we keep verbatim so the
-    // Anthropic `includes('minimax-m3')` match in `getModelSampler`
-    // and `getThinkingConfig` picks it up.
-    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
-    assert.ok(flash, 'M3.1-Flash-Preview entry must exist');
+  it('M3.1-Flash advertises image + tools + thinking on the Anthropic endpoint', () => {
+    // MiniMax-M3.1-Flash is the GA frontier multimodal Flash model.
+    // It mirrors M3's 1M / 128K token budget and ships on the
+    // Anthropic-compatible endpoint only, so it picks up the same
+    // Anthropic thinking block + cache_control wiring. The id keeps
+    // the `minimax-m3` prefix so the Anthropic `includes('minimax-m3')`
+    // match in `getModelSampler` and `getThinkingConfig` picks it up.
+    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    assert.ok(flash, 'M3.1-Flash entry must exist');
     assert.equal(flash.maxInputTokens, 1_000_000);
     assert.equal(flash.maxOutputTokens, 128_000);
     assert.equal(flash.capabilities.toolCalling, 128);
     assert.equal(flash.capabilities.imageInput, true);
     assert.equal(flash.capabilities.thinking, true);
     assert.equal(flash.thinkingStyle, 'anthropic');
-    assert.match(flash.detail, /preview/);
+    assert.match(flash.detail, /thinking/);
   });
 
   it('M2.x uses OpenAI-style thinking deltas and a 60-tool cap', () => {
@@ -434,14 +434,20 @@ describe('mergeCatalog', () => {
 });
 
 describe('deprecation filter', () => {
-  it('marks exactly the M1 and M2.x families deprecated', () => {
+  it('marks exactly the M1, M2.x families and the M3.1 Flash preview id deprecated', () => {
     const deprecated = BUILT_IN_CATALOG.filter((e) => e.deprecated === true)
       .map((e) => e.id)
       .sort();
-    assert.deepEqual(deprecated, ['MiniMax-M1', 'MiniMax-M2', 'MiniMax-M2.5', 'MiniMax-M2.7']);
+    assert.deepEqual(deprecated, [
+      'MiniMax-M1',
+      'MiniMax-M2',
+      'MiniMax-M2.5',
+      'MiniMax-M2.7',
+      'MiniMax-M3.1-Flash-Preview',
+    ]);
   });
 
-  it('leaves M3 and M3.1-Flash-Preview current', () => {
+  it('leaves M3 and M3.1-Flash current', () => {
     for (const id of CURRENT_MODEL_IDS) {
       const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
       assert.ok(entry, `${id} must exist`);
@@ -452,13 +458,13 @@ describe('deprecation filter', () => {
   it('RETAINS every deprecated entry — deprecation hides, never deletes', () => {
     // A session already pinned to M2 must keep resolving, so the
     // catalog itself is unchanged; only the picker's view is filtered.
-    assert.equal(BUILT_IN_CATALOG.length, 6);
+    assert.equal(BUILT_IN_CATALOG.length, 7);
     assert.equal(filterDeprecated(BUILT_IN_CATALOG, false).length, 2);
   });
 
   it('shows only current models by default', () => {
     const visible = filterDeprecated(BUILT_IN_CATALOG, false);
-    assert.deepEqual(visible.map((e) => e.id), ['MiniMax-M3', 'MiniMax-M3.1-Flash-Preview']);
+    assert.deepEqual(visible.map((e) => e.id), ['MiniMax-M3', 'MiniMax-M3.1-Flash']);
   });
 
   it('shows everything when deprecated models are enabled', () => {
@@ -472,7 +478,8 @@ describe('deprecation filter', () => {
     assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M2.7'), true);
     assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M1'), true);
     assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3'), false);
-    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash-Preview'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash-Preview'), true);
     assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'does-not-exist'), false);
   });
 
@@ -484,6 +491,54 @@ describe('deprecation filter', () => {
     assert.equal(m27?.capabilities.toolCalling, 60);
     assert.equal(m27?.thinkingStyle, 'openai');
     assert.equal(m27?.maxInputTokens, 196_608);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The M3.1 Flash model id went GA as `MiniMax-M3.1-Flash`. The preview id
+// is retained as a deprecated alias so a session pinned to it keeps
+// resolving — and it maps to the GA id on the wire, so the request still
+// names a model MiniMax currently serves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('M3.1 Flash GA id', () => {
+  it('advertises the GA id, not the preview id', () => {
+    const entry = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    assert.ok(entry, 'the GA id must be in the catalog');
+    assert.equal(entry?.deprecated, undefined);
+    assert.equal(entry?.displayName, 'M3.1 Flash (MiniMax)');
+    assert.equal(entry?.thinkingStyle, 'anthropic');
+    assert.equal(entry?.capabilities.toolCalling, 128);
+  });
+
+  it('keeps the preview id as a deprecated alias pointing at the GA id', () => {
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.ok(alias, 'the preview id must still resolve');
+    assert.equal(alias?.deprecated, true);
+    assert.equal(alias?.wireId, 'MiniMax-M3.1-Flash');
+  });
+
+  it('gives the alias the same capabilities as the GA entry', () => {
+    const ga = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.deepEqual(alias?.capabilities, ga?.capabilities);
+    assert.equal(alias?.maxInputTokens, ga?.maxInputTokens);
+    assert.equal(alias?.maxOutputTokens, ga?.maxOutputTokens);
+    assert.equal(alias?.thinkingStyle, ga?.thinkingStyle);
+  });
+
+  it('lists only the GA id as current', () => {
+    assert.deepEqual([...CURRENT_MODEL_IDS].sort(), [
+      'MiniMax-M3',
+      'MiniMax-M3.1-Flash',
+    ]);
+  });
+
+  it('resolves the wire id for both the GA entry and its alias', () => {
+    const ga = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.equal(wireModelId(ga), 'MiniMax-M3.1-Flash');
+    assert.equal(wireModelId(alias), 'MiniMax-M3.1-Flash');
   });
 });
 

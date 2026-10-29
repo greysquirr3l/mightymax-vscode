@@ -3,13 +3,16 @@ import * as vscode from 'vscode';
 
 const EXTENSION_ID = 'greysquirr3l.mighty-max';
 const MINIMAX_VENDOR = 'minimax';
+/**
+ * The models the picker always advertises. The wound-down families
+ * (M1, M2.x) and the `MiniMax-M3.1-Flash-Preview` alias are hidden
+ * unless `mightyMax.showDeprecatedModels` is enabled, so they are
+ * not part of this list — see the catalog unit tests for the
+ * filtering rules.
+ */
 const EXPECTED_MODEL_IDS = [
-  'MiniMax-M1',
-  'MiniMax-M2',
-  'MiniMax-M2.5',
-  'MiniMax-M2.7',
   'MiniMax-M3',
-  'MiniMax-M3.1-Flash-Preview',
+  'MiniMax-M3.1-Flash',
 ];
 
 describe('Extension smoke', () => {

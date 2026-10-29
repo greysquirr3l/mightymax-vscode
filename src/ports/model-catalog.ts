@@ -54,12 +54,24 @@ export interface ModelInfo {
    * is enabled.
    *
    * The entry is RETAINED, not removed: a hidden model still resolves
-   * by id, keeps all of its metadata, and keeps serving requests, so
-   * an existing chat session pinned to it does not break. MiniMax is
-   * winding down the M1 and M2.x families; hiding them steers new
-   * users to M3 without revoking access from anyone who depends on it.
+   * by id and keeps all of its metadata. MiniMax is winding down the
+   * M1 and M2.x families; hiding them steers new users to M3.
+   *
+   * Note that hiding a model DOES remove it from VS Code's model list:
+   * the host builds that list from what the extension advertises, and
+   * a chat session pinned to a model that leaves the list is reset to
+   * the default model. The setting brings the model back.
    */
   deprecated?: boolean;
+  /**
+   * The id to send to MiniMax when this entry is selected.
+   *
+   * Normally the same as `id`. It differs only for an entry that
+   * stands in for another model — `MiniMax-M3.1-Flash-Preview` is kept
+   * as a deprecated alias for the GA `MiniMax-M3.1-Flash`, so a
+   * session pinned to the old id still sends a model MiniMax serves.
+   */
+  wireId?: string;
 }
 
 export interface ModelCapabilities {
@@ -84,7 +96,7 @@ export interface ModelCapabilities {
    *
    * Per MiniMax's published context windows and the tool-call
    * benchmarks cited in the M3 function-call guide, the curated
-   * defaults are M3/M3.1-Flash-Preview → 128, M2.x → 60, M1 → 30.
+   * defaults are M3/M3.1-Flash → 128, M2.x → 60, M1 → 30.
    * `true` is reserved for the live `/v1/models` fallback path
    * (unknown future models).
    */
@@ -95,7 +107,7 @@ export interface ModelCapabilities {
   /**
    * Video input via Anthropic-compatible content blocks.
    *
-   * Only `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` accept it —
+   * Only `MiniMax-M3` and `MiniMax-M3.1-Flash` accept it —
    * the MiniMax docs state "The M2.7, M2.5, M2.1, and M2 series
    * support text and tool-call content blocks only", so sending a
    * video part to an M2.x model is a guaranteed rejection. The

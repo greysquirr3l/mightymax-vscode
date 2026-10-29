@@ -625,10 +625,10 @@ export type M3ThinkingMode = 'adaptive' | 'disabled';
  * (`api-reference/text/api/openapi-chat-anthropic.json`), which
  * documents `output_config.effort` as:
  *
- * > Thinking depth for `MiniMax-M3.1-Flash-Preview`. Accepts `low`,
+ * > Thinking depth for `MiniMax-M3.1-Flash`. Accepts `low`,
  * > `medium`, `high`, `xhigh`, or `max`; defaults to `max` when
  * > omitted. **Other models ignore this field.** `none` is not
- * > supported for `MiniMax-M3.1-Flash-Preview` and returns HTTP 400.
+ * > supported for `MiniMax-M3.1-Flash` and returns HTTP 400.
  *
  * Two consequences drive the code below:
  *
@@ -664,12 +664,12 @@ export function coerceThinkingEffort(raw: unknown): ThinkingEffort | undefined {
 }
 
 /**
- * True for the M3.1 Flash family (`MiniMax-M3.1-Flash-Preview` and
- * any future M3.1 variant).
+ * True for the M3.1 Flash family (`MiniMax-M3.1-Flash`, the
+ * `MiniMax-M3.1-Flash-Preview` alias, and any future M3.1 variant).
  *
  * This predicate must be checked BEFORE the broader M3 branch: the
  * plain `includes('minimax-m3')` test also matches
- * `minimax-m3.1-flash-preview`, and the two families need opposite
+ * `minimax-m3.1-flash`, and the two families need opposite
  * handling for the `thinking` block.
  */
 export function isM31FlashFamily(modelId: string): boolean {

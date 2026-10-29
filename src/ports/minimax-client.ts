@@ -104,15 +104,15 @@ export interface MiniMaxCompletionRequest {
    * `output_config.effort` — thinking-depth tuning. Serialized as
    * `output_config: { effort }` on the Anthropic dialect.
    *
-   * **M3.1-Flash-Preview only.** Per the MiniMax OpenAPI spec, the
-   * field "is used to tune thinking depth for `MiniMax-M3.1-Flash-Preview`
+   * **M3.1-Flash only.** Per the MiniMax OpenAPI spec, the
+   * field "is used to tune thinking depth for `MiniMax-M3.1-Flash`
    * … Other models ignore this field." We therefore only populate it
    * for the M3.1 family and leave M3 / M2.x requests untouched —
    * sending it to a model that ignores it is harmless but noise, and
    * omitting it keeps the wire body minimal.
    *
    * `none` is NOT a valid effort: the spec says it "returns HTTP 400"
-   * for M3.1-Flash-Preview. To turn thinking off there, use the
+   * for M3.1-Flash. To turn thinking off there, use the
    * `m3ThinkingMode` setting instead — but note M3.1-Flash always
    * thinks and rejects `thinking: { type: 'disabled' }` with 400
    * (see `getThinkingConfig`).

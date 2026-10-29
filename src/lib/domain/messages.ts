@@ -803,13 +803,19 @@ function extractTextFromParts(parts: ReadonlyArray<MiniMaxWireContentPart>): str
 export interface StreamMappingState {
   /**
    * Trailing text withheld from the previous delta because it could be
-   * part of a protocol marker or tag. Never grows past
-   * `MAX_PROTOCOL_CARRY` characters.
+   * part of a protocol marker or tag.
+   *
+   * Three shapes live here:
+   *  - a partial marker (at most `MAX_PROTOCOL_CARRY` characters);
+   *  - a complete marker held back while we wait to see whether a tag
+   *    follows it (at most the length of the marker itself);
+   *  - the content of a protocol tag that has not closed yet (bounded
+   *    by `MAX_PROTOCOL_TAG`).
    */
   carry: string;
   /**
    * True when `carry` sits inside a protocol region (a marker was seen
-   * but the tag it introduces has not yet closed), so `carry` is
+   * and the tag it introduces has not yet closed), so `carry` is
    * dropped rather than re-examined.
    */
   awaitingTag: boolean;
@@ -827,11 +833,16 @@ export function createStreamMappingState(): StreamMappingState {
  * left mid-protocol is dropped, because the marker that introduced it
  * did arrive.
  *
+ * A carry holding a *complete* marker is also dropped: the marker did
+ * arrive, and the only thing that follows it was never seen, so there
+ * is no tag to strip.
+ *
  * Takes the state explicitly so a caller can never accidentally read
  * (or drain) another in-flight stream's carry.
  */
 export function takeProtocolCarry(state: StreamMappingState): string {
-  const out = state.awaitingTag ? '' : state.carry;
+  const out =
+    state.awaitingTag || isCompleteMarker(state.carry) ? '' : state.carry;
   state.carry = '';
   state.awaitingTag = false;
   return out;
@@ -864,14 +875,46 @@ const MARKER_LITERALS = [
 const MAX_PROTOCOL_CARRY = 13;
 
 /**
+ * Longest protocol region we will swallow before deciding it is not a
+ * tag after all. A real protocol tag (`<invoke name="run_in_terminal">`)
+ * is a few dozen characters; anything longer is prose that merely
+ * followed a stray marker, and prose must reach the widget.
+ */
+const MAX_PROTOCOL_TAG = 512;
+
+/**
+ * A protocol tag is `<` followed by a name-ish character. Anything else
+ * (`<3`, `a < b`) is prose, and prose that happens to sit behind a
+ * stray marker must not be swallowed.
+ */
+const PROTOCOL_TAG_START = /^<[A-Za-z_/\u200B]/;
+
+/**
+ * Lowercase only ASCII letters, so string length is preserved. Used to
+ * compare marker fragments case-insensitively (the marker regex is
+ * case-insensitive, so the half-marker carry has to be too).
+ */
+function asciiLower(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/** True when `text` contains a complete protocol marker. */
+function isCompleteMarker(text: string): boolean {
+  return new RegExp(PROTOCOL_MARKER.source, 'i').test(text);
+}
+
+/**
  * Length of the longest suffix of `text` that could still grow into a
  * complete marker, or 0 when the tail is already safe to emit.
  */
 function pendingMarkerLength(text: string): number {
   const max = Math.min(text.length, MAX_PROTOCOL_CARRY);
+  const lower = asciiLower(text);
   for (let k = max; k > 0; k--) {
-    const suffix = text.slice(text.length - k);
-    if (MARKER_LITERALS.some((lit) => lit.startsWith(suffix))) return k;
+    const suffix = lower.slice(lower.length - k);
+    if (MARKER_LITERALS.some((lit) => asciiLower(lit).startsWith(suffix))) {
+      return k;
+    }
   }
   return 0;
 }
@@ -899,8 +942,15 @@ function pendingMarkerLength(text: string): number {
  *
  *  1. A marker followed by a protocol tag (`<invoke …>`,
  *     `</tool_call>`) — the whole run is dropped, since a marker
- *     only ever introduces protocol.
- *  2. A bare marker.
+ *     that introduces a tag only ever introduces protocol.
+ *  2. A bare marker — dropped on its own, with the text behind it
+ *     left intact. A marker is a stray artifact unless a tag
+ *     actually follows it, so prose that happens to sit behind one
+ *     must reach the widget.
+ *
+ * The decision is deferred when the marker ends a delta: the tag may
+ * start in the next one, so the marker is held back until it can be
+ * classified.
  *
  * A trailing fragment that could still grow into a marker is held
  * back in the carry and re-examined with the next delta, so a
@@ -921,24 +971,46 @@ function scrubLeakedProtocol(
       // Inside a protocol region: drop everything up to the tag's `>`.
       const gt = buffered.indexOf('>');
       if (gt < 0) {
+        if (buffered.length > MAX_PROTOCOL_TAG) {
+          // No tag closed within any plausible length, so this is not
+          // a tag — it is prose that happened to follow a stray
+          // marker. Let it through instead of swallowing it.
+          visible += buffered;
+          buffered = '';
+          suppressed = false;
+          continue;
+        }
         // The tag has not closed yet. Keep withholding, bounded.
-        const keep = Math.min(buffered.length, MAX_PROTOCOL_CARRY);
-        return {
-          visible,
-          carry: buffered.slice(buffered.length - keep),
-          awaitingTag: true,
-        };
+        return { visible, carry: buffered, awaitingTag: true };
       }
       buffered = buffered.slice(gt + 1);
       suppressed = false;
+      continue;
     }
 
     const marker = new RegExp(PROTOCOL_MARKER.source, 'i').exec(buffered);
     if (marker === null) break;
+    const after = buffered.slice(marker.index + marker[0].length);
+
+    if (after.length === 0) {
+      // The marker ends the buffer, so we cannot yet tell whether a
+      // protocol tag follows it. Hold the marker back and decide when
+      // the next delta arrives — deciding now would either leak the
+      // tag or swallow the prose behind it.
+      visible += buffered.slice(0, marker.index);
+      return { visible, carry: marker[0], awaitingTag: false };
+    }
+
     visible += buffered.slice(0, marker.index);
-    buffered = buffered.slice(marker.index + marker[0].length);
-    // A marker only ever introduces protocol, so the tag that follows
-    // it goes too.
+    buffered = after;
+
+    if (!PROTOCOL_TAG_START.test(buffered)) {
+      // A marker with no tag behind it is a stray artifact, not the
+      // start of protocol. Drop the marker itself; the text behind it
+      // is the model's answer and must survive.
+      continue;
+    }
+    // A marker that does introduce a tag takes the tag with it.
     suppressed = true;
   }
 

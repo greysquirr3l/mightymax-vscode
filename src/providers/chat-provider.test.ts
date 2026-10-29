@@ -172,6 +172,25 @@ const M2_5: ModelInfo = {
   detail: '200K ctx, 8K out',
 };
 
+/**
+ * The deprecated alias for the GA `MiniMax-M3.1-Flash`. It carries a
+ * `wireId` so a session pinned to the preview id still sends the
+ * model MiniMax currently serves.
+ */
+const M3_1_FLASH_PREVIEW: ModelInfo = {
+  id: 'MiniMax-M3.1-Flash-Preview',
+  displayName: 'M3.1 Flash Preview',
+  vendor: 'minimax',
+  family: 'minimax',
+  maxInputTokens: 1_000_000,
+  maxOutputTokens: 128_000,
+  capabilities: { toolCalling: 128, imageInput: true, thinking: true, videoInput: true },
+  thinkingStyle: 'anthropic',
+  detail: '1M ctx, 128K out',
+  wireId: 'MiniMax-M3.1-Flash',
+  deprecated: true,
+};
+
 interface RecordedCall {
   request: MiniMaxCompletionRequest;
   apiKey: string;
@@ -384,6 +403,43 @@ describe('ChatProvider — deprecated model warning', () => {
     const logger = await runOnce(M3);
     const warning = logger.calls.find((c) => c.message.includes('deprecated model'));
     strictEqual(warning, undefined);
+  });
+});
+
+describe('ChatProvider — wire model id', () => {
+  const runOnce = async (
+    entry: ModelInfo,
+  ): Promise<MiniMaxCompletionRequest> => {
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([entry]),
+    );
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(entry),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const sent = client.calls[0]?.request;
+    ok(sent, 'expected the provider to send a request');
+    return sent;
+  };
+
+  it('sends the model id for a normal entry', async () => {
+    const sent = await runOnce(M3);
+    strictEqual(sent.model, 'MiniMax-M3');
+  });
+
+  it('sends the GA id for the deprecated M3.1 Flash preview alias', async () => {
+    // The preview id is no longer in MiniMax's docs, so a session
+    // pinned to it must still send a model MiniMax currently serves.
+    const sent = await runOnce(M3_1_FLASH_PREVIEW);
+    strictEqual(sent.model, 'MiniMax-M3.1-Flash');
   });
 });
 

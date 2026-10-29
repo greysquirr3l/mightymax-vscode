@@ -52,16 +52,22 @@ rendering as raw markup in the chat.
 - **`mightyMax.showDeprecatedModels` (default `false`) — MiniMax is
   winding down the M1 and M2.x families, so they now hide from the
   model picker.** The picker shows `MiniMax-M3` and
-  `MiniMax-M3.1-Flash-Preview`; `M2.7`, `M2.5`, `M2`, and `M1` carry a
-  `deprecated` flag and are filtered out unless the new setting is
-  enabled.
+  `MiniMax-M3.1-Flash`; `M2.7`, `M2.5`, `M2`, `M1`, and the
+  `MiniMax-M3.1-Flash-Preview` id carry a `deprecated` flag and are
+  filtered out unless the new setting is enabled.
 
   Deprecation hides, it never deletes. Every entry stays in the
-  catalog with all of its metadata, `getModel` still resolves a
-  deprecated id, and a chat session already pinned to one keeps
-  serving requests — so hiding a model is a display decision, not a
-  revocation, and nobody's existing workflow breaks overnight. The
-  setting is read fresh at the picker rather than cached, and
+  catalog with all of its metadata, and `getModel` still resolves a
+  deprecated id, so a request that names one still works. **It does,
+  however, remove the model from VS Code's model list** — the host
+  builds that list from the models the extension advertises, so a
+  chat session pinned to a model that leaves the list is reset to the
+  default model rather than continuing on the old one. Enabling
+  `mightyMax.showDeprecatedModels` puts the model back. Earlier drafts
+  of this note claimed hiding was purely a display decision that
+  revoked nothing; that was wrong about the host's behaviour.
+
+  The setting is read fresh at the picker rather than cached, and
   `onDidChangeConfiguration` refreshes the list immediately instead of
   waiting for the next API-key rotation.
 
@@ -71,6 +77,49 @@ rendering as raw markup in the chat.
   without having to guess.
 
 ### Fixed
+
+- **The protocol scrubber no longer eats the model's answer.** The
+  first cut of the scrubber treated *any* marker as the start of
+  protocol and suppressed everything up to the next `>`. A marker with
+  no tag behind it — which happens whenever the model writes the
+  sequence without a protocol tag — therefore swallowed the prose that
+  followed it, potentially a whole paragraph, and a `>` in ordinary
+  prose truncated the rest of the sentence. The scrubber now only
+  enters a protocol region when a tag actually follows the marker; a
+  bare marker is dropped on its own and the text behind it reaches the
+  widget intact.
+
+  Two related leaks are closed with it. A marker that ended a delta
+  was previously resolved as "no tag follows" before the next delta
+  arrived, so a tag split across the boundary was rendered as visible
+  markup. The decision is now deferred until the next byte arrives. And
+  the half-marker carry was matched case-sensitively while the marker
+  itself is matched case-insensitively, so a marker split across deltas
+  in a different case leaked verbatim; both now agree.
+
+  An unterminated protocol tag is bounded, so a stray marker followed
+  by more than 512 characters of prose releases the prose instead of
+  swallowing it.
+
+- **The utility-model command no longer points at a retired model.**
+  `mightyMax.configureUtilityModels` wrote
+  `chat.utilitySmallModel = "minimax/MiniMax-M2.5"`. M2.5 is hidden
+  from the picker, and VS Code builds the utility-model enum from the
+  models an extension advertises — so the setting could never resolve
+  and the Copilot warning it was meant to fix stayed. MiniMax has
+  since retired the whole M2.x family, so those requests would fail
+  upstream even if the setting did resolve. The small utility model is
+  now `MiniMax-M3.1-Flash`: GA, and the cheapest model MiniMax
+  serves. A regression test asserts that both utility-model targets
+  are still advertised, so a future deprecation cannot silently
+  reintroduce the same dead setting.
+
+- **M3.1 Flash is advertised under its GA id, `MiniMax-M3.1-Flash`.**
+  The preview id appears in none of MiniMax's current documentation.
+  The picker now shows the GA id. `MiniMax-M3.1-Flash-Preview` is kept
+  as a deprecated alias so a session pinned to it still resolves, and
+  it sends the GA id on the wire, so the request always names a model
+  MiniMax currently serves.
 
 - **MiniMax's native tool-call protocol no longer renders as raw
   markup in the chat.** M3.1 intermittently writes its protocol into
@@ -89,7 +138,6 @@ rendering as raw markup in the chat.
   never be swallowed. State is owned per request rather than per
   module, so a subagent streaming alongside its parent cannot read or
   drain the other's carry.
-
   Two deliberate limits. Only marker-anchored markup is removed, so a
   user-authored XML template that merely resembles protocol survives
   untouched — the marker is the one sequence that cannot occur in

@@ -28,6 +28,7 @@ import {
   type ConfigureUtilityConfig,
   type ConfigureUtilityUi,
 } from './configure-utility-models.js';
+import { BUILT_IN_CATALOG, isDeprecatedModel } from '../lib/domain/catalog.js';
 
 interface RecordedWrite {
   readonly key: string;
@@ -119,8 +120,7 @@ function makeUiAndConfig(opts: ScriptedDeps): {
 }
 
 describe('runConfigureUtilityModelsCommand — three pick flows', () => {
-  it('"recommended" writes chat.utilityModel + chat.utilitySmallModel pointing at MiniMax', async () => {
-    const logger = makeLogger();
+  it('"recommended" writes chat.utilityModel + chat.utilitySmallModel pointing at MiniMax', async () => {    const logger = makeLogger();
     const { ui, config, info } = makeUiAndConfig({ pick: 'recommended' });
     const bound = bindLogger(logger);
     await runConfigureUtilityModelsCommand({
@@ -241,3 +241,29 @@ function ok(value: unknown, message?: string): void {
     throw new Error(message ?? 'expected truthy');
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VS Code builds the `chat.utilityModel` / `chat.utilitySmallModel`
+// enums from the models an extension advertises. A model that is hidden
+// from the picker can never be resolved, so writing one here produces a
+// setting that silently does nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('utility model targets must still be advertised', () => {
+  it('points at models that are not hidden from the picker', () => {
+    for (const id of [MINIMAX_UTILITY_MODEL, MINIMAX_UTILITY_SMALL_MODEL]) {
+      strictEqual(
+        isDeprecatedModel(BUILT_IN_CATALOG, id),
+        false,
+        `${id} is hidden from the picker, so VS Code cannot resolve it as a utility model`,
+      );
+    }
+  });
+
+  it('uses the GA M3.1 Flash model for the small utility model', () => {
+    // M2.5 was the old default, but MiniMax has retired the whole
+    // M2.x family — the requests would fail upstream even if the
+    // setting did resolve.
+    strictEqual(MINIMAX_UTILITY_SMALL_MODEL, 'MiniMax-M3.1-Flash');
+  });
+});

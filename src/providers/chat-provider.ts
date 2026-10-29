@@ -36,11 +36,13 @@ import {
   collapseSubAgentToolResultsInDomain,
 } from '../lib/domain/subagent-synthesis.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
+import { wireModelId } from '../lib/domain/catalog.js';
 import {
   filterTools,
   discoverMcpTools,
   selectMcpToolsToInclude,
   DEFAULT_ALWAYS_INCLUDE_TOOLS,
+  DEFAULT_MAX_TOOLS,
   DEFAULT_MCP_MAX_TOOLS,
   MANDATORY_ALWAYS_INCLUDE_TOOLS,
   type ToolFilterConfig,
@@ -262,6 +264,19 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     const thinkingStyle: ThinkingStyle = modelInfo?.thinkingStyle ?? 'openai';
     const dialect = dialectForModel(modelInfo ?? { thinkingStyle });
 
+    // The id MiniMax should see on the wire. Usually the same as the
+    // catalog id, but a deprecated alias (e.g. the M3.1 Flash preview
+    // id) sends the model it stands in for.
+    const wireId = wireModelId(modelInfo) ?? model.id;
+
+    if (modelInfo?.deprecated === true) {
+      this.logger.warn(
+        'ChatProvider: request on a deprecated model — MiniMax is winding this family down; ' +
+          'set `mightyMax.showDeprecatedModels` to keep it in the picker, or pick M3',
+        { model: model.id, wireModel: wireId },
+      );
+    }
+
     // Map messages to MiniMax wire format (model first, then messages)
     const mappingResult = mapRequestToMiniMax(
       {
@@ -465,7 +480,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
     // Build the request (conditionally include tools/toolChoice/sampling)
     const request: MiniMaxCompletionRequest = {
-      model: model.id,
+      model: wireId,
       messages: mappingResult.messages.filter((m) => m.role !== undefined),
       ...(miniMaxTools !== undefined ? { tools: miniMaxTools } : {}),
       ...(toolChoice !== undefined ? { toolChoice } : {}),
@@ -1106,9 +1121,23 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
  * shape. Pure function — no I/O, no side effects — so it can be unit
  * tested independently of the chat provider.
  *
- * Per AGENTS.md: `capabilities.toolCalling = true` on every
- * agent-capable model is the gate that keeps the model in the agent
- * model picker. We forward `imageInput` from the domain capability.
+ * Per AGENTS.md: `capabilities.toolCalling` on every agent-capable
+ * model is the gate that keeps the model in the agent model picker.
+ * We forward `imageInput` from the domain capability.
+ *
+ * `toolCalling` is forwarded verbatim, which may be a NUMBER: VS Code
+ * reads a number as "the model can call tools, and at most this many
+ * per request", and uses it to truncate the tool list it hands us.
+ * Collapsing it to a boolean here silently discarded that cap while
+ * the model picker still advertised it.
+ *
+ * No version gate is needed. `@types/vscode` 1.125.0 — the version
+ * this extension floors at (`engines.vscode: ^1.125.0`) — already
+ * declares `LanguageModelChatCapabilities.toolCalling?: boolean |
+ * number` and documents the numeric form, so every host we are
+ * allowed to run on accepts it. A host that ignores the number and
+ * reads it truthily degrades to plain "tools supported", which is the
+ * pre-0.11 behaviour, so the failure mode is graceful.
  */
 export function toLanguageModelChatInformation(
   entry: ModelInfo,
@@ -1124,7 +1153,7 @@ export function toLanguageModelChatInformation(
     detail: entry.detail,
     capabilities: {
       imageInput: entry.capabilities.imageInput,
-      toolCalling: entry.capabilities.toolCalling ? true : false,
+      toolCalling: entry.capabilities.toolCalling,
     },
   };
 }
@@ -1480,14 +1509,18 @@ function readToolFilterConfig(): ToolFilterConfig {
   if (ws?.getConfiguration === undefined) {
     return {
       enableSmartToolFiltering: true,
-      maxTools: 64,
+      maxTools: DEFAULT_MAX_TOOLS,
       alwaysIncludeTools: [],
     };
   }
   const config = ws.getConfiguration('mightyMax') as ConfigReader;
   return {
     enableSmartToolFiltering: config.get?.<boolean>('enableSmartToolFiltering', true) ?? true,
-    maxTools: config.get?.<number>('maxTools', 60) ?? 60,
+    // Read the cap from the domain constant so it cannot drift from
+    // the manifest default. The fallback used to be a hand-copied
+    // `60` while the manifest and the constant said `64` — the same
+    // class of bug as the `alwaysIncludeTools` duplicate below.
+    maxTools: config.get?.<number>('maxTools', DEFAULT_MAX_TOOLS) ?? DEFAULT_MAX_TOOLS,
     alwaysIncludeTools:
       config.get?.<string[]>(
         'alwaysIncludeTools',

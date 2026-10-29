@@ -6,6 +6,193 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-29
+
+Minor release. Declares a real per-request tool cap for every model so
+the Agent Host stops shipping tool sets larger than MiniMax can
+actually serve, hides the wound-down M1 and M2.x families from the
+model picker behind a setting, and stops MiniMax's native tool-call
+protocol from rendering as raw markup in the chat — without eating the
+model's answer along with it.
+
+### Added
+
+- **Every model now declares a per-request tool cap, and the cap
+  actually reaches the Agent Host.** `capabilities.toolCalling` is
+  typed `boolean | number`; a positive integer means "this model
+  supports tool calling, and at most this many tools per request",
+  which VS Code uses to truncate the tool list it hands the provider.
+  Curated defaults: M3 and M3.1-Flash-Preview to 128, the M2 family to
+  60, M1 to 30, with `true` reserved for the live `/v1/models`
+  fallback path. This matters on MCP-heavy installs where Copilot, MCP,
+  and extension language-model tools combine past 100 entries and blow
+  past the model's real limit.
+
+  **The cap was previously declared but discarded.** The publish site
+  collapsed the field with `entry.capabilities.toolCalling ? true :
+false`, so the Agent Host received a plain boolean and the cap did
+  nothing — while the model picker already advertised `tools (<=128)`
+  from the catalog's `detail` string. The picker promised a limit the
+  code was not enforcing, which is the same class of bug as two
+  matchers disagreeing about a default. `toLanguageModelChatInformation`
+  now forwards the value verbatim, with a regression test that fails
+  against the old coercion.
+
+  No version gate is needed. `@types/vscode` 1.125.0 — this extension's
+  engine floor — already declares `toolCalling?: boolean | number` and
+  documents the numeric form, so every host we are allowed to run on
+  accepts it. A host that ignores the number reads it truthily and
+  degrades to the previous "tools supported" behaviour.
+
+  Note that these caps are the model's ceiling, not our wire payload.
+  `mightyMax.enableSmartToolFiltering` (default on) still trims the set
+  to `mightyMax.maxTools` (default 64) before the request, so M3
+  effectively ships at most 64 tools on a default install. That
+  ordering is intentional: the host-side cap stops an oversized set
+  reaching us, and the filter keeps the payload small for latency.
+
+- **`mightyMax.showDeprecatedModels` (default `false`) — MiniMax is
+  winding down the M1 and M2.x families, so they now hide from the
+  model picker.** The picker shows `MiniMax-M3` and
+  `MiniMax-M3.1-Flash`; `M2.7`, `M2.5`, `M2`, `M1`, and the
+  `MiniMax-M3.1-Flash-Preview` id carry a `deprecated` flag and are
+  filtered out unless the new setting is enabled.
+
+  Deprecation hides, it never deletes. Every entry stays in the
+  catalog with all of its metadata, and `getModel` still resolves a
+  deprecated id, so a request that names one still works. **It does,
+  however, remove the model from VS Code's model list** — the host
+  builds that list from the models the extension advertises, so a
+  chat session pinned to a model that leaves the list is reset to the
+  default model rather than continuing on the old one. Enabling
+  `mightyMax.showDeprecatedModels` puts the model back. Earlier drafts
+  of this note claimed hiding was purely a display decision that
+  revoked nothing; that was wrong about the host's behaviour.
+
+  The setting is read fresh at the picker rather than cached, and
+  `onDidChangeConfiguration` refreshes the list immediately instead of
+  waiting for the next API-key rotation.
+
+  When a request does run on a deprecated model, the log carries a
+  warning naming both the model and this setting, so anyone debugging
+  "why did this model disappear from the picker?" finds the answer
+  without having to guess.
+
+### Fixed
+
+- **The protocol scrubber no longer eats the model's answer.** The
+  first cut of the scrubber treated _any_ marker as the start of
+  protocol and suppressed everything up to the next `>`. A marker with
+  no tag behind it — which happens whenever the model writes the
+  sequence without a protocol tag — therefore swallowed the prose that
+  followed it, potentially a whole paragraph, and a `>` in ordinary
+  prose truncated the rest of the sentence. The scrubber now only
+  enters a protocol region when a tag actually follows the marker; a
+  bare marker is dropped on its own and the text behind it reaches the
+  widget intact.
+
+  Two related leaks are closed with it. A marker that ended a delta
+  was previously resolved as "no tag follows" before the next delta
+  arrived, so a tag split across the boundary was rendered as visible
+  markup. The decision is now deferred until the next byte arrives. And
+  the half-marker carry was matched case-sensitively while the marker
+  itself is matched case-insensitively, so a marker split across deltas
+  in a different case leaked verbatim; both now agree.
+
+  An unterminated protocol tag is bounded, so a stray marker followed
+  by more than 512 characters of prose releases the prose instead of
+  swallowing it.
+
+- **The utility-model command no longer points at a retired model.**
+  `mightyMax.configureUtilityModels` wrote
+  `chat.utilitySmallModel = "minimax/MiniMax-M2.5"`. M2.5 is hidden
+  from the picker, and VS Code builds the utility-model enum from the
+  models an extension advertises — so the setting could never resolve
+  and the Copilot warning it was meant to fix stayed. MiniMax has
+  since retired the whole M2.x family, so those requests would fail
+  upstream even if the setting did resolve. The small utility model is
+  now `MiniMax-M3.1-Flash`: GA, and the cheapest model MiniMax
+  serves. A regression test asserts that both utility-model targets
+  are still advertised, so a future deprecation cannot silently
+  reintroduce the same dead setting.
+
+- **M3.1 Flash is advertised under its GA id, `MiniMax-M3.1-Flash`.**
+  The preview id appears in none of MiniMax's current documentation.
+  The picker now shows the GA id. `MiniMax-M3.1-Flash-Preview` is kept
+  as a deprecated alias so a session pinned to it still resolves, and
+  it sends the GA id on the wire, so the request always names a model
+  MiniMax currently serves.
+
+- **MiniMax's native tool-call protocol no longer renders as raw
+  markup in the chat.** M3.1 intermittently writes its protocol into
+  the Anthropic `text` channel instead of a structured `tool_use`
+  block, so the chat widget showed the marker, the tag, and the tool
+  name as visible text. The mapper now scrubs the marker and the tag it
+  introduces from the text channel before it reaches the widget, and
+  keeps the surrounding prose.
+
+  The scrub is a streaming state machine, because the protocol arrives
+  split across deltas at arbitrary boundaries — the captured stream
+  breaks one closing tag across three of them. A trailing fragment that
+  could still grow into a marker is withheld (capped at 13 characters)
+  and re-examined with the next delta; whatever is still withheld when
+  the stream ends is flushed as text, so an ordinary trailing `<` can
+  never be swallowed. State is owned per request rather than per
+  module, so a subagent streaming alongside its parent cannot read or
+  drain the other's carry.
+  Two deliberate limits. Only marker-anchored markup is removed, so a
+  user-authored XML template that merely resembles protocol survives
+  untouched — the marker is the one sequence that cannot occur in
+  prose. And the scrub does not parse the leaked text back into a tool
+  call: every stream in the capture that leaked also produced real tool
+  deltas, so the structured call is always present and re-parsing would
+  risk duplicating it.
+
+  Replaying all eight captured streams (21,201 text deltas, ~397k
+  characters) removes exactly the 32 protocol characters and changes
+  nothing else.
+
+- **`Stream finished` no longer logs `toolCallCount: 0` for every
+  request.** The count came from `currentToolCallIds`, which
+  `flushAccumulator` only populates _after_ the finish event is logged,
+  so the field could never report anything but zero — 800 of 800
+  streams in a captured log. That makes every agent turn look like it
+  produced no tool call, which is actively misleading when diagnosing
+  exactly this class of bug. The log now reports `toolCallDeltas` (what
+  the transport actually saw) alongside `toolCallIds` (what was
+  finalized).
+
+- **The tool cap's fallback no longer disagrees with the manifest.**
+  `mightyMax.maxTools` is 64 in the manifest and 64 in the domain
+  constant, but the chat-provider's fallback read a hand-copied `60`.
+  That fallback only fires when the host exposes no settings API, so
+  the drift was invisible in normal use — and invisible in exactly the
+  situation where a wrong number is hardest to notice. Both fallbacks
+  now read the domain constant, so the cap cannot drift again.
+
+- **The README's settings table now matches the manifest.** Fifteen of
+  the twenty-four settings had no row at all, including
+  `mightyMax.showDeprecatedModels`, `mightyMax.m31ThinkingEffort`,
+  `mightyMax.systemPrompt`, and every media setting — a setting with
+  no README entry is a setting a user cannot discover. The
+  `alwaysIncludeTools` row also listed a six-entry pin list where the
+  manifest and the code have thirteen, so a user reading the README
+  would have overwritten a list that had silently lost
+  `runSubagent`, `minimax_subagent`, `view_image`, and the media tools.
+  The README also claimed a VS Code 1.109 floor when the manifest
+  declares `^1.125.0`, and three rows of the feature table had been
+  merged onto one line by an earlier edit, hiding the video-input and
+  thinking-block rows entirely.
+
+  A new test compares the manifest, the compiled constants, and the
+  README table on every run, so the three surfaces cannot disagree
+  again without a failing build.
+
+- **`package-lock.json` matches `package.json` again.** The lockfile
+  still said `0.10.0` while the manifest said `0.11.0`, so the
+  release workflow's `npm ci` and any audit of the lockfile were
+  reading a different version than the one being published.
+
 ## [0.10.0] — 2026-10-08
 
 Minor release. Fixes a hard 400 that broke any agent turn where a

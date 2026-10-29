@@ -33,7 +33,7 @@
  * host-glue-but-otherwise-pure tests.
  */
 
-import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import * as vscode from 'vscode';
@@ -172,6 +172,25 @@ const M2_5: ModelInfo = {
   detail: '200K ctx, 8K out',
 };
 
+/**
+ * The deprecated alias for the GA `MiniMax-M3.1-Flash`. It carries a
+ * `wireId` so a session pinned to the preview id still sends the
+ * model MiniMax currently serves.
+ */
+const M3_1_FLASH_PREVIEW: ModelInfo = {
+  id: 'MiniMax-M3.1-Flash-Preview',
+  displayName: 'M3.1 Flash Preview',
+  vendor: 'minimax',
+  family: 'minimax',
+  maxInputTokens: 1_000_000,
+  maxOutputTokens: 128_000,
+  capabilities: { toolCalling: 128, imageInput: true, thinking: true, videoInput: true },
+  thinkingStyle: 'anthropic',
+  detail: '1M ctx, 128K out',
+  wireId: 'MiniMax-M3.1-Flash',
+  deprecated: true,
+};
+
 interface RecordedCall {
   request: MiniMaxCompletionRequest;
   apiKey: string;
@@ -242,6 +261,50 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
     ok(result[0]?.capabilities.toolCalling === true, 'M3 must advertise toolCalling=true');
   });
 
+  it('forwards a numeric tool cap to the host as a number', () => {
+    // Regression: the publish site collapsed `toolCalling` to
+    // `? true : false`, so a per-request cap never reached the Agent
+    // Host even though the model picker advertised it.
+    const capped: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: 128 },
+      detail: '1M ctx, 16K out, tools (<=128)',
+    };
+    const info = toLanguageModelChatInformation(capped);
+    strictEqual(info.capabilities.toolCalling, 128);
+  });
+
+  it('forwards toolCalling=false for a model that cannot call tools', () => {
+    const noTools: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: false },
+    };
+    strictEqual(toLanguageModelChatInformation(noTools).capabilities.toolCalling, false);
+  });
+
+  it('forwards boolean toolCalling unchanged', () => {
+    strictEqual(toLanguageModelChatInformation(M3).capabilities.toolCalling, true);
+    strictEqual(toLanguageModelChatInformation(M2_5).capabilities.toolCalling, true);
+  });
+
+  it('publishes the catalog caps as numbers end to end', async () => {
+    const capped: ModelInfo = {
+      ...M3,
+      capabilities: { ...M3.capabilities, toolCalling: 60 },
+    };
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider(),
+      makeFakeClient([]),
+      makeCatalog([capped]),
+    );
+    const result = await provider.provideLanguageModelChatInformation(
+      { silent: false },
+      new vscode.CancellationTokenSource().token,
+    );
+    strictEqual(result[0]?.capabilities.toolCalling, 60);
+  });
+
   it('returns [] with silent=true when no API key is stored (no prompt)', async () => {
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
@@ -286,6 +349,99 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // provideLanguageModelChatResponse
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('ChatProvider — deprecated model warning', () => {
+  const DEPRECATED_M2_7: ModelInfo = {
+    id: 'MiniMax-M2.7',
+    displayName: 'M2.7 (MiniMax)',
+    vendor: 'minimax',
+    family: 'minimax',
+    maxInputTokens: 196_608,
+    maxOutputTokens: 8_192,
+    capabilities: {
+      toolCalling: 60,
+      imageInput: true,
+      thinking: true,
+      videoInput: false,
+    },
+    thinkingStyle: 'openai',
+    detail: '200K ctx, 8K out',
+    deprecated: true,
+  };
+
+  const runOnce = async (entry: ModelInfo): Promise<ReturnType<typeof makeRecordingLogger>> => {
+    const logger = makeRecordingLogger();
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    const provider = new ChatProvider(
+      logger,
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([entry]),
+    );
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(entry),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    return logger;
+  };
+
+  it('warns and names the setting when a request runs on a deprecated model', async () => {
+    const logger = await runOnce(DEPRECATED_M2_7);
+    const warning = logger.calls.find(
+      (c) => c.level === 'warn' && c.message.includes('deprecated model'),
+    );
+    ok(warning, 'expected a deprecation warning');
+    match(warning?.message ?? '', /mightyMax\.showDeprecatedModels/);
+    strictEqual(warning?.context?.model, 'MiniMax-M2.7');
+  });
+
+  it('stays silent for a current model', async () => {
+    const logger = await runOnce(M3);
+    const warning = logger.calls.find((c) => c.message.includes('deprecated model'));
+    strictEqual(warning, undefined);
+  });
+});
+
+describe('ChatProvider — wire model id', () => {
+  const runOnce = async (
+    entry: ModelInfo,
+  ): Promise<MiniMaxCompletionRequest> => {
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([entry]),
+    );
+    const { progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(entry),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const sent = client.calls[0]?.request;
+    ok(sent, 'expected the provider to send a request');
+    return sent;
+  };
+
+  it('sends the model id for a normal entry', async () => {
+    const sent = await runOnce(M3);
+    strictEqual(sent.model, 'MiniMax-M3');
+  });
+
+  it('sends the GA id for the deprecated M3.1 Flash preview alias', async () => {
+    // The preview id is no longer in MiniMax's docs, so a session
+    // pinned to it must still send a model MiniMax currently serves.
+    const sent = await runOnce(M3_1_FLASH_PREVIEW);
+    strictEqual(sent.model, 'MiniMax-M3.1-Flash');
+  });
+});
 
 describe('ChatProvider.provideLanguageModelChatResponse', () => {
   it('reports text → tool call → usage in order via progress.report', async () => {

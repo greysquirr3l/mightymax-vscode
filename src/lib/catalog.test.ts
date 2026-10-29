@@ -22,10 +22,14 @@ import { describe, it } from 'node:test';
 
 import {
   BUILT_IN_CATALOG,
+  CURRENT_MODEL_IDS,
   DEFAULT_LIVE_DEFAULTS,
+  filterDeprecated,
+  isDeprecatedModel,
   mergeCatalog,
   normalizeModelId,
   validateCatalog,
+  wireModelId,
   _internal,
 } from './domain/catalog.js';
 import type { CatalogEntry } from './domain/catalog.js';
@@ -33,7 +37,7 @@ import type { CatalogEntry } from './domain/catalog.js';
 const { formatTokenCount } = _internal;
 
 describe('BUILT_IN_CATALOG', () => {
-  it('ships the full M-series: M1, M2, M2.5, M2.7, M3, M3.1-Flash-Preview', () => {
+  it('ships the full M-series: M1, M2, M2.5, M2.7, M3, M3.1-Flash (+ preview alias)', () => {
     const ids = BUILT_IN_CATALOG.map((e) => e.id);
     assert.deepEqual([...ids].sort(), [
       'MiniMax-M1',
@@ -41,6 +45,7 @@ describe('BUILT_IN_CATALOG', () => {
       'MiniMax-M2.5',
       'MiniMax-M2.7',
       'MiniMax-M3',
+      'MiniMax-M3.1-Flash',
       'MiniMax-M3.1-Flash-Preview',
     ]);
   });
@@ -49,11 +54,14 @@ describe('BUILT_IN_CATALOG', () => {
     assert.deepEqual(validateCatalog(BUILT_IN_CATALOG), []);
   });
 
-  it('M3 advertises image input AND a truthy toolCalling', () => {
+  it('M3 advertises image input AND a 128-tool cap (Agent Host API)', () => {
     const m3 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3, 'M3 entry must exist');
     assert.equal(m3.capabilities.imageInput, true);
-    assert.equal(m3.capabilities.toolCalling, true);
+    // VS Code Insiders 1.142+ accepts `toolCalling: boolean | number`,
+    // where the number is the per-request tool cap. M3 is the frontier
+    // agentic model — matches what the Agent Host shows in the picker.
+    assert.equal(m3.capabilities.toolCalling, 128);
     assert.equal(m3.capabilities.thinking, true);
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
@@ -116,51 +124,53 @@ describe('BUILT_IN_CATALOG', () => {
     assert.equal(m3.maxOutputTokens, 128_000);
   });
 
-  it('M3.1-Flash-Preview advertises image + tools + thinking on the Anthropic endpoint', () => {
-    // MiniMax-M3.1-Flash-Preview is the frontier multimodal Flash
-    // preview released to M Plan / MiniMax Code users. It mirrors
-    // M3's 1M / 128K token budget and ships on the Anthropic-
-    // compatible endpoint only, so it picks up the same Anthropic
-    // thinking block + cache_control wiring. The "preview" suffix
-    // in the id is a MiniMax convention we keep verbatim so the
-    // Anthropic `includes('minimax-m3')` match in `getModelSampler`
-    // and `getThinkingConfig` picks it up.
-    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
-    assert.ok(flash, 'M3.1-Flash-Preview entry must exist');
+  it('M3.1-Flash advertises image + tools + thinking on the Anthropic endpoint', () => {
+    // MiniMax-M3.1-Flash is the GA frontier multimodal Flash model.
+    // It mirrors M3's 1M / 128K token budget and ships on the
+    // Anthropic-compatible endpoint only, so it picks up the same
+    // Anthropic thinking block + cache_control wiring. The id keeps
+    // the `minimax-m3` prefix so the Anthropic `includes('minimax-m3')`
+    // match in `getModelSampler` and `getThinkingConfig` picks it up.
+    const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    assert.ok(flash, 'M3.1-Flash entry must exist');
     assert.equal(flash.maxInputTokens, 1_000_000);
     assert.equal(flash.maxOutputTokens, 128_000);
-    assert.equal(flash.capabilities.toolCalling, true);
+    assert.equal(flash.capabilities.toolCalling, 128);
     assert.equal(flash.capabilities.imageInput, true);
     assert.equal(flash.capabilities.thinking, true);
     assert.equal(flash.thinkingStyle, 'anthropic');
-    assert.match(flash.detail, /preview/);
+    assert.match(flash.detail, /thinking/);
   });
 
-  it('M2.x uses OpenAI-style thinking deltas', () => {
+  it('M2.x uses OpenAI-style thinking deltas and a 60-tool cap', () => {
     for (const id of ['MiniMax-M2', 'MiniMax-M2.5', 'MiniMax-M2.7']) {
       const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
       assert.ok(entry, `${id} entry must exist`);
       assert.equal(entry.thinkingStyle, 'openai');
       assert.equal(entry.capabilities.thinking, true);
-      assert.equal(entry.capabilities.toolCalling, true);
+      // M2.x family sits at the historical `mcpMaxTools` (60) ceiling
+      // that T21 perf testing validated.
+      assert.equal(entry.capabilities.toolCalling, 60);
     }
   });
 
-  it('M1 has no native thinking and no image input', () => {
+  it('M1 has no native thinking, no image input, and a 30-tool cap', () => {
     const m1 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M1');
     assert.ok(m1, 'M1 entry must exist');
     assert.equal(m1.thinkingStyle, 'none');
     assert.equal(m1.capabilities.thinking, false);
     assert.equal(m1.capabilities.imageInput, false);
-    assert.equal(m1.capabilities.toolCalling, true, 'M1 is still agent-capable');
+    assert.equal(m1.capabilities.toolCalling, 30, 'M1 is still agent-capable');
   });
 
-  it('every entry advertises toolCalling (agent-mode gate)', () => {
+  it('every entry advertises a truthy toolCalling (agent-mode gate)', () => {
     for (const entry of BUILT_IN_CATALOG) {
-      assert.equal(
-        entry.capabilities.toolCalling,
-        true,
-        `${entry.id} must advertise toolCalling=true; otherwise it is hidden from agent mode`,
+      const tc = entry.capabilities.toolCalling;
+      // `boolean | number` per Insiders 1.142 API — must be truthy (not
+      // `false`) so the model is not hidden from agent mode.
+      assert.ok(
+        tc === true || (typeof tc === 'number' && tc > 0),
+        `${entry.id} must advertise a truthy toolCalling; got ${String(tc)}`,
       );
     }
   });
@@ -228,6 +238,32 @@ describe('validateCatalog', () => {
     assert.equal(errors.length, 1);
     assert.equal(errors[0]?.code, 'invalid-capability');
   });
+
+  it('accepts positive-integer toolCalling caps (Agent Host API)', () => {
+    // VS Code Insiders 1.142+ permits `toolCalling: number` (per-request
+    // tool cap). The validator must accept any positive integer.
+    assert.deepEqual(
+      validateCatalog([
+        makeEntry({ id: 'a', capabilities: { toolCalling: 1, imageInput: false, thinking: false, videoInput: false } }),
+        makeEntry({ id: 'b', capabilities: { toolCalling: 128, imageInput: false, thinking: false, videoInput: false } }),
+        makeEntry({ id: 'c', capabilities: { toolCalling: true, imageInput: false, thinking: false, videoInput: false } }),
+      ]),
+      [],
+    );
+  });
+
+  it('rejects zero / negative / non-integer toolCalling caps', () => {
+    const base = (id: string, toolCalling: unknown) =>
+      makeEntry({
+        id,
+        capabilities: { toolCalling: toolCalling as never, imageInput: false, thinking: false, videoInput: false },
+      });
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const errors = validateCatalog([base('broken', bad)]);
+      assert.equal(errors.length, 1, `must reject toolCalling=${String(bad)}`);
+      assert.equal(errors[0]?.code, 'invalid-capability');
+    }
+  });
 });
 
 describe('mergeCatalog', () => {
@@ -261,6 +297,53 @@ describe('mergeCatalog', () => {
     assert.equal(m4.capabilities.toolCalling, true, 'default must force toolCalling=true');
     assert.equal(m4.capabilities.imageInput, true);
     assert.equal(m4.thinkingStyle, 'openai');
+  });
+
+  it('passes through a per-request tool cap from the live API for unknown models', () => {
+    // As of Insiders 1.142 the live `/v1/models` endpoint may report
+    // `toolCalling: <number>` to advertise the model's per-request tool
+    // cap. The merge must honour it for unknown models so the Agent Host
+    // gets the right cap without us shipping a curated entry first.
+    const live: CatalogEntry[] = [
+      {
+        id: 'MiniMax-M4-preview',
+        displayName: 'M4 Preview (MiniMax)',
+        vendor: 'minimax',
+        family: 'minimax',
+        maxInputTokens: 500_000,
+        maxOutputTokens: 8_192,
+        capabilities: { toolCalling: 200, imageInput: true, thinking: true, videoInput: false },
+        thinkingStyle: 'openai',
+        detail: 'preview',
+      },
+    ];
+    const merged = mergeCatalog(BUILT_IN_CATALOG, live);
+    const m4 = merged.find((e) => e.id === 'MiniMax-M4-preview');
+    assert.ok(m4, 'live model should be merged in');
+    assert.equal(m4.capabilities.toolCalling, 200, 'live number passes through unchanged');
+  });
+
+  it('passes through an explicit `true` toolCalling from the live API', () => {
+    // The carve-out for toolCalling also trusts `true` from the live
+    // API — it's the API's explicit confirmation that the model
+    // supports tools, no cap declared.
+    const live: CatalogEntry[] = [
+      {
+        id: 'MiniMax-M4-preview',
+        displayName: 'M4 Preview (MiniMax)',
+        vendor: 'minimax',
+        family: 'minimax',
+        maxInputTokens: 500_000,
+        maxOutputTokens: 8_192,
+        capabilities: { toolCalling: true, imageInput: false, thinking: false, videoInput: false },
+        thinkingStyle: 'none',
+        detail: 'preview',
+      },
+    ];
+    const merged = mergeCatalog(BUILT_IN_CATALOG, live);
+    const m4 = merged.find((e) => e.id === 'MiniMax-M4-preview');
+    assert.ok(m4);
+    assert.equal(m4.capabilities.toolCalling, true);
   });
 
   it('does NOT override a static entry when a live entry collides with its id', () => {
@@ -347,6 +430,115 @@ describe('mergeCatalog', () => {
     assert.equal(entry.vendor, 'minimax');
     assert.equal(entry.family, 'minimax');
     assert.equal(entry.detail, '130K ctx · 7K out');
+  });
+});
+
+describe('deprecation filter', () => {
+  it('marks exactly the M1, M2.x families and the M3.1 Flash preview id deprecated', () => {
+    const deprecated = BUILT_IN_CATALOG.filter((e) => e.deprecated === true)
+      .map((e) => e.id)
+      .sort();
+    assert.deepEqual(deprecated, [
+      'MiniMax-M1',
+      'MiniMax-M2',
+      'MiniMax-M2.5',
+      'MiniMax-M2.7',
+      'MiniMax-M3.1-Flash-Preview',
+    ]);
+  });
+
+  it('leaves M3 and M3.1-Flash current', () => {
+    for (const id of CURRENT_MODEL_IDS) {
+      const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
+      assert.ok(entry, `${id} must exist`);
+      assert.notEqual(entry?.deprecated, true);
+    }
+  });
+
+  it('RETAINS every deprecated entry — deprecation hides, never deletes', () => {
+    // A session already pinned to M2 must keep resolving, so the
+    // catalog itself is unchanged; only the picker's view is filtered.
+    assert.equal(BUILT_IN_CATALOG.length, 7);
+    assert.equal(filterDeprecated(BUILT_IN_CATALOG, false).length, 2);
+  });
+
+  it('shows only current models by default', () => {
+    const visible = filterDeprecated(BUILT_IN_CATALOG, false);
+    assert.deepEqual(visible.map((e) => e.id), ['MiniMax-M3', 'MiniMax-M3.1-Flash']);
+  });
+
+  it('shows everything when deprecated models are enabled', () => {
+    const all = filterDeprecated(BUILT_IN_CATALOG, true);
+    assert.equal(all.length, BUILT_IN_CATALOG.length);
+    // Returns the same array — enabling must not rebuild anything.
+    assert.equal(all, BUILT_IN_CATALOG);
+  });
+
+  it('reports deprecation by id for the warn-in-log path', () => {
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M2.7'), true);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M1'), true);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash'), false);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'MiniMax-M3.1-Flash-Preview'), true);
+    assert.equal(isDeprecatedModel(BUILT_IN_CATALOG, 'does-not-exist'), false);
+  });
+
+  it('keeps a deprecated entry fully usable once re-enabled', () => {
+    const m27 = filterDeprecated(BUILT_IN_CATALOG, true).find(
+      (e) => e.id === 'MiniMax-M2.7',
+    );
+    assert.ok(m27);
+    assert.equal(m27?.capabilities.toolCalling, 60);
+    assert.equal(m27?.thinkingStyle, 'openai');
+    assert.equal(m27?.maxInputTokens, 196_608);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The M3.1 Flash model id went GA as `MiniMax-M3.1-Flash`. The preview id
+// is retained as a deprecated alias so a session pinned to it keeps
+// resolving — and it maps to the GA id on the wire, so the request still
+// names a model MiniMax currently serves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('M3.1 Flash GA id', () => {
+  it('advertises the GA id, not the preview id', () => {
+    const entry = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    assert.ok(entry, 'the GA id must be in the catalog');
+    assert.equal(entry?.deprecated, undefined);
+    assert.equal(entry?.displayName, 'M3.1 Flash (MiniMax)');
+    assert.equal(entry?.thinkingStyle, 'anthropic');
+    assert.equal(entry?.capabilities.toolCalling, 128);
+  });
+
+  it('keeps the preview id as a deprecated alias pointing at the GA id', () => {
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.ok(alias, 'the preview id must still resolve');
+    assert.equal(alias?.deprecated, true);
+    assert.equal(alias?.wireId, 'MiniMax-M3.1-Flash');
+  });
+
+  it('gives the alias the same capabilities as the GA entry', () => {
+    const ga = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.deepEqual(alias?.capabilities, ga?.capabilities);
+    assert.equal(alias?.maxInputTokens, ga?.maxInputTokens);
+    assert.equal(alias?.maxOutputTokens, ga?.maxOutputTokens);
+    assert.equal(alias?.thinkingStyle, ga?.thinkingStyle);
+  });
+
+  it('lists only the GA id as current', () => {
+    assert.deepEqual([...CURRENT_MODEL_IDS].sort(), [
+      'MiniMax-M3',
+      'MiniMax-M3.1-Flash',
+    ]);
+  });
+
+  it('resolves the wire id for both the GA entry and its alias', () => {
+    const ga = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
+    const alias = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash-Preview');
+    assert.equal(wireModelId(ga), 'MiniMax-M3.1-Flash');
+    assert.equal(wireModelId(alias), 'MiniMax-M3.1-Flash');
   });
 });
 

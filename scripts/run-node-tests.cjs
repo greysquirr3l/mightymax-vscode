@@ -56,6 +56,9 @@ const EXCLUDED = new Set([
   // (the adapter imports `vscode.MarkdownString`, `vscode.ThemeColor`,
   // etc.). It runs under the stub runner, not here.
   'out/adapters/status-bar.test.js',
+  // The catalog adapter test imports `vscode` (EventEmitter plus the
+  // `mightyMax` config store) and runs under the stub runner, not here.
+  'out/adapters/catalog.test.js',
   // T36 — the generate-video tool + command tests require `vscode`
   // (the tool adapter wraps `vscode.lm.registerTool` / `LanguageModelToolResult`,
   // and the command test references `vscode.QuickPickItem`). They run

@@ -65,7 +65,15 @@ export function validateCatalog(entries: ReadonlyArray<CatalogEntry>): CatalogVa
 }
 
 function validateCapabilities(cap: ModelCapabilities): string | undefined {
-  if (typeof cap.toolCalling !== 'boolean') return 'capabilities.toolCalling must be a boolean';
+  if (
+    typeof cap.toolCalling !== 'boolean' &&
+    (typeof cap.toolCalling !== 'number' ||
+      !Number.isFinite(cap.toolCalling) ||
+      !Number.isInteger(cap.toolCalling) ||
+      cap.toolCalling < 1)
+  ) {
+    return 'capabilities.toolCalling must be a boolean or a positive integer';
+  }
   if (typeof cap.imageInput !== 'boolean') return 'capabilities.imageInput must be a boolean';
   if (typeof cap.thinking !== 'boolean') return 'capabilities.thinking must be a boolean';
   return undefined;
@@ -118,13 +126,16 @@ function formatTokenCount(tokens: number): string {
  *            chat-provider still clamps the actual request's
  *            `max_tokens` to 32K (opencode OUTPUT_TOKEN_MAX); the
  *            catalog value drives UI, not the request body.
- *  - M3.1-Flash-Preview — 1 000 000 ctx / 128 000 out, image input,
- *            tool calling, native thinking (Anthropic-style), frontier
- *            coding. Beta on the M Plan / MiniMax Code tier; served by
+ *  - M3.1-Flash — 1 000 000 ctx / 128 000 out, image input, tool
+ *            calling, native thinking (Anthropic-style), frontier
+ *            coding. GA on the M Plan / MiniMax Code tier; served by
  *            the same `minimax-m3` Anthropic sampler/thinking
  *            branches, so the id intentionally matches the existing
  *            `includes('minimax-m3')` predicates rather than spawning
  *            a new branch.
+ *  - M3.1-Flash-Preview — a deprecated alias for M3.1-Flash, kept so
+ *            a session pinned to the preview id still resolves. It
+ *            sends the GA id on the wire (`wireId`).
  *  - M2.7 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2.5 — 196 608 ctx, tool calling, OpenAI-style reasoning deltas.
  *  - M2   — 196 608 ctx, tool calling, OpenAI-style reasoning deltas,
@@ -140,15 +151,41 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // Frontier agentic model. The Agent Host's tool picker advertises
+      // this number directly (Insiders 1.142+). Verified against live
+      // requests carrying 100+ MCP + extension tools with no model-side
+      // rejection in T21 testing; cap stays at 128 to leave headroom.
+      toolCalling: 128,
       imageInput: true,
       thinking: true,
       videoInput: true,
     }),
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + video + tools + thinking',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking',
   }),
   Object.freeze({
+    id: 'MiniMax-M3.1-Flash',
+    displayName: 'M3.1 Flash (MiniMax)',
+    vendor: MINIMAX_VENDOR,
+    family: MINIMAX_FAMILY,
+    maxInputTokens: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: Object.freeze({
+      // Same frontier tier as M3; tunable `effort` parameter does not
+      // change the tool slot count.
+      toolCalling: 128,
+      imageInput: true,
+      thinking: true,
+      videoInput: true,
+    }),
+    thinkingStyle: 'anthropic',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking',
+  }),
+  Object.freeze({
+    // The GA id above replaced the preview id. The preview id is kept
+    // as a deprecated alias so a chat session pinned to it keeps
+    // resolving; `wireId` sends the current GA id on the wire so the
+    // request still names a model MiniMax serves.
     id: 'MiniMax-M3.1-Flash-Preview',
     displayName: 'M3.1 Flash Preview (MiniMax)',
     vendor: MINIMAX_VENDOR,
@@ -156,13 +193,15 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
-      toolCalling: true,
+      toolCalling: 128,
       imageInput: true,
       thinking: true,
       videoInput: true,
     }),
+    wireId: 'MiniMax-M3.1-Flash',
+    deprecated: true,
     thinkingStyle: 'anthropic',
-    detail: '1M ctx · 128K out · image + video + tools + thinking (preview)',
+    detail: '1M ctx · 128K out · image + video + tools (≤128) + thinking (alias for M3.1 Flash)',
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',
@@ -172,13 +211,22 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // M2.7 + the rest of the M2 family sit at the historical
+      // `mcpMaxTools` (default 60) ceiling that T21 perf testing
+      // validated. Conservative — bump only after confirming with
+      // a real wire request carrying >60 tools.
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
   Object.freeze({
     id: 'MiniMax-M2.5',
@@ -188,13 +236,18 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning',
   }),
   Object.freeze({
     id: 'MiniMax-M2',
@@ -204,13 +257,18 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 196_608,
     maxOutputTokens: 8_192,
     capabilities: Object.freeze({
-      toolCalling: true,
+      toolCalling: 60,
       imageInput: true,
       thinking: true,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'openai',
-    detail: '200K ctx · 8K out · image + tools + reasoning · structured outputs',
+    detail: '200K ctx · 8K out · image + tools (≤60) + reasoning · structured outputs',
   }),
   Object.freeze({
     id: 'MiniMax-M1',
@@ -220,18 +278,87 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     maxInputTokens: 32_768,
     maxOutputTokens: 4_096,
     capabilities: Object.freeze({
-      toolCalling: true,
+      // Smallest / oldest model — 30 tool slots matches its 32K
+      // context. Anything larger than ~30 tools blows past the
+      // available schema-budget once the system prompt and tool
+      // descriptions are added.
+      toolCalling: 30,
       imageInput: false,
       thinking: false,
       videoInput: false,
     }),
+
+    // MiniMax is winding down the M2.x family (M1 already went).
+    // Hidden from the picker by default; still reachable via
+    // `mightyMax.showDeprecatedModels` and by id.
+    deprecated: true,
     thinkingStyle: 'none',
-    detail: '32K ctx · 4K out · tools',
+    detail: '32K ctx · 4K out · tools (≤30)',
   }),
 ]);
 
 /** Helper used by the test suite to assert token-budget formatting. */
 export const _internal = { formatTokenCount, DEFAULT_MAX_OUTPUT_TOKENS };
+
+// -----------------------------------------------------------------------------
+// Deprecation filtering
+// -----------------------------------------------------------------------------
+
+/**
+ * The models MiniMax still considers current. Everything else in
+ * `BUILT_IN_CATALOG` is retained but carries `deprecated: true`.
+ */
+export const CURRENT_MODEL_IDS: ReadonlyArray<string> = Object.freeze([
+  'MiniMax-M3',
+  'MiniMax-M3.1-Flash',
+]);
+
+/**
+ * Decide which catalog entries the chat model picker should show.
+ *
+ * Deprecation hides an entry from the picker; it never deletes it.
+ * `getModel` still resolves deprecated ids, so a request that names one
+ * still works.
+ *
+ * It does, however, remove the model from VS Code's model list — the
+ * host builds that list from the models the extension advertises — so
+ * a chat session pinned to a hidden model is reset to the default
+ * model rather than continuing on the old one. Flipping this filter
+ * off puts the model back.
+ *
+ * Pure: no I/O, no vscode. The caller reads the setting and passes it
+ * in.
+ */
+export function filterDeprecated(
+  entries: ReadonlyArray<CatalogEntry>,
+  showDeprecated: boolean,
+): ReadonlyArray<CatalogEntry> {
+  if (showDeprecated) return entries;
+  return entries.filter((entry) => entry.deprecated !== true);
+}
+
+/** True when `id` names a model MiniMax has wound down. */
+export function isDeprecatedModel(
+  entries: ReadonlyArray<CatalogEntry>,
+  id: string,
+): boolean {
+  return entries.some((entry) => entry.id === id && entry.deprecated === true);
+}
+
+/**
+ * The model id to put on the wire for a catalog entry.
+ *
+ * Most entries are their own wire id. An entry that stands in for
+ * another model — the `MiniMax-M3.1-Flash-Preview` alias for the GA
+ * `MiniMax-M3.1-Flash` — carries a `wireId`, so a session pinned to
+ * the old id keeps sending a model MiniMax currently serves.
+ *
+ * Pure: no I/O, no vscode.
+ */
+export function wireModelId(entry: CatalogEntry | undefined): string | undefined {
+  if (entry === undefined) return undefined;
+  return entry.wireId ?? entry.id;
+}
 
 // -----------------------------------------------------------------------------
 // Live-merge
@@ -301,9 +428,14 @@ export function normalizeModelId(raw: string): string {
  *  2. Live entries that collide with a static id are dropped (we trust
  *     the curated entry's token budgets and thinking style).
  *  3. Live entries missing capabilities or thinking style are filled
- *     with `defaults` so the model is still advertised correctly
- *     (in particular, `toolCalling: true` is applied so the model is
- *     NOT silently hidden from agent mode).
+ *     with `defaults` so the model is still advertised correctly.
+ *     `toolCalling: true` is applied when the live entry is missing
+ *     the field entirely so the model is NOT silently hidden from
+ *     agent mode (AGENTS.md invariant). An explicit `false` from the
+ *     live API is still overridden to the default `true` for the
+ *     same reason; `true` and a positive integer are passed through
+ *     so the per-request tool cap reported by the live API reaches
+ *     VS Code's Agent Host.
  *  4. The merged list is stable-ordered: static entries first (in their
  *     declared order), then live entries sorted alphabetically by id.
  *
@@ -364,10 +496,33 @@ function fillLiveDefaults(
   // model silently hide it from agent mode (AGENTS.md: a model
   // WITHOUT `toolCalling` is hidden). Erring on the side of
   // advertising unknown models as agent-capable is the safer default.
+  //
+  // Tool-calling gets a carve-out: as of the Agent Host API change in
+  // VS Code Insiders 1.142 the `toolCalling` field is `boolean | number`,
+  // where a number is the model's per-request tool cap. If the live API
+  // reports a number (or `true`) for an unknown model we trust it — only
+  // an explicit `false` triggers the agent-mode-visibility override,
+  // because that is the one value that breaks AGENTS.md's invariant.
+  const liveToolCalling = raw.capabilities?.toolCalling;
+  let toolCalling: boolean | number;
+  if (liveToolCalling === false) {
+    toolCalling = defaults.capabilities.toolCalling;
+  } else if (
+    typeof liveToolCalling === 'number' &&
+    Number.isInteger(liveToolCalling) &&
+    liveToolCalling > 0
+  ) {
+    toolCalling = liveToolCalling;
+  } else if (typeof liveToolCalling === 'boolean') {
+    toolCalling = liveToolCalling;
+  } else {
+    toolCalling = defaults.capabilities.toolCalling;
+  }
+
   const thinkingStyle: ThinkingStyle = defaults.thinkingStyle;
   const thinking = thinkingStyle !== 'none';
   const capabilities: ModelCapabilities = {
-    toolCalling: defaults.capabilities.toolCalling,
+    toolCalling,
     imageInput: defaults.capabilities.imageInput,
     thinking,
     videoInput: defaults.capabilities.videoInput,
@@ -389,5 +544,8 @@ function fillLiveDefaults(
     capabilities,
     thinkingStyle,
     detail,
+    // Preserved so an entry that stands in for another model keeps
+    // sending that model, whatever path it came in by.
+    ...(raw.wireId !== undefined ? { wireId: raw.wireId } : {}),
   };
 }

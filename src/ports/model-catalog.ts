@@ -48,17 +48,66 @@ export interface ModelInfo {
   thinkingStyle: ThinkingStyle;
   /** Short, human-readable subtitle shown in the picker ("200K ctx, 8K out"). */
   detail: string;
+  /**
+   * True when the model is past its deprecation window and is hidden
+   * from the chat model picker unless `mightyMax.showDeprecatedModels`
+   * is enabled.
+   *
+   * The entry is RETAINED, not removed: a hidden model still resolves
+   * by id and keeps all of its metadata. MiniMax is winding down the
+   * M1 and M2.x families; hiding them steers new users to M3.
+   *
+   * Note that hiding a model DOES remove it from VS Code's model list:
+   * the host builds that list from what the extension advertises, and
+   * a chat session pinned to a model that leaves the list is reset to
+   * the default model. The setting brings the model back.
+   */
+  deprecated?: boolean;
+  /**
+   * The id to send to MiniMax when this entry is selected.
+   *
+   * Normally the same as `id`. It differs only for an entry that
+   * stands in for another model — `MiniMax-M3.1-Flash-Preview` is kept
+   * as a deprecated alias for the GA `MiniMax-M3.1-Flash`, so a
+   * session pinned to the old id still sends a model MiniMax serves.
+   */
+  wireId?: string;
 }
 
 export interface ModelCapabilities {
-  toolCalling: boolean;
+  /**
+   * Tool-calling support + per-request cap.
+   *
+   * - `true`  — the model supports tool calling with no declared cap.
+   *             VS Code / the Agent Host decide on its own how many
+   *             tools to ship per request.
+   * - `false` — the model cannot call tools (hidden from agent mode).
+   * - `number` — the model supports tool calling AND this is the
+   *             maximum number of tools the model can consume in a
+   *             single request. VS Code's Agent Host reads this value
+   *             to truncate the tool list it hands the provider
+   *             (`LanguageModelChatCapabilities.toolCalling` in
+   *             `vscode.d.ts` is typed `boolean | number` and
+   *             documents the number as "the maximum number of tools
+   *             that can be provided in a request"). Declaring a true
+   *             ceiling prevents the payload from blowing past the
+   *             model's actual limit when the workspace exposes 100+
+   *             tools (Copilot + MCP + extension LM tools combined).
+   *
+   * Per MiniMax's published context windows and the tool-call
+   * benchmarks cited in the M3 function-call guide, the curated
+   * defaults are M3/M3.1-Flash → 128, M2.x → 60, M1 → 30.
+   * `true` is reserved for the live `/v1/models` fallback path
+   * (unknown future models).
+   */
+  toolCalling: boolean | number;
   imageInput: boolean;
   /** Native thinking blocks (M3 exposes these on the Anthropic-compatible endpoint). */
   thinking: boolean;
   /**
    * Video input via Anthropic-compatible content blocks.
    *
-   * Only `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` accept it —
+   * Only `MiniMax-M3` and `MiniMax-M3.1-Flash` accept it —
    * the MiniMax docs state "The M2.7, M2.5, M2.1, and M2 series
    * support text and tool-call content blocks only", so sending a
    * video part to an M2.x model is a guaranteed rejection. The

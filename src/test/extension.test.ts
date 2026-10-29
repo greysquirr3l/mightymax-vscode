@@ -3,13 +3,16 @@ import * as vscode from 'vscode';
 
 const EXTENSION_ID = 'greysquirr3l.mighty-max';
 const MINIMAX_VENDOR = 'minimax';
+/**
+ * The models the picker always advertises. The wound-down families
+ * (M1, M2.x) and the `MiniMax-M3.1-Flash-Preview` alias are hidden
+ * unless `mightyMax.showDeprecatedModels` is enabled, so they are
+ * not part of this list — see the catalog unit tests for the
+ * filtering rules.
+ */
 const EXPECTED_MODEL_IDS = [
-  'MiniMax-M1',
-  'MiniMax-M2',
-  'MiniMax-M2.5',
-  'MiniMax-M2.7',
   'MiniMax-M3',
-  'MiniMax-M3.1-Flash-Preview',
+  'MiniMax-M3.1-Flash',
 ];
 
 describe('Extension smoke', () => {
@@ -69,20 +72,28 @@ describe('Manifest contract', () => {
     assert.equal(properties.apiKey.secret, true);
   });
 
-  it('package.json sets engines.vscode >= 1.104.0', async () => {
+  it('package.json sets engines.vscode >= 1.125.0', async () => {
     const extension = vscode.extensions.getExtension(EXTENSION_ID);
     assert.ok(extension, 'extension not found');
     const engines = extension.packageJSON.engines as Record<string, string>;
     const versionRange = engines.vscode;
     assert.ok(versionRange, 'engines.vscode is missing');
-    // Strip leading ^ or ~ and require the major version to be 1.104 or later.
+    // Strip leading ^ or ~ and require the major version to be 1.125 or later.
+    //
+    // The floor used to be asserted at 1.104, which is the version that
+    // finalized the Language Model Chat Provider API — but the manifest
+    // declares `^1.125.0` to match `@types/vscode@1.125.0`. A floor
+    // assertion looser than the declared one does not guard the
+    // declared one: lowering the manifest to 1.104 would have kept this
+    // test green while shipping an extension that no longer installs on
+    // the versions it claims to support.
     const match = /(\d+)\.(\d+)/.exec(versionRange);
     assert.ok(match, `engines.vscode is not a valid range: ${versionRange}`);
     const major = Number(match[1]);
     const minor = Number(match[2]);
     assert.ok(
-      major > 1 || (major === 1 && minor >= 104),
-      `engines.vscode must be >= 1.104.0, got ${versionRange}`,
+      major > 1 || (major === 1 && minor >= 125),
+      `engines.vscode must be >= 1.125.0, got ${versionRange}`,
     );
   });
 

@@ -85,10 +85,12 @@ export class CatalogAdapter implements ModelCatalog {
   }
 
   getModel(id: string): Promise<ModelInfo | undefined> {
-    // Deliberately resolves against the UNFILTERED catalog. A chat
-    // session already pinned to a deprecated model must keep working
-    // after that model leaves the picker — hiding it is a display
-    // decision, not a revocation.
+    // Deliberately resolves against the UNFILTERED catalog, so a
+    // request that names a deprecated model still works. Note that
+    // hiding a model also removes it from VS Code's own model list,
+    // so a chat session pinned to one is reset to the default model
+    // by the host — this lookup is what keeps the id resolvable, not
+    // what keeps the session on it.
     return Promise.resolve(this.computeMerged().find((entry) => entry.id === id));
   }
 

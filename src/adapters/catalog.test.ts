@@ -77,7 +77,7 @@ describe('CatalogAdapter — deprecation filtering', () => {
       // The picker hides it...
       const listed = await adapter.listModels();
       ok(!listed.some((m) => m.id === 'MiniMax-M2.7'), 'must be hidden by default');
-      // ...but an open session pinned to it keeps working.
+      // ...but a request that names it still resolves.
       const resolved = await adapter.getModel('MiniMax-M2.7');
       ok(resolved, 'a hidden model must still resolve by id');
       equal(resolved?.thinkingStyle, 'openai');

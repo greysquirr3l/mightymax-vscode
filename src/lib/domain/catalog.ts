@@ -316,11 +316,15 @@ export const CURRENT_MODEL_IDS: ReadonlyArray<string> = Object.freeze([
 /**
  * Decide which catalog entries the chat model picker should show.
  *
- * Deprecation hides an entry from the picker; it never deletes it. A
- * model that is already selected in an open chat session keeps
- * working, and `getModel` still resolves deprecated ids, so flipping
- * this filter off is a display change rather than a capability
- * change.
+ * Deprecation hides an entry from the picker; it never deletes it.
+ * `getModel` still resolves deprecated ids, so a request that names one
+ * still works.
+ *
+ * It does, however, remove the model from VS Code's model list — the
+ * host builds that list from the models the extension advertises — so
+ * a chat session pinned to a hidden model is reset to the default
+ * model rather than continuing on the old one. Flipping this filter
+ * off puts the model back.
  *
  * Pure: no I/O, no vscode. The caller reads the setting and passes it
  * in.

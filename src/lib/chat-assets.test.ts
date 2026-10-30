@@ -71,7 +71,7 @@ describe('parseFrontmatter', () => {
     const md = [
       '---',
       'name: max-planner',
-      'model: M3.1 Flash (MiniMax) (minimax)',
+      'model: M3.1 Flash (minimax)',
       '---',
       '',
       'Body.',
@@ -80,7 +80,7 @@ describe('parseFrontmatter', () => {
     const result = parseFrontmatter(md);
     equal(result.kind, 'success');
     if (result.kind !== 'success') return;
-    equal(result.fields.model, 'M3.1 Flash (MiniMax) (minimax)');
+    equal(result.fields.model, 'M3.1 Flash (minimax)');
   });
 
   it('returns a typed error when the closing --- is missing', () => {
@@ -138,7 +138,7 @@ describe('validateAgentFrontmatter', () => {
     const errors = validateAgentFrontmatter({
       name: 'max-planner',
       description: 'A read-only planner running on M3.1 Flash.',
-      model: 'M3.1 Flash (MiniMax) (minimax)',
+      model: 'M3.1 Flash (minimax)',
       tools: ['codebase', 'search'],
     });
     deepStrictEqual(errors, []);

@@ -353,7 +353,7 @@ describe('ChatProvider.provideLanguageModelChatInformation', () => {
 describe('ChatProvider — deprecated model warning', () => {
   const DEPRECATED_M2_7: ModelInfo = {
     id: 'MiniMax-M2.7',
-    displayName: 'M2.7 (MiniMax)',
+    displayName: 'M2.7',
     vendor: 'minimax',
     family: 'minimax',
     maxInputTokens: 196_608,

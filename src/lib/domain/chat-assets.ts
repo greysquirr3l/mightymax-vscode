@@ -29,7 +29,7 @@ import { BUILT_IN_CATALOG } from './catalog.js';
 /**
  * Scalar or array frontmatter value. We support the two shapes VS Code's
  * agent/prompt frontmatter uses: bare strings (`name: foo`,
- * `model: M3.1 Flash (MiniMax) (minimax)`) and flow arrays
+ * `model: M3.1 Flash (minimax)`) and flow arrays
  * (`tools: ['a', 'b']`).
  */
 export type FrontmatterValue = string | ReadonlyArray<string>;
@@ -165,7 +165,7 @@ export function parseFrontmatter(markdown: string): FrontmatterParseResult {
 
 /**
  * Recognize the two value shapes VS Code's frontmatter uses:
- *   - bare scalar:    `M3.1 Flash (MiniMax) (minimax)`
+ *   - bare scalar:    `M3.1 Flash (minimax)`
  *   - flow array:     `['codebase', 'search']`
  * Bare scalars with stray brackets inside (impossible in the supported
  * schema) fall through as plain strings.
@@ -235,9 +235,12 @@ const KNOWN_AGENT_MODELS: ReadonlySet<string> = new Set(BUILT_IN_CATALOG.map(qua
  * error beyond a `[chat] Node of the models "…" not found` line in the
  * log.
  *
- * For our vendor that means `M3.1 Flash (MiniMax)` is registered as
- * `M3.1 Flash (MiniMax) (minimax)` — the display name already carries
- * its own parenthetical, so the qualified name carries two.
+ * For our vendor that means the model named `M3.1 Flash` by the
+ * `minimax` vendor is referenced as `M3.1 Flash (minimax)`. The
+ * display names deliberately carry no vendor suffix of their own —
+ * VS Code appends the provider label to the model name in the picker
+ * (`Mighty Max (MiniMax)/M3.1 Flash`), so repeating it inside the
+ * name only produced stutter.
  */
 export function qualifiedModelName(entry: {
   readonly displayName: string;

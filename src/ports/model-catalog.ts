@@ -31,7 +31,7 @@ export type ThinkingStyle = 'anthropic' | 'openai' | 'none';
 export interface ModelInfo {
   /** Stable MiniMax model id used in API requests (e.g. "MiniMax-M3"). */
   id: string;
-  /** Human-readable name shown in the picker (e.g. "M3 (MiniMax)"). */
+  /** Human-readable name shown in the picker (e.g. "M3.1 Flash"). */
   displayName: string;
   /** Vendor id used in the `languageModelChatProviders` contribution. */
   vendor: string;

@@ -1,7 +1,7 @@
 ---
 name: max-planner
 description: Read-only implementation planner running on MiniMax M3.1 Flash. Explores the codebase and produces a step-by-step plan without editing files.
-model: M3.1 Flash (MiniMax) (minimax)
+model: M3.1 Flash (minimax)
 tools: ['search/codebase', 'search', 'search/usages', 'read/problems', 'changes', 'web/fetch']
 ---
 

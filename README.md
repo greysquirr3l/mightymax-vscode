@@ -377,7 +377,7 @@ Mighty Max ships with opt-in chat customizations that are surfaced
 alongside your personal agents in the VS Code Chat panel:
 
 - **`max-planner`** — a read-only implementation planner pinned to
-  `M3.1 Flash (MiniMax) (minimax)`. It explores the codebase with
+  `M3.1 Flash (minimax)`. It explores the codebase with
   `search/codebase`, `search/usages`, `read/problems`, and `changes`,
   then returns a numbered implementation plan (files to change, risks,
   open questions). It never edits files or runs commands. Use it when
@@ -412,14 +412,14 @@ All assets live under `chat/agents/`, `chat/prompts/`, and
 `/review-code`, and all 12 review skills ship in the current release.
 
 The agents' `model:` pins use VS Code's **qualified name** format —
-`"<model name> (<vendor>)"`, e.g. `M3.1 Flash (MiniMax) (minimax)`.
-That is the only form VS Code resolves: it looks the authored string up
-against `"${name} (${vendor})"`, so a bare display name never matches.
-An unmatched pin is dropped *silently* — the agent then runs on
-whatever model you last selected, with only a line in the VS Code log
-to show for it. The bundled pins are therefore derived from the model
-catalog and checked by the manifest tests, so a model rename cannot
-quietly unpin them.
+`"<model name> (<vendor>)"`, e.g. `M3.1 Flash (minimax)`. That is the
+only form VS Code resolves: it looks the authored string up against
+`"${name} (${vendor})"`, so a bare display name never matches. An
+unmatched pin is dropped *silently* — the agent then runs on whatever
+model you last selected, with only a line in the VS Code log to show
+for it. The bundled pins are therefore derived from the model catalog
+and checked by the manifest tests, so a model rename cannot quietly
+unpin them.
 
 Mighty Max deliberately does **not** ship a `chatInstructions`
 contribution. `chatInstructions` injects prompt text into every

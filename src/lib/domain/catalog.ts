@@ -156,7 +156,7 @@ function formatTokenCount(tokens: number): string {
 export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   Object.freeze({
     id: 'MiniMax-M3',
-    displayName: 'M3 (MiniMax)',
+    displayName: 'M3',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 872_000,
@@ -176,7 +176,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   }),
   Object.freeze({
     id: 'MiniMax-M3.1-Flash',
-    displayName: 'M3.1 Flash (MiniMax)',
+    displayName: 'M3.1 Flash',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 872_000,
@@ -198,7 +198,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     // resolving; `wireId` sends the current GA id on the wire so the
     // request still names a model MiniMax serves.
     id: 'MiniMax-M3.1-Flash-Preview',
-    displayName: 'M3.1 Flash Preview (MiniMax)',
+    displayName: 'M3.1 Flash Preview',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 872_000,
@@ -216,7 +216,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   }),
   Object.freeze({
     id: 'MiniMax-M2.7',
-    displayName: 'M2.7 (MiniMax)',
+    displayName: 'M2.7',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 196_608,
@@ -241,7 +241,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   }),
   Object.freeze({
     id: 'MiniMax-M2.5',
-    displayName: 'M2.5 (MiniMax)',
+    displayName: 'M2.5',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 196_608,
@@ -262,7 +262,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   }),
   Object.freeze({
     id: 'MiniMax-M2',
-    displayName: 'M2 (MiniMax)',
+    displayName: 'M2',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 196_608,
@@ -283,7 +283,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   }),
   Object.freeze({
     id: 'MiniMax-M1',
-    displayName: 'M1 (MiniMax)',
+    displayName: 'M1',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
     maxInputTokens: 32_768,

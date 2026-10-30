@@ -13,7 +13,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `M3.1 Flash (MiniMax)`, the catalog *display name*. VS Code does not
   resolve an agent's `model:` attribute that way: it compares the
   authored string against the model's **qualified name** —
-  `"<model name> (<vendor>)"`, i.e. `M3.1 Flash (MiniMax) (minimax)` —
+  `"<model name> (<vendor>)"`, i.e. `M3.1 Flash (minimax)` —
   and drops anything that does not match. The pin therefore never
   applied, and both agents ran on whatever model the user last
   selected, with only `[chat] Node of the models "M3.1 Flash (MiniMax)"
@@ -36,10 +36,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **The bundled agents now pin `M3.1 Flash (MiniMax) (minimax)` instead
-  of `M3 (MiniMax)`.** `max-planner` and `max-review` have been pinned
-  to M3 since they shipped, so every run of either agent used M3 even
-  after `MiniMax-M3.1-Flash` went GA in the catalog. MiniMax released
+- **The model names no longer repeat the vendor.** Every catalog entry
+  dropped its `(MiniMax)` suffix — `M3 (MiniMax)` is now `M3`,
+  `M3.1 Flash (MiniMax)` is now `M3.1 Flash`, and so on for M3.1 Flash
+  Preview, M2.7, M2.5, M2, and M1. VS Code shows the provider's own
+  display name next to the model, so the suffix was stutter; it also
+  made every qualified name double up, `M3.1 Flash (MiniMax) (minimax)`.
+
+  Model **ids** are unchanged (`MiniMax-M3.1-Flash`, `MiniMax-M3`, …),
+  so nothing that references a model by id — a chat session, the
+  `minimax:MiniMax-M3` form, the utility-model override — is affected.
+  The agents' `model:` pins move with the rename, to
+  `M3.1 Flash (minimax)`.
+
+- **The bundled agents now pin M3.1 Flash instead of M3.**
+  `max-planner` and `max-review` have been pinned to M3 since they
+  shipped, so every run of either agent used M3 even after
+  `MiniMax-M3.1-Flash` went GA in the catalog. MiniMax released
   `MiniMax-M3.1-Flash` on 2026-10-19: the same 1M-context frontier
   multimodal coding tier, with tunable thinking depth
   (`output_config.effort`, controlled by `mightyMax.m31ThinkingEffort`)

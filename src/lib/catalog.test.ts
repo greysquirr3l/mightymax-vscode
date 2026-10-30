@@ -300,7 +300,7 @@ describe('mergeCatalog', () => {
     const live: CatalogEntry[] = [
       {
         id: 'MiniMax-M4-preview',
-        displayName: 'M4 Preview (MiniMax)',
+        displayName: 'M4 Preview',
         vendor: 'minimax',
         family: 'minimax',
         maxInputTokens: 500_000,
@@ -328,7 +328,7 @@ describe('mergeCatalog', () => {
     const live: CatalogEntry[] = [
       {
         id: 'MiniMax-M4-preview',
-        displayName: 'M4 Preview (MiniMax)',
+        displayName: 'M4 Preview',
         vendor: 'minimax',
         family: 'minimax',
         maxInputTokens: 500_000,
@@ -351,7 +351,7 @@ describe('mergeCatalog', () => {
     const live: CatalogEntry[] = [
       {
         id: 'MiniMax-M4-preview',
-        displayName: 'M4 Preview (MiniMax)',
+        displayName: 'M4 Preview',
         vendor: 'minimax',
         family: 'minimax',
         maxInputTokens: 500_000,
@@ -384,7 +384,7 @@ describe('mergeCatalog', () => {
     const merged = mergeCatalog(BUILT_IN_CATALOG, live);
     const m3 = merged.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3);
-    assert.equal(m3.displayName, 'M3 (MiniMax)');
+    assert.equal(m3.displayName, 'M3');
     assert.equal(m3.maxInputTokens, 872_000);
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
@@ -527,7 +527,7 @@ describe('M3.1 Flash GA id', () => {
     const entry = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
     assert.ok(entry, 'the GA id must be in the catalog');
     assert.equal(entry?.deprecated, undefined);
-    assert.equal(entry?.displayName, 'M3.1 Flash (MiniMax)');
+    assert.equal(entry?.displayName, 'M3.1 Flash');
     assert.equal(entry?.thinkingStyle, 'anthropic');
     assert.equal(entry?.capabilities.toolCalling, 128);
   });
@@ -601,7 +601,7 @@ describe('export sanity', () => {
 function makeEntry(overrides: Partial<CatalogEntry>): CatalogEntry {
   return {
     id: overrides.id ?? 'MiniMax-test',
-    displayName: overrides.displayName ?? 'test (MiniMax)',
+    displayName: overrides.displayName ?? 'test model',
     vendor: 'minimax',
     family: 'minimax',
     maxInputTokens: overrides.maxInputTokens ?? 8_192,

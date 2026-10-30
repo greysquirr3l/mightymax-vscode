@@ -120,9 +120,20 @@ function formatTokenCount(tokens: number): string {
  *
  *  - M3   — 1 000 000 ctx / 128 000 out, image input, tool calling,
  *            native thinking (Anthropic-style thinking blocks).
- *            Token budgets mirror the canonical `models.dev` entry for
- *            the `minimax` provider so VS Code's context-window widget
- *            and the utility-model budget math stay accurate. The
+ *            The context window is what MiniMax documents (1M for
+ *            both M3 and M3.1-Flash); the output budget is the piece
+ *            MiniMax does NOT document, so we advertise a
+ *            conservative 128K and RESERVE it from the window
+ *            (`maxInputTokens + maxOutputTokens` is what VS Code
+ *            shows, and what the first-party BYOK providers compute
+ *            as `contextWindow - maxOutputTokens`). The M2.x entries
+ *            below already follow that shape (196 608 + 8 192 =
+ *            204 800); M3/M3.1-Flash now match it (872 000 + 128 000
+ *            = 1 000 000) instead of over-reporting a 1.128M window.
+ *            `models.dev` currently lists a 524 288 output cap for
+ *            these two models, but MiniMax publishes no output cap
+ *            at all and that figure is an aggregator's estimate —
+ *            advertising it would imply a 1.5M window. The
  *            chat-provider still clamps the actual request's
  *            `max_tokens` to 32K (opencode OUTPUT_TOKEN_MAX); the
  *            catalog value drives UI, not the request body.
@@ -148,7 +159,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     displayName: 'M3 (MiniMax)',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
-    maxInputTokens: 1_000_000,
+    maxInputTokens: 872_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
       // Frontier agentic model. The Agent Host's tool picker advertises
@@ -168,7 +179,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     displayName: 'M3.1 Flash (MiniMax)',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
-    maxInputTokens: 1_000_000,
+    maxInputTokens: 872_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
       // Same frontier tier as M3; tunable `effort` parameter does not
@@ -190,7 +201,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     displayName: 'M3.1 Flash Preview (MiniMax)',
     vendor: MINIMAX_VENDOR,
     family: MINIMAX_FAMILY,
-    maxInputTokens: 1_000_000,
+    maxInputTokens: 872_000,
     maxOutputTokens: 128_000,
     capabilities: Object.freeze({
       toolCalling: 128,

@@ -108,32 +108,53 @@ describe('BUILT_IN_CATALOG', () => {
     }
   });
 
-  it('M3 advertises a 1M / 128K token budget matching models.dev', () => {
-    // models.dev's "minimax" provider entry for MiniMax-M3 lists
-    //   limit.context = 1_000_000
-    //   limit.output  = 128_000
-    // The static catalog must mirror these so VS Code's
-    // context-window widget and utility-model sizing stay
-    // accurate. The chat-provider still clamps the actual
-    // request's max_tokens to 32K (opencode OUTPUT_TOKEN_MAX);
-    // the catalog value drives the picker UI and the
-    // utility-model budget math, not the request body.
+  it('M3 advertises a 1M context window split into input + output', () => {
+    // MiniMax documents ONE number for these models: a 1,000,000-token
+    // context window. It publishes no output cap. VS Code derives the
+    // window it shows from `maxInputTokens + maxOutputTokens`, and the
+    // first-party BYOK providers reserve the output budget from the
+    // window (`contextWindow - maxOutputTokens`). So the catalog
+    // advertises 128K of output and the remaining 872K of input:
+    // the two sum to the documented 1M window, and no more.
+    //
+    // `models.dev` currently lists a 524,288 output cap for M3, but
+    // MiniMax never documents one and that figure is an aggregator's
+    // estimate; taking it at face value would advertise a 1.5M
+    // window. The chat-provider still clamps the actual request's
+    // max_tokens to 32K (opencode OUTPUT_TOKEN_MAX); the catalog
+    // value drives the picker UI and the utility-model budget math,
+    // not the request body.
     const m3 = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3, 'M3 entry must exist');
-    assert.equal(m3.maxInputTokens, 1_000_000);
     assert.equal(m3.maxOutputTokens, 128_000);
+    assert.equal(m3.maxInputTokens, 872_000);
+    assert.equal(m3.maxInputTokens + m3.maxOutputTokens, 1_000_000);
+  });
+
+  it('every 1M-window entry sums to exactly 1,000,000 tokens', () => {
+    // The M2.x entries already reserved their output budget from the
+    // window (196 608 + 8 192 = 204 800). The M3 family now follows
+    // the same shape, so VS Code's context-window widget never
+    // over-reports the window MiniMax actually serves.
+    for (const entry of BUILT_IN_CATALOG.filter((e) => e.maxInputTokens >= 800_000)) {
+      assert.equal(
+        entry.maxInputTokens + entry.maxOutputTokens,
+        1_000_000,
+        `${entry.id} must advertise the documented 1M window, not more`,
+      );
+    }
   });
 
   it('M3.1-Flash advertises image + tools + thinking on the Anthropic endpoint', () => {
     // MiniMax-M3.1-Flash is the GA frontier multimodal Flash model.
-    // It mirrors M3's 1M / 128K token budget and ships on the
+    // It mirrors M3's token budget and ships on the
     // Anthropic-compatible endpoint only, so it picks up the same
     // Anthropic thinking block + cache_control wiring. The id keeps
     // the `minimax-m3` prefix so the Anthropic `includes('minimax-m3')`
     // match in `getModelSampler` and `getThinkingConfig` picks it up.
     const flash = BUILT_IN_CATALOG.find((e) => e.id === 'MiniMax-M3.1-Flash');
     assert.ok(flash, 'M3.1-Flash entry must exist');
-    assert.equal(flash.maxInputTokens, 1_000_000);
+    assert.equal(flash.maxInputTokens, 872_000);
     assert.equal(flash.maxOutputTokens, 128_000);
     assert.equal(flash.capabilities.toolCalling, 128);
     assert.equal(flash.capabilities.imageInput, true);
@@ -364,7 +385,7 @@ describe('mergeCatalog', () => {
     const m3 = merged.find((e) => e.id === 'MiniMax-M3');
     assert.ok(m3);
     assert.equal(m3.displayName, 'M3 (MiniMax)');
-    assert.equal(m3.maxInputTokens, 1_000_000);
+    assert.equal(m3.maxInputTokens, 872_000);
     assert.equal(m3.thinkingStyle, 'anthropic');
   });
 

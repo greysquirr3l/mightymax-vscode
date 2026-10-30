@@ -377,12 +377,12 @@ Mighty Max ships with opt-in chat customizations that are surfaced
 alongside your personal agents in the VS Code Chat panel:
 
 - **`max-planner`** — a read-only implementation planner pinned to
-  `M3 (MiniMax)`. It explores the codebase with `search/codebase`,
+  `M3.1 Flash (MiniMax)`. It explores the codebase with `search/codebase`,
   `search/usages`, `read/problems`, and `changes`, then returns a
   numbered implementation plan (files to change, risks, open
   questions). It never edits files or runs commands. Use it when you
   want a second pair of eyes before starting a non-trivial change.
-- **`max-review`** — an M3-pinned maintainer review
+- **`max-review`** — an M3.1-Flash-pinned maintainer review
   agent with a fixed `🔴/🟡/✅` output contract, a `≥80%`-confidence
   rule, and a hard cap of ten findings per run. It dispatches to
   language- and topic-specific skills (next bullet) instead of trying

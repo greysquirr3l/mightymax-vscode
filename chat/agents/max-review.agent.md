@@ -1,7 +1,7 @@
 ---
 name: max-review
-description: Maintainer-grade code review on MiniMax M3. High-confidence findings only — security, correctness, architecture — with OWASP-aware skills for .NET/C#, Rust, Go, TypeScript, Python, Kotlin, Swift, PowerShell, Bash, and GitHub Actions.
-model: M3 (MiniMax)
+description: Maintainer-grade code review on MiniMax M3.1 Flash. High-confidence findings only — security, correctness, architecture — with OWASP-aware skills for .NET/C#, Rust, Go, TypeScript, Python, Kotlin, Swift, PowerShell, Bash, and GitHub Actions.
+model: M3.1 Flash (MiniMax)
 tools: ['search/codebase', 'search', 'search/usages', 'read/problems', 'changes', 'web/githubRepo']
 ---
 

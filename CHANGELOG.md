@@ -6,6 +6,25 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The bundled agents now pin `M3.1 Flash (MiniMax)` instead of
+  `M3 (MiniMax)`.** `max-planner` and `max-review` have been pinned to
+  M3 since they shipped, so every run of either agent used M3 even
+  after `MiniMax-M3.1-Flash` went GA in the catalog. MiniMax released
+  `MiniMax-M3.1-Flash` on 2026-10-19: the same 1M-context frontier
+  multimodal coding tier, with tunable thinking depth
+  (`output_config.effort`, controlled by `mightyMax.m31ThinkingEffort`)
+  and roughly half M3's per-token price. Both pins move to it.
+
+  The pin string is the catalog *display name* — the same string VS
+  Code's agent-file editor writes — not a model id, so it stays
+  `M3.1 Flash (MiniMax)` and not `minimax/MiniMax-M3.1-Flash`. The
+  manifest test now guards both agents' pins against drift, and
+  asserts the pinned model is still a live (non-deprecated) catalog
+  entry: hiding a deprecated model drops it from the host's model
+  cache, which silently resets a pinned session to the default model.
+
 ## [0.11.0] — 2026-10-29
 
 Minor release. Declares a real per-request tool cap for every model so

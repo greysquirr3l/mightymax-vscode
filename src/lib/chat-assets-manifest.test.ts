@@ -25,6 +25,7 @@ import { basename, dirname, join, relative, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import type { FrontmatterValue } from './domain/chat-assets.js';
 
+import { BUILT_IN_CATALOG } from './domain/catalog.js';
 import {
   parseFrontmatter,
   validateAgentFrontmatter,
@@ -198,8 +199,18 @@ const FORBIDDEN_EDIT_TOOL_IDS: ReadonlyArray<string> = ['edit', 'applyPatch'];
 const FORBIDDEN_TERMINAL_TOOL_IDS: ReadonlyArray<string> = ['runCommands', 'runInTerminal'];
 
 const MAX_REVIEW_AGENT_PATH = 'chat/agents/max-review.agent.md';
+const MAX_PLANNER_AGENT_PATH = 'chat/agents/max-planner.agent.md';
 const REVIEW_CODE_PROMPT_PATH = 'chat/prompts/review-code.prompt.md';
 const MAX_REVIEW_BODY_WORD_CEILING = 2_500;
+
+/**
+ * The model every bundled agent pins to.
+ *
+ * The pin is a catalog DISPLAY NAME — the string VS Code's agent-file
+ * editor writes into the `model:` field — not a model id. It is
+ * validated against `KNOWN_AGENT_MODELS` in `domain/chat-assets.ts`.
+ */
+const PINNED_AGENT_MODEL = 'M3.1 Flash (MiniMax)';
 
 function countWords(body: string): number {
   // Plain whitespace split; the body is natural-language prose, so
@@ -241,12 +252,12 @@ describe('T24 — max-review agent + /review-code prompt', () => {
     assert.deepEqual(errors, [], `${MAX_REVIEW_AGENT_PATH}: ${JSON.stringify(errors)}`);
   });
 
-  it('max-review is model-pinned to M3 (MiniMax) — the catalog display name', () => {
+  it('max-review is model-pinned to the catalog display name', () => {
     assert.ok(maxReview, `${MAX_REVIEW_AGENT_PATH} must exist on disk`);
     assert.equal(
       maxReview.fields.model,
-      'M3 (MiniMax)',
-      'max-review must be pinned to the M3 (MiniMax) catalog display name',
+      PINNED_AGENT_MODEL,
+      `max-review must be pinned to the ${PINNED_AGENT_MODEL} catalog display name`,
     );
   });
 
@@ -310,6 +321,43 @@ describe('T24 — max-review agent + /review-code prompt', () => {
       reviewCode.agent,
       'max-review',
       '/review-code must delegate to the `max-review` agent',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bundled agent model pins
+//
+// Both bundled agents pin a model so picking `max-planner` or
+// `max-review` gives the same backend regardless of what the user last
+// selected in the picker. The pin is a catalog display name (the string
+// the agent-file editor writes), and it must name a model that is still
+// VISIBLE in the picker: hiding a deprecated model drops it from the
+// host's model cache, which resets a session pinned to it back to the
+// default — so a pin to a hidden model silently degrades instead of
+// failing loudly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bundled agent model pins', () => {
+  for (const path of [MAX_PLANNER_AGENT_PATH, MAX_REVIEW_AGENT_PATH]) {
+    it(`${path} is pinned to ${PINNED_AGENT_MODEL}`, () => {
+      assert.ok(existsSync(join(root, path)), `${path} must exist on disk`);
+      const agent = loadAgent(path);
+      assert.equal(
+        agent.fields.model,
+        PINNED_AGENT_MODEL,
+        `${path} must be pinned to the ${PINNED_AGENT_MODEL} catalog display name`,
+      );
+    });
+  }
+
+  it('the pinned model names a live (non-deprecated) catalog entry', () => {
+    const entry = BUILT_IN_CATALOG.find((e) => e.displayName === PINNED_AGENT_MODEL);
+    assert.ok(entry, `${PINNED_AGENT_MODEL} must exist in the catalog`);
+    assert.notEqual(
+      entry.deprecated,
+      true,
+      `${PINNED_AGENT_MODEL} is deprecated; a pinned deprecated model is dropped from the host model cache and the session falls back to the default model`,
     );
   });
 });

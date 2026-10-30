@@ -6,24 +6,67 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bundled agents' `model:` pins never matched a model — they were
+  dropped silently.** `max-planner` and `max-review` pinned
+  `M3.1 Flash (MiniMax)`, the catalog *display name*. VS Code does not
+  resolve an agent's `model:` attribute that way: it compares the
+  authored string against the model's **qualified name** —
+  `"<model name> (<vendor>)"`, i.e. `M3.1 Flash (MiniMax) (minimax)` —
+  and drops anything that does not match. The pin therefore never
+  applied, and both agents ran on whatever model the user last
+  selected, with only `[chat] Node of the models "M3.1 Flash (MiniMax)"
+  not found` in the VS Code log to show for it.
+
+  Both agents now pin the qualified name, and the domain validator
+  only accepts qualified names so a bare display name cannot creep
+  back in. The manifest test derives the expected pin from the model
+  catalog rather than hardcoding it, so renaming the model or the
+  vendor fails the build instead of quietly unpinning every agent.
+
+  This also corrects the claim below that the pin "is the catalog
+  display name — the same string VS Code's agent-file editor writes".
+  For the default (VS Code) agent harness the editor writes the
+  *qualified* name; only the GitHub Copilot harness uses the
+  provider-qualified runtime id (`MiniMax-M3.1-Flash`). The Copilot
+  harness resolves a BYOK model by id and excludes BYOK models from its
+  name-alias matching, so a display-name pin could not have resolved
+  there either.
+
 ### Changed
 
-- **The bundled agents now pin `M3.1 Flash (MiniMax)` instead of
-  `M3 (MiniMax)`.** `max-planner` and `max-review` have been pinned to
-  M3 since they shipped, so every run of either agent used M3 even
+- **The bundled agents now pin `M3.1 Flash (MiniMax) (minimax)` instead
+  of `M3 (MiniMax)`.** `max-planner` and `max-review` have been pinned
+  to M3 since they shipped, so every run of either agent used M3 even
   after `MiniMax-M3.1-Flash` went GA in the catalog. MiniMax released
   `MiniMax-M3.1-Flash` on 2026-10-19: the same 1M-context frontier
   multimodal coding tier, with tunable thinking depth
   (`output_config.effort`, controlled by `mightyMax.m31ThinkingEffort`)
   and roughly half M3's per-token price. Both pins move to it.
 
-  The pin string is the catalog *display name* — the same string VS
-  Code's agent-file editor writes — not a model id, so it stays
-  `M3.1 Flash (MiniMax)` and not `minimax/MiniMax-M3.1-Flash`. The
-  manifest test now guards both agents' pins against drift, and
+  The manifest test now guards both agents' pins against drift, and
   asserts the pinned model is still a live (non-deprecated) catalog
   entry: hiding a deprecated model drops it from the host's model
   cache, which silently resets a pinned session to the default model.
+
+- **M3 and M3.1-Flash advertise a 1M context window instead of
+  1.128M.** MiniMax documents one number for these models — a
+  1,000,000-token context window — and publishes no output cap at
+  all. VS Code derives the window it shows from `maxInputTokens +
+  maxOutputTokens`, so advertising 1M of input *plus* 128K of output
+  claimed a 1.128M window that MiniMax does not serve. The catalog
+  now reserves the output budget from the window, the way the M2.x
+  entries already did (196 608 + 8 192 = 204 800): 872 000 input +
+  128 000 output = 1 000 000.
+
+  `models.dev` currently lists a 524,288-token output cap for these
+  two models, which is where the drift came from — but MiniMax
+  documents no output cap and that figure is an aggregator's estimate;
+  taking it at face value would advertise a 1.5M window. The
+  chat-provider still clamps the actual request's `max_tokens` to 32K
+  (opencode `OUTPUT_TOKEN_MAX`); the catalog value drives the picker
+  UI and the context-window widget, not the request body.
 
 ## [0.11.0] — 2026-10-29
 

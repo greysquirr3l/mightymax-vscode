@@ -1,5 +1,9 @@
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as vscode from 'vscode';
+
+import { parseFrontmatter } from '../lib/domain/chat-assets.js';
 
 const EXTENSION_ID = 'greysquirr3l.mighty-max';
 const MINIMAX_VENDOR = 'minimax';
@@ -164,6 +168,39 @@ describe('Language model catalog (T02)', () => {
       m3.maxInputTokens > m2.maxInputTokens,
       `M3 (${m3.maxInputTokens}) must have a larger input budget than M2 (${m2.maxInputTokens})`,
     );
+  });
+});
+
+describe('Bundled agent model pins', () => {
+  it('each shipped agent file pins the live qualified name VS Code resolves models by', async () => {
+    const models = await vscode.lm.selectChatModels({ vendor: MINIMAX_VENDOR });
+    const flash = models.find((m) => m.id === 'MiniMax-M3.1-Flash');
+    if (!flash) {
+      // No API key configured: the host resolves the vendor silently and
+      // gets an empty list back, so there is no live registration to
+      // compare against. The catalog-derived contract is covered by the
+      // unit tests; this check needs a configured key to mean anything.
+      return;
+    }
+
+    // VS Code resolves an agent's `model:` attribute by qualified name —
+    // `ILanguageModelChatMetadata.matchesQualifiedName` compares the
+    // authored string against `${metadata.name} (${metadata.vendor})`.
+    // A bare display name never matches and is dropped silently, so the
+    // agent falls back to whatever model the user last selected.
+    const qualifiedName = `${flash.name} (${flash.vendor})`;
+
+    for (const agentFile of ['max-planner', 'max-review']) {
+      const agentPath = join(__dirname, '..', '..', 'chat', 'agents', `${agentFile}.agent.md`);
+      const parsed = parseFrontmatter(readFileSync(agentPath, 'utf8'));
+      assert.equal(parsed.kind, 'success', `${agentFile}.agent.md frontmatter must parse`);
+      if (parsed.kind !== 'success') return;
+      assert.equal(
+        parsed.fields.model,
+        qualifiedName,
+        `${agentFile}.agent.md must pin the qualified name "${qualifiedName}"`,
+      );
+    }
   });
 });
 

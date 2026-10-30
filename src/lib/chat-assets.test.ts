@@ -16,6 +16,7 @@ import { describe, it } from 'node:test';
 
 import {
   parseFrontmatter,
+  qualifiedModelName,
   validateAgentFrontmatter,
   validatePromptFrontmatter,
   validateSkillFrontmatter,
@@ -67,12 +68,19 @@ describe('parseFrontmatter', () => {
   });
 
   it('preserves parens and spaces in display-name values', () => {
-    const md = ['---', 'name: max-planner', 'model: M3 (MiniMax)', '---', '', 'Body.'].join('\n');
+    const md = [
+      '---',
+      'name: max-planner',
+      'model: M3.1 Flash (MiniMax) (minimax)',
+      '---',
+      '',
+      'Body.',
+    ].join('\n');
 
     const result = parseFrontmatter(md);
     equal(result.kind, 'success');
     if (result.kind !== 'success') return;
-    equal(result.fields.model, 'M3 (MiniMax)');
+    equal(result.fields.model, 'M3.1 Flash (MiniMax) (minimax)');
   });
 
   it('returns a typed error when the closing --- is missing', () => {
@@ -129,8 +137,8 @@ describe('validateAgentFrontmatter', () => {
   it('passes for the canonical max-planner shape', () => {
     const errors = validateAgentFrontmatter({
       name: 'max-planner',
-      description: 'A read-only planner running on M3.',
-      model: 'M3 (MiniMax)',
+      description: 'A read-only planner running on M3.1 Flash.',
+      model: 'M3.1 Flash (MiniMax) (minimax)',
       tools: ['codebase', 'search'],
     });
     deepStrictEqual(errors, []);
@@ -176,7 +184,7 @@ describe('validateAgentFrontmatter', () => {
     );
   });
 
-  it('reports agent-unknown-model when model is not a known display name', () => {
+  it('reports agent-unknown-model when model is not a known qualified name', () => {
     const errors = validateAgentFrontmatter({
       name: 'max-planner',
       description: 'Read-only planner.',
@@ -188,14 +196,31 @@ describe('validateAgentFrontmatter', () => {
     );
   });
 
-  it('accepts every display name shipped in BUILT_IN_CATALOG', () => {
+  it('accepts every qualified model name shipped in BUILT_IN_CATALOG', () => {
+    for (const entry of BUILT_IN_CATALOG) {
+      const errors = validateAgentFrontmatter({
+        name: 'x',
+        description: 'd',
+        model: qualifiedModelName(entry),
+      });
+      deepStrictEqual(errors, [], `qualified name "${qualifiedModelName(entry)}" should be accepted`);
+    }
+  });
+
+  it('rejects a bare display name — VS Code resolves model pins by qualified name', () => {
+    // The bare display name never matches VS Code's lookup
+    // (`<name> (<vendor>)`), so the pin is ignored and the agent silently
+    // runs on whatever model the user last selected.
     for (const entry of BUILT_IN_CATALOG) {
       const errors = validateAgentFrontmatter({
         name: 'x',
         description: 'd',
         model: entry.displayName,
       });
-      deepStrictEqual(errors, [], `display name "${entry.displayName}" should be accepted`);
+      ok(
+        errors.some((e: AgentValidationError) => e.code === 'agent-unknown-model'),
+        `bare display name "${entry.displayName}" must be rejected`,
+      );
     }
   });
 });

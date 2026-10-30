@@ -29,7 +29,8 @@ import { BUILT_IN_CATALOG } from './catalog.js';
 /**
  * Scalar or array frontmatter value. We support the two shapes VS Code's
  * agent/prompt frontmatter uses: bare strings (`name: foo`,
- * `model: M3 (MiniMax)`) and flow arrays (`tools: ['a', 'b']`).
+ * `model: M3.1 Flash (MiniMax) (minimax)`) and flow arrays
+ * (`tools: ['a', 'b']`).
  */
 export type FrontmatterValue = string | ReadonlyArray<string>;
 
@@ -164,7 +165,7 @@ export function parseFrontmatter(markdown: string): FrontmatterParseResult {
 
 /**
  * Recognize the two value shapes VS Code's frontmatter uses:
- *   - bare scalar:    `M3 (MiniMax)`
+ *   - bare scalar:    `M3.1 Flash (MiniMax) (minimax)`
  *   - flow array:     `['codebase', 'search']`
  * Bare scalars with stray brackets inside (impossible in the supported
  * schema) fall through as plain strings.
@@ -218,7 +219,32 @@ const KNOWN_AGENT_TOOLS: ReadonlyArray<string> = [
   'applyPatch',
 ];
 
-const KNOWN_AGENT_MODELS: ReadonlySet<string> = new Set(BUILT_IN_CATALOG.map((e) => e.displayName));
+const KNOWN_AGENT_MODELS: ReadonlySet<string> = new Set(BUILT_IN_CATALOG.map(qualifiedModelName));
+
+/**
+ * The string VS Code uses to name a model in a prompt or agent file:
+ * `"<model name> (<vendor>)"`.
+ *
+ * This is NOT the bare catalog display name. VS Code resolves an agent's
+ * `model:` attribute through `ILanguageModelChatMetadata.matchesQualifiedName`,
+ * which compares the authored string against
+ * `` `${metadata.name} (${metadata.vendor})` `` — the model's display
+ * name plus the vendor id it was registered under. A bare display name
+ * never matches, and an unmatched reference is ignored *silently*: the
+ * agent falls back to whatever model the user last selected, with no
+ * error beyond a `[chat] Node of the models "…" not found` line in the
+ * log.
+ *
+ * For our vendor that means `M3.1 Flash (MiniMax)` is registered as
+ * `M3.1 Flash (MiniMax) (minimax)` — the display name already carries
+ * its own parenthetical, so the qualified name carries two.
+ */
+export function qualifiedModelName(entry: {
+  readonly displayName: string;
+  readonly vendor: string;
+}): string {
+  return `${entry.displayName} (${entry.vendor})`;
+}
 
 /**
  * Validate an agent's parsed frontmatter fields. Returns a (possibly
@@ -226,8 +252,8 @@ const KNOWN_AGENT_MODELS: ReadonlySet<string> = new Set(BUILT_IN_CATALOG.map((e)
  * which rule failed; consumers can branch on it for clearer messages.
  *
  * Required: name (non-empty), description (non-empty).
- * Optional but validated: model (must be a known display name when
- * present), tools (must be an array of strings when present).
+ * Optional but validated: model (must be a known qualified model name
+ * when present), tools (must be an array of strings when present).
  */
 export function validateAgentFrontmatter(
   fields: Readonly<Record<string, FrontmatterValue>>,
@@ -274,7 +300,7 @@ export function validateAgentFrontmatter(
   if (model && !KNOWN_AGENT_MODELS.has(model)) {
     errors.push({
       code: 'agent-unknown-model',
-      message: `Agent \`model: ${model}\` does not match any catalog display name (${[...KNOWN_AGENT_MODELS].join(', ')}).`,
+      message: `Agent \`model: ${model}\` does not match any catalog qualified name (${[...KNOWN_AGENT_MODELS].join(', ')}). Use "<model name> (<vendor>)" — VS Code resolves the pin by qualified name only.`,
     });
   }
 

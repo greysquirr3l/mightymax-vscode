@@ -25,9 +25,10 @@ import { basename, dirname, join, relative, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import type { FrontmatterValue } from './domain/chat-assets.js';
 
-import { BUILT_IN_CATALOG } from './domain/catalog.js';
+import { BUILT_IN_CATALOG, type CatalogEntry } from './domain/catalog.js';
 import {
   parseFrontmatter,
+  qualifiedModelName,
   validateAgentFrontmatter,
   validatePromptFrontmatter,
   validateSkillFrontmatter,
@@ -206,11 +207,25 @@ const MAX_REVIEW_BODY_WORD_CEILING = 2_500;
 /**
  * The model every bundled agent pins to.
  *
- * The pin is a catalog DISPLAY NAME — the string VS Code's agent-file
- * editor writes into the `model:` field — not a model id. It is
- * validated against `KNOWN_AGENT_MODELS` in `domain/chat-assets.ts`.
+ * The pin is a QUALIFIED NAME — `"<model name> (<vendor>)"`, the format
+ * VS Code resolves an agent's `model:` field with. A bare display name
+ * is looked up verbatim and never matches, so the pin would be ignored
+ * and the agent would silently run on whatever model the user last
+ * selected. It is validated against `KNOWN_AGENT_MODELS` in
+ * `domain/chat-assets.ts`.
+ *
+ * Derived from the catalog rather than hardcoded: renaming the model or
+ * the vendor must fail this test instead of silently unpinning every
+ * bundled agent.
  */
-const PINNED_AGENT_MODEL = 'M3.1 Flash (MiniMax)';
+const PINNED_AGENT_MODEL = qualifiedModelName(catalogEntry('MiniMax-M3.1-Flash'));
+
+/** Look a catalog entry up by id, failing loudly when it is missing. */
+function catalogEntry(id: string): CatalogEntry {
+  const entry = BUILT_IN_CATALOG.find((e) => e.id === id);
+  if (!entry) throw new Error(`${id} must exist in the catalog`);
+  return entry;
+}
 
 function countWords(body: string): number {
   // Plain whitespace split; the body is natural-language prose, so
@@ -330,12 +345,14 @@ describe('T24 — max-review agent + /review-code prompt', () => {
 //
 // Both bundled agents pin a model so picking `max-planner` or
 // `max-review` gives the same backend regardless of what the user last
-// selected in the picker. The pin is a catalog display name (the string
-// the agent-file editor writes), and it must name a model that is still
-// VISIBLE in the picker: hiding a deprecated model drops it from the
-// host's model cache, which resets a session pinned to it back to the
-// default — so a pin to a hidden model silently degrades instead of
-// failing loudly.
+// selected in the picker. The pin is a QUALIFIED NAME —
+// `"<model name> (<vendor>)"` — because that is the only form VS Code
+// resolves an agent's `model:` field with; a bare display name is
+// looked up verbatim, never matches, and is dropped silently. The
+// pinned model must also still be VISIBLE in the picker: hiding a
+// deprecated model drops it from the host's model cache, which resets
+// a session pinned to it back to the default — so a pin to a hidden
+// model silently degrades instead of failing loudly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('bundled agent model pins', () => {
@@ -346,14 +363,26 @@ describe('bundled agent model pins', () => {
       assert.equal(
         agent.fields.model,
         PINNED_AGENT_MODEL,
-        `${path} must be pinned to the ${PINNED_AGENT_MODEL} catalog display name`,
+        `${path} must be pinned to the ${PINNED_AGENT_MODEL} qualified name`,
       );
     });
   }
 
+  it('the pin is a qualified name, not a bare display name', () => {
+    const entry = catalogEntry('MiniMax-M3.1-Flash');
+    assert.notEqual(
+      PINNED_AGENT_MODEL,
+      entry.displayName,
+      'a bare display name never resolves in VS Code — the pin must carry the vendor suffix',
+    );
+    assert.ok(
+      PINNED_AGENT_MODEL.endsWith(`(${entry.vendor})`),
+      `the pin must end with the vendor suffix "(${entry.vendor})"`,
+    );
+  });
+
   it('the pinned model names a live (non-deprecated) catalog entry', () => {
-    const entry = BUILT_IN_CATALOG.find((e) => e.displayName === PINNED_AGENT_MODEL);
-    assert.ok(entry, `${PINNED_AGENT_MODEL} must exist in the catalog`);
+    const entry = catalogEntry('MiniMax-M3.1-Flash');
     assert.notEqual(
       entry.deprecated,
       true,

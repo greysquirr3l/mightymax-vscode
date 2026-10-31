@@ -6,6 +6,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Open VSX publishing is dropped, not deferred.** The `greysquirr3l`
+  namespace was granted on Open VSX on 2026-07-24, so the release
+  workflow's "namespace pending, re-enable when granted" note had been
+  stale for months. We publish to the VS Code Marketplace only, so the
+  commented-out `ovsx publish` step is gone rather than left as a
+  breadcrumb to uncomment.
+
+  This supersedes the 0.4.0 note that re-enabling "only requires
+  dropping a token into the secret, no workflow change" — the step no
+  longer exists, so re-enabling is now a deliberate change with a
+  dependency to pin, not a one-liner.
+
 ## [0.12.0] — 2026-10-31
 
 Minor release. Fixes the bundled agents' `model:` pins — they have never

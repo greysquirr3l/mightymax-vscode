@@ -52,5 +52,8 @@ the release trigger.
 - Tag `main`, never the release branch. Prior releases tag a commit
   that is an ancestor of `main`; tagging the branch would mean
   `main` does not contain the version users are running.
-- Open VSX publishing is disabled pending the `greysquirr3l`
-  namespace grant. The Marketplace is the only live channel.
+- Open VSX publishing is deliberately not done — we ship to the VS
+  Code Marketplace only. The `greysquirr3l` Open VSX namespace was
+  granted on 2026-07-24, so this is a standing decision, not a
+  blocked approval; do not add an `ovsx` publish step or an
+  `OVSX_PAT` secret without first changing it.

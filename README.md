@@ -80,8 +80,8 @@ code --install-extension mighty-max.vsix
 1. Open the Chat panel (View → Chat or Ctrl+Alt+I / Cmd+Alt+I)
 2. Click the model picker dropdown
 3. Select a MiniMax model:
-   - `minimax:MiniMax-M3.1-Flash` — Frontier Flash (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
-   - `minimax:MiniMax-M3` — Latest, with thinking blocks (1M context)
+   - `M3.1 Flash` — Frontier Flash (1M context, multimodal, tunable thinking). M Plan / MiniMax Code tier.
+   - `M3` — Latest, with thinking blocks (1M context)
 
    MiniMax is winding down the M1 and M2.x families, so they are hidden
    from the picker by default. Hiding a model removes it from VS Code's
@@ -239,7 +239,7 @@ Set this in your VS Code settings:
 
 ```json
 {
-  "chat.utilityModel": "minimax:MiniMax-M3"
+  "chat.utilityModel": "minimax/MiniMax-M3"
 }
 ```
 

@@ -6,6 +6,34 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-31
+
+Minor release. Fixes the bundled agents' `model:` pins — they have never
+resolved — and renames the catalog's model display names, which is a
+breaking change for anything that spells out a qualified name.
+
+### Breaking
+
+- **The model display names no longer repeat the vendor, so every
+  qualified name changed.** `M3 (MiniMax)` is now `M3`, `M3.1 Flash
+  (MiniMax)` is now `M3.1 Flash`, and so on for M3.1 Flash Preview,
+  M2.7, M2.5, M2, and M1. VS Code shows the provider's own display
+  name next to the model, so the suffix was stutter; it also made every
+  qualified name double up, `M3.1 Flash (MiniMax) (minimax)`.
+
+  A qualified name is `"<model name> (<vendor>)"` — it is what VS Code
+  matches an agent's `model:` attribute against, and the only form that
+  resolves. **If you pinned one of these models in your own agent file,
+  update the pin** to the new name (`M3 (minimax)`, `M3.1 Flash
+  (minimax)`, …). A pin that no longer matches is dropped *silently*:
+  the agent then runs on whatever model you last selected, with only a
+  line in the VS Code log to show for it.
+
+  Model **ids** are unchanged (`MiniMax-M3.1-Flash`, `MiniMax-M3`, …).
+  Anything that references a model by id — a chat session, the
+  `minimax/MiniMax-M3` form, the utility-model override — is
+  unaffected.
+
 ### Fixed
 
 - **The bundled agents' `model:` pins never matched a model — they were
@@ -34,6 +62,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   name-alias matching, so a display-name pin could not have resolved
   there either.
 
+- **The README documented `chat.utilityModel` in a form VS Code does
+  not accept.** It showed `"minimax:MiniMax-M3"` — colon-separated —
+  where the setting is slash-separated, `"minimax/MiniMax-M3"`. The
+  value is written in that form by the `Mighty Max: Configure Utility
+  Models` command, so copying the README's version left the setting
+  pointing at nothing.
+
 ### Changed
 
 - **The model names no longer repeat the vendor.** Every catalog entry
@@ -43,10 +78,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   display name next to the model, so the suffix was stutter; it also
   made every qualified name double up, `M3.1 Flash (MiniMax) (minimax)`.
 
-  Model **ids** are unchanged (`MiniMax-M3.1-Flash`, `MiniMax-M3`, …),
-  so nothing that references a model by id — a chat session, the
-  `minimax:MiniMax-M3` form, the utility-model override — is affected.
-  The agents' `model:` pins move with the rename, to
+  This is a breaking change for qualified names — see **Breaking**
+  above. Model **ids** are unchanged (`MiniMax-M3.1-Flash`,
+  `MiniMax-M3`, …), so nothing that references a model by id — a chat
+  session, the `minimax/MiniMax-M3` form, the utility-model override —
+  is affected. The agents' `model:` pins move with the rename, to
   `M3.1 Flash (minimax)`.
 
 - **The bundled agents now pin M3.1 Flash instead of M3.**

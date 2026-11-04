@@ -1,6 +1,8 @@
 /**
  * T35 - Pure domain tests for MCP tool discovery (search + load).
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 
@@ -8,12 +10,12 @@ import {
   buildSearchToolDescriptors,
   findLiveTool,
   handleMcpSearchTools,
+  isMcpServerTool,
+  MCP_SEARCH_LIMIT_DESCRIPTION,
+  oneLine,
   MCP_LOAD_TOOL,
   MCP_SEARCH_TOOLS_TOOL,
-  parseMcpName,
   renderMcpLoadResult,
-  toolsForServer,
-  uniqueMcpServers,
   validateMcpLoad,
   type LiveMcpToolInfo,
 } from './domain/mcp-search-tools.js';
@@ -55,75 +57,6 @@ const FIXTURES: ReadonlyArray<LiveMcpToolInfo> = [
     inputSchema: { type: 'object' },
   },
 ];
-
-describe('parseMcpName', () => {
-  it('splits at the first underscore (server is a single token)', () => {
-    deepStrictEqual(parseMcpName('mcp_github_list_issues'), {
-      server: 'github',
-      tool: 'list_issues',
-    });
-  });
-
-  it('handles multi-word tool names with internal underscores', () => {
-    deepStrictEqual(parseMcpName('mcp_github_add_comment_to_pending_review'), {
-      server: 'github',
-      tool: 'add_comment_to_pending_review',
-    });
-  });
-
-  it('handles server-only names (mcp_X with no tool separator)', () => {
-    deepStrictEqual(parseMcpName('mcp_something'), { server: 'something', tool: '' });
-  });
-
-  it('rejects non-mcp names', () => {
-    ok(parseMcpName('run_in_terminal') === undefined);
-    ok(parseMcpName('not_mcp_anything') === undefined);
-    ok(parseMcpName('mcp_') === undefined);
-  });
-
-  it('rejects names with non-snake-case server segments', () => {
-    // mcp_my-server_list has a hyphen in the server portion,
-    // which is not a valid snake_case identifier.
-    ok(parseMcpName('mcp_my-server_list') === undefined);
-  });
-});
-
-describe('uniqueMcpServers', () => {
-  it('returns the deduped, sorted server list', () => {
-    const servers = uniqueMcpServers(FIXTURES);
-    deepStrictEqual([...servers].sort(), [...servers]);
-    deepStrictEqual(servers, ['clickup', 'github', 'weather']);
-  });
-
-  it('returns an empty list when no MCP tools are loaded', () => {
-    deepStrictEqual(
-      uniqueMcpServers([{ name: 'run_in_terminal', description: '', inputSchema: {} }]),
-      [],
-    );
-  });
-});
-
-describe('toolsForServer', () => {
-  it('returns the matching tools sorted by name', () => {
-    const tools = toolsForServer(FIXTURES, 'github');
-    deepStrictEqual(
-      tools.map((t) => t.name),
-      [
-        'mcp_github_add_comment_to_pending_review',
-        'mcp_github_create_issue',
-        'mcp_github_list_issues',
-      ],
-    );
-  });
-
-  it('returns an empty list for an unknown server', () => {
-    deepStrictEqual(toolsForServer(FIXTURES, 'does_not_exist'), []);
-  });
-
-  it('returns an empty list for the empty server', () => {
-    deepStrictEqual(toolsForServer(FIXTURES, ''), []);
-  });
-});
 
 describe('findLiveTool', () => {
   it('finds a tool by exact name', () => {
@@ -267,8 +200,8 @@ describe('validateMcpLoad', () => {
     const result = validateMcpLoad({ tool: 'mcp_uninstalled_server_tool' }, { tools: FIXTURES });
     strictEqual(result.ok, false);
     ok(result.error!.text.includes('not currently loaded'));
-    ok(result.error!.text.includes('Available servers: clickup, github, weather'));
     ok(result.error!.text.includes('mcp_search_tools'));
+    ok(!result.error!.text.includes('Available servers'));
   });
 
   it('accepts an empty input object', () => {
@@ -290,5 +223,117 @@ describe('renderMcpLoadResult', () => {
     ok(text.includes('mcp_github_list_issues'));
     ok(text.includes('call_xyz'));
     ok(text.includes('[{"id":1,"title":"hello"}]'));
+  });
+});
+
+// ─── #109: our own discovery tools are not MCP server tools ────────────────
+
+describe('discovery tools are excluded from the live MCP set (#109)', () => {
+  const own: ReadonlyArray<LiveMcpToolInfo> = [
+    { name: 'mcp_search_tools', description: 'Search the MCP tools', inputSchema: {} },
+    { name: 'mcp_load', description: 'Invoke one MCP tool by exact name', inputSchema: {} },
+  ];
+
+  it('isMcpServerTool rejects the two discovery tools and non-mcp names', () => {
+    strictEqual(isMcpServerTool('mcp_github_list_issues'), true);
+    strictEqual(isMcpServerTool('mcp_search_tools'), false);
+    strictEqual(isMcpServerTool('mcp_load'), false);
+    strictEqual(isMcpServerTool('run_in_terminal'), false);
+  });
+
+  it('search never returns them, even if the inventory contains them', () => {
+    const result = handleMcpSearchTools(
+      { query: 'search the loaded tools for a tool I need' },
+      { tools: [...own, ...FIXTURES] },
+    );
+    ok(!result.text.includes('mcp_search_tools --'));
+    ok(!result.text.includes('mcp_load --'));
+  });
+
+  it('mcp_load refuses to load itself or the search tool', () => {
+    for (const name of ['mcp_load', 'mcp_search_tools']) {
+      const r = validateMcpLoad({ tool: name }, { tools: [...own, ...FIXTURES] });
+      strictEqual(r.ok, false, name);
+      ok(r.error!.text.includes('discovery tool'));
+    }
+  });
+});
+
+// ─── #110: hyphenated and underscored server ids ───────────────────────────
+
+describe('server ids with hyphens and underscores (#110)', () => {
+  const tools: ReadonlyArray<LiveMcpToolInfo> = [
+    { name: 'mcp_sequential-th_sequentialthinking', description: 'Step by step reasoning', inputSchema: {} },
+    { name: 'mcp_github_enterprise_list_issues', description: 'List enterprise issues', inputSchema: {} },
+  ];
+
+  it('finds a tool on a hyphenated server (it used to vanish from inventory)', () => {
+    const r = handleMcpSearchTools({ query: 'step by step reasoning' }, { tools });
+    ok(r.text.includes('mcp_sequential-th_sequentialthinking'));
+  });
+
+  it('never claims a server count, which the tool names cannot determine', () => {
+    const r = handleMcpSearchTools({ query: 'zzzzqx' }, { tools });
+    ok(r.text.includes('among 2 loaded MCP tools'));
+    ok(!r.text.includes('server'));
+  });
+
+  it('loads a hyphenated-server tool by exact name', () => {
+    strictEqual(validateMcpLoad({ tool: 'mcp_sequential-th_sequentialthinking' }, { tools }).ok, true);
+  });
+});
+
+// ─── #111: multi-line descriptions cannot forge result entries ─────────────
+
+describe('descriptions are rendered on one bounded line (#111)', () => {
+  const numbered = [
+    'Resolves a library name.',
+    '',
+    'Selection Process:',
+    '1. Analyze the query',
+    '2. Return the most relevant match',
+  ].join('\n');
+
+  it('oneLine collapses whitespace and newlines', () => {
+    strictEqual(oneLine('a\n\n  b\t c'), 'a b c');
+    strictEqual(oneLine('   '), '(no description)');
+  });
+
+  it('oneLine truncates long descriptions with an ellipsis', () => {
+    const out = oneLine('word '.repeat(200));
+    ok(out.length <= 200);
+    ok(out.endsWith('…'));
+  });
+
+  it('a numbered list inside a description adds no extra numbered result lines', () => {
+    const tools: ReadonlyArray<LiveMcpToolInfo> = [
+      { name: 'mcp_ctx_resolve', description: numbered, inputSchema: {} },
+      { name: 'mcp_ctx_other', description: 'Resolve things', inputSchema: {} },
+    ];
+    const r = handleMcpSearchTools({ query: 'resolve' }, { tools });
+    const numberedLines = r.text.split('\n').filter((l) => /^\d+\. /.test(l));
+    strictEqual(numberedLines.length, 2);
+    ok(numberedLines.every((l) => l.includes(' -- ')));
+  });
+});
+
+// ─── H2: runtime schema and package.json manifest agree ────────────────────
+
+describe('mcp_search_tools manifest matches the runtime descriptor', () => {
+  it('has the same properties, types, required list and limit text', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'),
+    ) as { contributes: { languageModelTools: Array<{ name: string; inputSchema: Record<string, unknown> }> } };
+    const entry = manifest.contributes.languageModelTools.find((t) => t.name === MCP_SEARCH_TOOLS_TOOL);
+    ok(entry, 'package.json must declare mcp_search_tools');
+    const runtime = buildSearchToolDescriptors().find((d) => d.name === MCP_SEARCH_TOOLS_TOOL)!;
+    const m = entry.inputSchema;
+    deepStrictEqual(m['required'], runtime.inputSchema['required']);
+    strictEqual(m['additionalProperties'], runtime.inputSchema['additionalProperties']);
+    const mp = m['properties'] as Record<string, { type: string; description: string }>;
+    const rp = runtime.inputSchema.properties as Record<string, { type: string; description: string }>;
+    deepStrictEqual(Object.keys(mp).sort(), Object.keys(rp).sort());
+    for (const key of Object.keys(rp)) strictEqual(mp[key]?.type, rp[key]?.type, key);
+    strictEqual(mp['limit']?.description, MCP_SEARCH_LIMIT_DESCRIPTION);
   });
 });

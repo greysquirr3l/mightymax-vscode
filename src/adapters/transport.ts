@@ -12,8 +12,6 @@ import {
   type MiniMaxWireToolCall,
 } from '../ports/minimax-client.js';
 import { sanitizeAnthropicSchema } from '../lib/domain/anthropic-transform.js';
-import { createHash } from 'node:crypto';
-
 import { RequestRateLimiter } from '../lib/domain/rate-limiter.js';
 import { patchMediaBlocks, type UploadableMedia } from '../lib/domain/files-api.js';
 import { formatCaptureLine, type StreamCapture } from './stream-capture.js';
@@ -863,10 +861,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         if (signal.aborted) {
           throw new MiniMaxClientError('abort', 'request aborted', { cause: signal.reason });
         }
-        const paceMs = this.rateLimiter.reserve(
-          createHash('sha256').update(apiKey).digest('hex'),
-          this.requestsPerMinute?.() ?? 0,
-        );
+        // The key only indexes an in-memory bucket map; it is never logged.
+        const paceMs = this.rateLimiter.reserve(apiKey, this.requestsPerMinute?.() ?? 0);
         if (paceMs > 0) {
           logger.info('Pacing request to stay under the per-key rate limit', { paceMs });
           await sleepUnlessAborted(paceMs, signal);

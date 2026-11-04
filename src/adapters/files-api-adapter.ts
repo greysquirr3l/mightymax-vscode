@@ -59,9 +59,12 @@ export class FilesApiUploader {
     signal?: AbortSignal,
   ): Promise<string | undefined> {
     const baseUrl = this.options.baseUrl().replace(/\/+$/, '');
-    const cacheKey = createHash('sha256')
-      .update(`${baseUrl}\0${apiKey}\0${media.purpose}\0${media.mediaType}\0${media.data}`)
+    // Only the media content is hashed (a cache fingerprint, not a
+    // secret); the key and endpoint scope the entry as plain string parts.
+    const contentHash = createHash('sha256')
+      .update(`${media.purpose}\0${media.mediaType}\0${media.data}`)
       .digest('hex');
+    const cacheKey = `${baseUrl}\0${apiKey}\0${contentHash}`;
 
     const cached = this.cache.get(cacheKey);
     if (cached !== undefined && cached.expiresAt > this.now()) return cached.fileId;

@@ -42,7 +42,7 @@
  */
 import type { KeySlot } from './key-pool.js';
 import type { TokenPlanUsage } from './usage-normalization.js';
-import type { RecentTurnUsage } from './recent-turn-usage.js';
+import type { RecentTurnUsage, SessionUsageTotals } from './recent-turn-usage.js';
 
 export interface FlightDeckTooltipInput {
   /** The user's preferred slot. */
@@ -64,6 +64,8 @@ export interface FlightDeckTooltipInput {
   readonly usage: TokenPlanUsage | undefined;
   /** Final normalized usage from the most recent streamed MiniMax turn. */
   readonly recentTurnUsage?: RecentTurnUsage;
+  /** Running token totals for this session; shown when no plan quota exists. */
+  readonly sessionTotals?: SessionUsageTotals;
   /** Wall-clock ms for the "as of HH:MM:SS" line + relative time math. */
   readonly nowMs: number;
   /** True when no key is stored at all (noKey takes precedence over usage). */
@@ -165,9 +167,29 @@ function recentTurnUsageLine(recent: RecentTurnUsage | undefined): string | unde
   return parts.length > 0 ? `Last turn: ${parts.join(' · ')}` : undefined;
 }
 
+/** `Session: 5 turns · input 120k · output 8k · cache hit 82%`, or undefined before any turn. */
+function sessionTotalsLine(totals: SessionUsageTotals | undefined): string | undefined {
+  if (totals === undefined || totals.turns === 0) return undefined;
+  const k = (n: number): string => (n >= 10_000 ? `${String(Math.round(n / 1000))}k` : String(n));
+  const parts = [
+    `${String(totals.turns)} turn${totals.turns === 1 ? '' : 's'}`,
+    `input ${k(totals.promptTokens)}`,
+    `output ${k(totals.completionTokens)}`,
+  ];
+  if (totals.promptTokens > 0 && totals.cacheReadTokens > 0) {
+    const hit = Math.round((totals.cacheReadTokens / totals.promptTokens) * 100);
+    parts.push(`cache hit ${String(hit)}%`);
+  }
+  return `Session: ${parts.join(' · ')}`;
+}
+
 function usageSection(input: FlightDeckTooltipInput): readonly string[] {
   if (input.usageUnavailable) {
-    return ['_usage unavailable (pay-as-you-go keys have no Token Plan bar)_'];
+    const session = sessionTotalsLine(input.sessionTotals);
+    return [
+      '_usage unavailable (pay-as-you-go keys have no Token Plan bar)_',
+      ...(session !== undefined ? [session] : []),
+    ];
   }
   if (input.usage === undefined) {
     return ['_usage unavailable — click for details_'];

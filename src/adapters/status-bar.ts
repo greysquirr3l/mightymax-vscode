@@ -250,6 +250,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     }
 
     const recentTurnUsage = this.recentTurnUsage?.snapshot();
+    const sessionTotals = this.recentTurnUsage?.sessionTotals();
     const input: FlightDeckTooltipInput = {
       activeSlot,
       stored,
@@ -260,6 +261,7 @@ export class StatusBarAdapter implements vscode.Disposable {
       lastFallback: this.keyProvider.lastFallback,
       usage: opts.usage,
       ...(recentTurnUsage !== undefined ? { recentTurnUsage } : {}),
+      ...(sessionTotals !== undefined ? { sessionTotals } : {}),
       nowMs,
       noKey: false,
       usageUnavailable: this.lastUsageUnavailable,

@@ -796,3 +796,59 @@ describe('issue #88 — matchesToolName is the single shared matcher', () => {
     }
   });
 });
+
+describe('filterTools — relevance/usage scoring', () => {
+  const config = { enableSmartToolFiltering: true, maxTools: 2, alwaysIncludeTools: ['pinned'] };
+  const tools = [
+    { name: 'pinned', description: 'always here' },
+    { name: 'zeta_deploy', description: 'Deploy a service' },
+    { name: 'read_file', description: 'Read file contents from disk' },
+    { name: 'alpha_misc', description: 'Something else' },
+  ];
+
+  it('keeps VS Code order when no scoring is supplied', () => {
+    const d = filterTools(tools, [], config);
+    deepStrictEqual(d.kept, ['pinned', 'zeta_deploy']);
+    strictEqual(d.scores, undefined);
+  });
+
+  it('ranks by prompt relevance, so a later tool can displace an earlier one', () => {
+    const d = filterTools(tools, [], config, {
+      prompt: 'please read the file',
+      usage: new Map(),
+      strategy: 'relevance',
+    });
+    deepStrictEqual(d.kept, ['pinned', 'read_file']);
+    ok((d.scores?.['read_file'] ?? 0) > (d.scores?.['zeta_deploy'] ?? 1));
+  });
+
+  it('ranks by call frequency under the usage strategy', () => {
+    const d = filterTools(tools, [], config, {
+      prompt: 'unrelated words',
+      usage: new Map([['alpha_misc', 5]]),
+      strategy: 'usage',
+    });
+    deepStrictEqual(d.kept, ['pinned', 'alpha_misc']);
+  });
+
+  it('blends the two under hybrid (0.6 / 0.4)', () => {
+    const d = filterTools(tools, [], config, {
+      prompt: 'read file',
+      usage: new Map([['alpha_misc', 1]]),
+      strategy: 'hybrid',
+    });
+    // read_file: relevance 1.0 × 0.6 = 0.6; alpha_misc: usage 1.0 × 0.4 = 0.4.
+    strictEqual(d.scores?.['read_file']?.toFixed(2), '0.60');
+    strictEqual(d.scores?.['alpha_misc']?.toFixed(2), '0.40');
+    deepStrictEqual(d.kept, ['pinned', 'read_file']);
+  });
+
+  it('never drops a pinned tool, whatever the scores', () => {
+    const d = filterTools(tools, [], config, {
+      prompt: 'deploy',
+      usage: new Map(),
+      strategy: 'hybrid',
+    });
+    ok(d.kept.includes('pinned'));
+  });
+});

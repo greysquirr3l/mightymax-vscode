@@ -72,6 +72,13 @@ export interface ModelInfo {
    * session pinned to the old id still sends a model MiniMax serves.
    */
   wireId?: string;
+  /**
+   * Context windows (input + output tokens) the model can run with.
+   * `mightyMax.contextWindow` picks one; the catalog then advertises
+   * `window - maxOutputTokens` as the input budget. Absent for models
+   * with a single fixed window.
+   */
+  contextWindowOptions?: ReadonlyArray<number>;
 }
 
 export interface ModelCapabilities {
@@ -126,4 +133,10 @@ export interface ModelCatalog {
   /** Fires when the catalog contents change. Adapters that never change
    *  (e.g. a read-only test stub) may return an event that never fires. */
   readonly onDidChange: Event<void>;
+  /**
+   * Every model id the platform reported on its last `/v1/models` call,
+   * or `undefined` before one has succeeded. Used to tell a model
+   * MiniMax has actually retired from one that is merely hidden.
+   */
+  servedModelIds?(): ReadonlySet<string> | undefined;
 }

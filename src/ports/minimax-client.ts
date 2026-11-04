@@ -118,7 +118,7 @@ export interface MiniMaxCompletionRequest {
    * (see `getThinkingConfig`).
    */
   outputConfig?: {
-    effort: ThinkingEffort;
+    effort: Exclude<ThinkingEffort, 'default'>;
   };
   /**
    * Optional system prompt the chat-provider prepends to the
@@ -135,6 +135,12 @@ export interface MiniMaxCompletionRequest {
    * system block is still cached.
    */
   cacheMarkers?: ReadonlyArray<number>;
+  /**
+   * Prompt-cache retention stamped on every `cache_control` breakpoint
+   * (`{ type: 'ephemeral', ttl }`). Omitted → the server's default
+   * lifetime. Anthropic dialect only.
+   */
+  cacheTtl?: '5m' | '1h';
 }
 
 /**

@@ -423,6 +423,11 @@ describe('getMaxTokensForModel', () => {
     equal(getMaxTokensForModel('MiniMax-M2.5'), 32_000);
     equal(getMaxTokensForModel('MiniMax-M1'), 32_000);
   });
+
+  it('honours a configured value, bounded by the catalog budget', () => {
+    equal(getMaxTokensForModel('MiniMax-M3', 64_000, 128_000), 64_000);
+    equal(getMaxTokensForModel('MiniMax-M3', 128_000, 65_536), 65_536);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -497,12 +502,12 @@ describe('isM31FlashFamily', () => {
 });
 
 describe('coerceThinkingEffort', () => {
-  it('lists exactly the five levels the OpenAPI schema documents', () => {
-    deepStrictEqual([...THINKING_EFFORT_VALUES], ['low', 'medium', 'high', 'xhigh', 'max']);
+  it('lists the five documented levels plus `default` (server-chosen depth)', () => {
+    deepStrictEqual([...THINKING_EFFORT_VALUES], ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
   });
 
   it('accepts every documented level', () => {
-    for (const level of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+    for (const level of ['default', 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
       equal(coerceThinkingEffort(level), level);
     }
   });

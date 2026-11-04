@@ -46,9 +46,9 @@ All settings are in the VS Code Settings UI under "Mighty Max" or in `settings.j
 
 ## How It Works
 
-### 1. Filtering OFF by default
+### 1. Filtering only binds past the cap
 
-`enableSmartToolFiltering` ships at `false`. The full VS Code tool set is forwarded verbatim so agent-mode has every tool the chat UI exposes. Enable the setting only when your provider enforces a smaller cap than the request needs.
+`enableSmartToolFiltering` ships at `true`, but it changes nothing until the request carries more than `maxTools` tools: at or under the cap the full VS Code tool set is forwarded verbatim. Turn it off to always forward every tool.
 
 ### 2. Priority Tools (Always Included)
 
@@ -59,47 +59,47 @@ On top of that, three groups are **reserved unconditionally** — merged into th
 | Reserved set                                               | Why                                                                                                                                                                                       |
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `runSubagent`, `minimax_subagent`                          | Sub-agent delegation. A user-configured `alwaysIncludeTools` replaces the default list wholesale, so trimming it would otherwise silently cost the agent its ability to spawn sub-agents. |
-| MCP discovery tools (`list servers`, `list tools`, `load`) | The only path by which the model can reach an MCP tool the LRU dropped.                                                                                                                   |
+| MCP discovery tools (`search tools`, `load`)               | The only path by which the model can reach an MCP tool the LRU dropped.                                                                                                                   |
 
 Membership in the reserved set is a compatibility decision, not a tuning one: if a tool renders _nicer_ (`minimax_subagent`) it belongs here, but a tool the agent loop is structurally incomplete without belongs here too.
 
 ### 3. Cap enforcement
 
-After pinning, the remaining budget (`maxTools - pinnedCount`) is filled with the first-N tools in the order VS Code passed them in. Order is stable, so the model sees the same tools every turn at the same cap.
+After pinning, the remaining budget (`maxTools - pinnedCount`) is filled with the highest-scoring tools. Scores are in [0, 1]; ties keep the order VS Code passed the tools in, so the choice is stable for a given prompt and usage history.
 
-For each remaining tool, score is calculated based on:
+**Relevance** is the share of the latest user prompt's distinct words (3+ letters, stop words removed, camelCase and `_`/`-`/`/` split) that appear in the tool:
 
-- **Exact name match**: +1.0 if prompt contains full tool name
-- **Name keyword overlap**: +0.3 per matching word (e.g., "read" in "read_file")
-- **Description overlap**: +0.5 × (matched words / total words)
+- a word in the tool **name** counts 2
+- a word only in the **description** counts 1
+- `relevance = min(1, hits / (2 × distinct prompt words))`
 
 Example:
 
 ```
-Prompt: "Use read_file to check the config"
-Tool: { name: "read_file", description: "Read file contents" }
-Score: 1.0 (exact match) + 0.5 (description overlap) = 1.5 → capped at 1.0
+Prompt: "read the config file"      → words: read, config, file
+Tool:   read_file ("Read file contents")
+hits = 2 (read, name) + 2 (file, name) = 4 → relevance = 4 / 6 = 0.67
 ```
 
-### 3. Usage Scoring (0-1 scale)
+### 4. Usage Scoring (0-1 scale)
 
-Normalized by most-called tool:
+Normalized by the most-called candidate this session:
 
 ```
-score = (tool_call_count) / (max_call_count_across_all_tools)
+score = (tool_call_count) / (max_call_count_across_candidates)
 ```
 
-Tools never called have score 0. Frequently-used tools approach 1.0.
+Tools never called have score 0.
 
-### 4. Hybrid Strategy
+### 5. Hybrid Strategy
 
-Combines both scores:
+`toolFilterStrategy` picks the signal: `relevance`, `usage`, or `hybrid` (the default), which combines both:
 
 ```
 final_score = (relevance × 0.6) + (usage × 0.4)
 ```
 
-### 5. Selection
+### 6. Selection
 
 1. Include all priority tools
 2. Calculate remaining budget: `maxTools - priority_count`
@@ -108,23 +108,14 @@ final_score = (relevance × 0.6) + (usage × 0.4)
 
 ## Logging
 
-When filtering is active, check the "Mighty Max" output channel for details:
+When the cap drops tools, the "Mighty Max" output channel logs a warning with the dropped names and the five best-scored kept tools:
 
 ```
-[INFO] Smart tool filtering enabled
-  totalTools: 80
-  maxTools: 30
-  strategy: "hybrid"
-  alwaysIncludeCount: 6
-
-[INFO] Tool filtering complete
-  originalCount: 80
-  filteredCount: 30
-  priorityCount: 6
-  selectedOthersCount: 24
+[WARN] Smart tool filtering dropped tools
+  droppedCount: 16
+  droppedNames: [...]
   topScoredTools: [
     { name: "coraline_search", score: "0.850" },
-    { name: "read_file", score: "0.820" },
     ...
   ]
 ```
@@ -169,7 +160,7 @@ To verify filtering is working:
 3. Set "Log Level" to "info"
 4. Open "Mighty Max" output channel
 5. Start a chat with M3
-6. Check logs for "Smart tool filtering enabled" and "Tool filtering complete"
+6. Check logs for "Smart tool filtering dropped tools"
 
 ## Troubleshooting
 

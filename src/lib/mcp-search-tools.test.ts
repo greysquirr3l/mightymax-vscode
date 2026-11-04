@@ -1,5 +1,5 @@
 /**
- * T35 - Pure domain tests for MCP server-level tool discovery.
+ * T35 - Pure domain tests for MCP tool discovery (search + load).
  */
 import { describe, it } from 'node:test';
 import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
@@ -7,11 +7,9 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert/strict';
 import {
   buildSearchToolDescriptors,
   findLiveTool,
-  handleMcpListServers,
-  handleMcpListTools,
-  MCP_LIST_SERVERS_TOOL,
-  MCP_LIST_TOOLS_TOOL,
+  handleMcpSearchTools,
   MCP_LOAD_TOOL,
+  MCP_SEARCH_TOOLS_TOOL,
   parseMcpName,
   renderMcpLoadResult,
   toolsForServer,
@@ -140,11 +138,11 @@ describe('findLiveTool', () => {
 });
 
 describe('buildSearchToolDescriptors', () => {
-  it('ships exactly three descriptors with the canonical names', () => {
+  it('ships exactly two descriptors with the canonical names', () => {
     const descriptors = buildSearchToolDescriptors();
-    strictEqual(descriptors.length, 3);
+    strictEqual(descriptors.length, 2);
     const names = descriptors.map((d) => d.name).sort();
-    deepStrictEqual(names, [MCP_LIST_SERVERS_TOOL, MCP_LIST_TOOLS_TOOL, MCP_LOAD_TOOL].sort());
+    deepStrictEqual(names, [MCP_SEARCH_TOOLS_TOOL, MCP_LOAD_TOOL].sort());
   });
 
   it('every descriptor mentions MCP in its description', () => {
@@ -162,18 +160,12 @@ describe('buildSearchToolDescriptors', () => {
     }
   });
 
-  it('mcp_list_servers takes no parameters', () => {
-    const d = buildSearchToolDescriptors().find((x) => x.name === MCP_LIST_SERVERS_TOOL)!;
-    deepStrictEqual(d.inputSchema.properties, {});
-    strictEqual(d.inputSchema.type, 'object');
-    ok(d.inputSchema.additionalProperties === false);
-  });
-
-  it('mcp_list_tools requires a server parameter', () => {
-    const d = buildSearchToolDescriptors().find((x) => x.name === MCP_LIST_TOOLS_TOOL)!;
+  it('mcp_search_tools requires a query and takes an optional limit', () => {
+    const d = buildSearchToolDescriptors().find((x) => x.name === MCP_SEARCH_TOOLS_TOOL)!;
     const props = d.inputSchema.properties as Record<string, { type: string }>;
-    ok('server' in props);
-    strictEqual(props.server.type, 'string');
+    strictEqual(props.query?.type, 'string');
+    strictEqual(props.limit?.type, 'number');
+    deepStrictEqual(d.inputSchema.required, ['query']);
   });
 
   it('mcp_load requires a tool parameter and accepts arbitrary input', () => {
@@ -184,52 +176,60 @@ describe('buildSearchToolDescriptors', () => {
   });
 });
 
-describe('handleMcpListServers', () => {
-  it('renders a numbered list with tool counts', () => {
-    const result = handleMcpListServers({ tools: FIXTURES });
-    strictEqual(result.kind, 'servers');
-    ok(result.text.includes('3 MCP server(s) loaded'));
-    ok(result.text.includes('clickup (2 tools)'));
-    ok(result.text.includes('github (3 tools)'));
-    ok(result.text.includes('weather (1 tools)'));
+const SEARCHABLE: ReadonlyArray<LiveMcpToolInfo> = [
+  ...FIXTURES,
+  {
+    name: 'mcp_github_create_pull_request',
+    description: 'Open a pull request from a branch.',
+    inputSchema: {
+      type: 'object',
+      properties: { head: { type: 'string' }, base: { type: 'string' }, title: { type: 'string' } },
+      required: ['head', 'title'],
+    },
+  },
+];
+
+describe('handleMcpSearchTools', () => {
+  it('ranks the best match first and renders name, description and params', () => {
+    const result = handleMcpSearchTools({ query: 'create a pull request' }, { tools: SEARCHABLE });
+    strictEqual(result.kind, 'search');
+    const first = result.text.split('\n')[1] ?? '';
+    ok(first.startsWith('1. mcp_github_create_pull_request -- Open a pull request'), first);
+    ok(first.includes('params: head*, base, title*'), first);
   });
 
-  it('explains the next action when MCP is empty', () => {
-    const result = handleMcpListServers({
-      tools: [{ name: 'run_in_terminal', description: 'x', inputSchema: {} }],
-    });
-    strictEqual(result.kind, 'servers');
-    ok(result.text.includes('No MCP servers are currently loaded'));
-  });
-});
-
-describe('handleMcpListTools', () => {
-  it('renders the matching tools with descriptions', () => {
-    const result = handleMcpListTools({ server: 'github' }, { tools: FIXTURES });
-    strictEqual(result.kind, 'tools');
-    ok(result.text.includes('3 tool(s) on server "github"'));
-    ok(result.text.includes('mcp_github_list_issues -- List GitHub issues'));
-    ok(result.text.includes('mcp_github_create_issue -- Create a new GitHub issue'));
-    ok(result.text.includes('mcp_github_add_comment_to_pending_review -- Multi-word'));
+  it('matches on a parameter name, not just the tool name', () => {
+    const result = handleMcpSearchTools({ query: 'base branch' }, { tools: SEARCHABLE });
+    ok(result.text.includes('mcp_github_create_pull_request'));
   });
 
-  it('explains the typo when the server is unknown', () => {
-    const result = handleMcpListTools({ server: 'typo_server' }, { tools: FIXTURES });
-    strictEqual(result.kind, 'error');
-    ok(result.text.includes('No tools found for server "typo_server"'));
-    ok(result.text.includes('clickup, github, weather'));
-  });
-
-  it('rejects an empty server with an actionable error', () => {
-    const result = handleMcpListTools({ server: '' }, { tools: FIXTURES });
-    strictEqual(result.kind, 'error');
-    ok(result.text.includes('`server` parameter is required'));
-  });
-
-  it('trims whitespace before lookup', () => {
-    const result = handleMcpListTools({ server: '  clickup  ' }, { tools: FIXTURES });
-    strictEqual(result.kind, 'tools');
+  it('finds tools across servers by keyword', () => {
+    const result = handleMcpSearchTools({ query: 'create' }, { tools: SEARCHABLE });
     ok(result.text.includes('mcp_clickup_create_task'));
+    ok(result.text.includes('mcp_github_create_issue'));
+    ok(!result.text.includes('run_in_terminal'));
+  });
+
+  it('honours the limit', () => {
+    const result = handleMcpSearchTools({ query: 'create', limit: 1 }, { tools: SEARCHABLE });
+    ok(result.text.startsWith('1 matching tool(s)'));
+  });
+
+  it('says so when nothing matches', () => {
+    const result = handleMcpSearchTools({ query: 'zzzzqx' }, { tools: SEARCHABLE });
+    strictEqual(result.kind, 'search');
+    ok(result.text.includes('No loaded MCP tool matches'));
+  });
+
+  it('rejects an empty query with an actionable error', () => {
+    const result = handleMcpSearchTools({ query: '  ' }, { tools: SEARCHABLE });
+    strictEqual(result.kind, 'error');
+    ok(result.text.includes('`query` parameter is required'));
+  });
+
+  it('explains the next action when no MCP tools are loaded', () => {
+    const result = handleMcpSearchTools({ query: 'anything' }, { tools: [] });
+    ok(result.text.includes('No MCP tools are currently loaded'));
   });
 });
 
@@ -268,6 +268,7 @@ describe('validateMcpLoad', () => {
     strictEqual(result.ok, false);
     ok(result.error!.text.includes('not currently loaded'));
     ok(result.error!.text.includes('Available servers: clickup, github, weather'));
+    ok(result.error!.text.includes('mcp_search_tools'));
   });
 
   it('accepts an empty input object', () => {

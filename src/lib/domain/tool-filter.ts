@@ -39,7 +39,37 @@ export interface ToolFilterConfig {
   alwaysIncludeTools: ReadonlyArray<string>;
 }
 
+/** Which signal ranks the non-pinned tools when the cap binds. */
+export type ToolFilterStrategy = 'hybrid' | 'relevance' | 'usage';
+
+export const DEFAULT_TOOL_FILTER_STRATEGY: ToolFilterStrategy = 'hybrid';
+
+/** Weights of the `hybrid` strategy: `final = relevance × 0.6 + usage × 0.4`. */
+export const HYBRID_RELEVANCE_WEIGHT = 0.6;
+export const HYBRID_USAGE_WEIGHT = 0.4;
+
+/** Narrow a setting value to a strategy, falling back to the default. */
+export function coerceToolFilterStrategy(raw: unknown): ToolFilterStrategy {
+  return raw === 'relevance' || raw === 'usage' || raw === 'hybrid'
+    ? raw
+    : DEFAULT_TOOL_FILTER_STRATEGY;
+}
+
+/**
+ * Inputs for ranking the tools that fit in the budget after pinning.
+ * Absent, the remaining budget is filled in VS Code's order.
+ */
+export interface ToolFilterScoring {
+  /** The user's latest prompt, matched against tool names and descriptions. */
+  readonly prompt: string;
+  /** Successful call counts per tool name, for the session so far. */
+  readonly usage: ReadonlyMap<string, number>;
+  readonly strategy: ToolFilterStrategy;
+}
+
 export interface ToolFilterDecision {
+  /** Score of each non-pinned tool that was ranked; empty when unscored. */
+  scores?: Readonly<Record<string, number>>;
   /**
    * The tools to pass to the wire request. Tool names that were
    * dropped (if any) are returned in `droppedToolNames` so the
@@ -158,7 +188,7 @@ export const DEFAULT_MAX_TOOLS = 64;
  * A user-configured list replaces the default list wholesale — a
  * user who trimmed the setting to a handful of entries would
  * otherwise silently lose sub-agent delegation. Same precedent as
- * the MCP discovery tools (`MCP_LIST_SERVERS_TOOLS` and friends),
+ * the MCP discovery tools (`MCP_SEARCH_TOOLS_TOOL` and `MCP_LOAD_TOOL`),
  * which the provider also merges outside the user's control.
  *
  * Membership here means "the agent loop is structurally incomplete
@@ -494,9 +524,10 @@ export function selectMcpToolsToInclude(
  *                          which is out of scope here).
  */
 export function filterTools(
-  allTools: ReadonlyArray<{ name: string }>,
+  allTools: ReadonlyArray<{ name: string; description?: string }>,
   historyToolNames: ReadonlyArray<string>,
   config: ToolFilterConfig,
+  scoring?: ToolFilterScoring,
 ): ToolFilterDecision {
   if (!config.enableSmartToolFiltering) {
     return { kept: allTools.map((t) => t.name), dropped: [] };
@@ -528,20 +559,71 @@ export function filterTools(
     return { kept: matched, dropped: dropped };
   }
 
-  // Fill the remaining budget with the rest of the tools in the
-  // order VS Code passed them in (stable, predictable ordering;
-  // the upstream Copilot Chat ordering is what users see in the
-  // chat UI's "Configure Tools" dialog).
-  let emitted = 0;
-  for (const tool of allTools) {
-    if (pinnedNames.has(tool.name)) continue;
-    if (emitted >= remainingBudget) {
-      dropped.push(tool.name);
-      continue;
-    }
-    matched.push(tool.name);
-    emitted += 1;
-  }
+  const candidates = allTools.filter((tool) => !pinnedNames.has(tool.name));
+  const scores = scoring === undefined ? undefined : scoreTools(candidates, scoring);
+  // Without scoring, keep VS Code's order (stable, predictable; the
+  // order users see in the chat UI's "Configure Tools" dialog). With
+  // scoring, rank by score; `sort` is stable, so ties keep that order.
+  const ranked =
+    scores === undefined
+      ? candidates
+      : [...candidates].sort((a, b) => (scores[b.name] ?? 0) - (scores[a.name] ?? 0));
 
-  return { kept: matched, dropped };
+  ranked.forEach((tool, index) => {
+    if (index < remainingBudget) matched.push(tool.name);
+    else dropped.push(tool.name);
+  });
+
+  return scores === undefined ? { kept: matched, dropped } : { kept: matched, dropped, scores };
+}
+
+/** Split into lowercase words, breaking camelCase and snake/kebab/path separators. */
+export function tokenizeForScoring(text: string): string[] {
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length >= 3 && !STOP_WORDS.has(word));
+}
+
+const STOP_WORDS: ReadonlySet<string> = new Set([
+  'the', 'and', 'for', 'that', 'this', 'with', 'from', 'you', 'your', 'are', 'can',
+  'use', 'please', 'into', 'then', 'how', 'what', 'tool', 'tools',
+]);
+
+/**
+ * Score each candidate in [0, 1] under the chosen strategy.
+ *
+ * Relevance is the share of the prompt's distinct words found in the
+ * tool's name (weight 2) or description (weight 1). Usage is the
+ * tool's call count relative to the most-called candidate.
+ */
+function scoreTools(
+  candidates: ReadonlyArray<{ name: string; description?: string }>,
+  scoring: ToolFilterScoring,
+): Record<string, number> {
+  const promptWords = new Set(tokenizeForScoring(scoring.prompt));
+  const maxUsage = Math.max(0, ...candidates.map((t) => scoring.usage.get(t.name) ?? 0));
+  const scores: Record<string, number> = {};
+  for (const tool of candidates) {
+    let relevance = 0;
+    if (promptWords.size > 0) {
+      const nameWords = new Set(tokenizeForScoring(tool.name));
+      const descWords = new Set(tokenizeForScoring(tool.description ?? ''));
+      let hits = 0;
+      for (const word of promptWords) {
+        if (nameWords.has(word)) hits += 2;
+        else if (descWords.has(word)) hits += 1;
+      }
+      relevance = Math.min(1, hits / (2 * promptWords.size));
+    }
+    const usage = maxUsage > 0 ? (scoring.usage.get(tool.name) ?? 0) / maxUsage : 0;
+    scores[tool.name] =
+      scoring.strategy === 'relevance'
+        ? relevance
+        : scoring.strategy === 'usage'
+          ? usage
+          : relevance * HYBRID_RELEVANCE_WEIGHT + usage * HYBRID_USAGE_WEIGHT;
+  }
+  return scores;
 }

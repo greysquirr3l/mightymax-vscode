@@ -1,7 +1,7 @@
 /**
  * T35 - MCP server-level tool discovery: VS Code wiring.
  *
- * Adapter that registers the three `mcp_*` invoker tools via
+ * Adapter that registers the `mcp_search_tools` and `mcp_load` tools via
  * `vscode.lm.registerTool(...)` and wires each `invoke` handler to
  * the host's MCP tooling. The pure shape and per-call result
  * rendering live in `src/lib/domain/mcp-search-tools.ts`; this
@@ -32,11 +32,9 @@ import type { Logger } from '../ports/logger.js';
 import {
   buildSearchToolDescriptors,
   findLiveTool,
-  handleMcpListServers,
-  handleMcpListTools,
-  MCP_LIST_SERVERS_TOOL,
-  MCP_LIST_TOOLS_TOOL,
+  handleMcpSearchTools,
   MCP_LOAD_TOOL,
+  MCP_SEARCH_TOOLS_TOOL,
   renderMcpLoadResult,
   validateMcpLoad,
   type LiveMcpToolInfo,
@@ -99,7 +97,7 @@ async function invokeUnderlyingMcpTool(
       text:
         'Tool `' +
         toolName +
-        '` is not currently loaded. Call mcp_list_servers then mcp_list_tools to find the exact name.',
+        '` is not currently loaded. Call mcp_search_tools to find the exact name.',
       ok: false,
     };
   }
@@ -195,17 +193,15 @@ export function registerMcpSearchTools(
         token: vscode.CancellationToken,
       ): Promise<vscode.LanguageModelToolResult> => {
         const input = options.input ?? {};
-        if (descriptor.name === MCP_LIST_SERVERS_TOOL) {
-          const result = handleMcpListServers({ tools: deps.getLiveMcpTools() });
-          deps.logger.debug('mcp_list_servers invoked', { kind: result.kind });
-          return asToolResult(result.text);
-        }
-        if (descriptor.name === MCP_LIST_TOOLS_TOOL) {
-          const result = handleMcpListTools(
-            { server: typeof input['server'] === 'string' ? input['server'] : '' },
+        if (descriptor.name === MCP_SEARCH_TOOLS_TOOL) {
+          const result = handleMcpSearchTools(
+            {
+              query: typeof input['query'] === 'string' ? input['query'] : '',
+              ...(typeof input['limit'] === 'number' ? { limit: input['limit'] } : {}),
+            },
             { tools: deps.getLiveMcpTools() },
           );
-          deps.logger.debug('mcp_list_tools invoked', { kind: result.kind });
+          deps.logger.debug('mcp_search_tools invoked', { kind: result.kind });
           return asToolResult(result.text);
         }
         if (descriptor.name === MCP_LOAD_TOOL) {
@@ -240,7 +236,7 @@ export function registerMcpSearchTools(
           return asToolResult(text);
         }
         // Unreachable: the descriptor name doesn't match any of the
-        // three handlers above. The runtime will never call us
+        // two handlers above. The runtime will never call us
         // with an unknown name, but a defensive error keeps the
         // tool untyped-exception-safe.
         return asToolResult('mcp-search adapter: unknown tool name "' + descriptor.name + '".');

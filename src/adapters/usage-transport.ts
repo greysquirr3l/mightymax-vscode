@@ -27,7 +27,26 @@ import { normalizeTokenPlanRemains } from '../lib/domain/usage-normalization.js'
  *  fixture traffic off the public host. */
 export const DEFAULT_REMAINS_URL = 'https://www.minimax.io/v1/token_plan/remains';
 
+/**
+ * Token-plan endpoint for a configured platform base URL. The plan API
+ * lives on the `www.` host of the same site as the `api.` host the chat
+ * traffic uses (`api.minimax.io` → `www.minimax.io`, `api.minimaxi.com`
+ * → `www.minimaxi.com`). An unparseable or non-`api.` host falls back
+ * to the international default.
+ */
+export function remainsUrlForBaseUrl(baseUrl: string): string {
+  try {
+    const host = new URL(baseUrl).hostname;
+    if (host.startsWith('api.')) return `https://www.${host.slice(4)}/v1/token_plan/remains`;
+  } catch {
+    // fall through to the default
+  }
+  return DEFAULT_REMAINS_URL;
+}
+
 export interface UsageTransportDeps {
+  /** Resolves the configured base URL on each fetch (so a setting change applies). */
+  readonly getBaseUrl?: () => string;
   readonly logger: Logger;
   /** Override the endpoint (tests). Defaults to `DEFAULT_REMAINS_URL`. */
   readonly remainsUrl?: string;
@@ -39,19 +58,23 @@ export interface UsageTransportDeps {
 
 export class UsageTransportAdapter implements UsageClient {
   private readonly logger: Logger;
-  private readonly remainsUrl: string;
+  private readonly remainsUrl: string | undefined;
+  private readonly getBaseUrl: (() => string) | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
 
   constructor(deps: UsageTransportDeps) {
     this.logger = deps.logger;
-    this.remainsUrl = deps.remainsUrl ?? DEFAULT_REMAINS_URL;
+    this.remainsUrl = deps.remainsUrl;
+    this.getBaseUrl = deps.getBaseUrl;
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.now = deps.now ?? Date.now;
   }
 
   async fetchUsage(apiKey: string): Promise<TokenPlanUsage> {
-    const url = this.remainsUrl;
+    const url =
+      this.remainsUrl ??
+      (this.getBaseUrl ? remainsUrlForBaseUrl(this.getBaseUrl()) : DEFAULT_REMAINS_URL);
     const doFetch = this.fetchImpl;
 
     let res: Response;

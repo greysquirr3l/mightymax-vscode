@@ -278,6 +278,7 @@
         "mightyMax.m31ThinkingEffort": {
           "type": "string",
           "enum": [
+            "default",
             "low",
             "medium",
             "high",
@@ -286,6 +287,7 @@
           ],
           "default": "max",
           "enumDescriptions": [
+            "Let MiniMax choose the depth (the field is omitted from the request).",
             "Shallowest reasoning — fastest, lowest token cost.",
             "Light reasoning for routine edits and lookups.",
             "Balanced reasoning for most agentic work.",
@@ -318,6 +320,58 @@
             "type": "string"
           },
           "description": "MCP tools pinned on every request, ahead of the recency LRU. Accepts an exact tool name (mcp_github_mcp_se_list_issues) or a prefix ending in an underscore (mcp_github_ — matches every tool from that server). Edit this from 'Mighty Max: Manage MCP reserved tools', which also shows how many loaded tools each entry currently matches. Entries matching nothing are logged as a warning so a typo is diagnosable.",
+          "scope": "window"
+        },
+        "mightyMax.contextWindow": {
+          "type": "number",
+          "enum": [
+            512000,
+            1000000
+          ],
+          "default": 1000000,
+          "enumDescriptions": [
+            "512K tokens (input + output). MiniMax Code's default window.",
+            "1M tokens (input + output). Larger sessions before history is pruned; MiniMax marks it as higher usage."
+          ],
+          "description": "Context window advertised for M3 and M3.1 Flash (input + output tokens). The model picker's input budget is this value minus the model's output budget (128K), and the dynamic max_tokens clamp follows it. Choose 512K to keep long sessions cheaper; 1M to hold more history.",
+          "scope": "window"
+        },
+        "mightyMax.maxOutputTokens": {
+          "type": "number",
+          "default": 64000,
+          "minimum": 4096,
+          "maximum": 128000,
+          "description": "Maximum output tokens requested per turn. Bounded by the selected model's output budget (128K for M3 and M3.1-Flash). Reasoning tokens count against it, so deep thinking runs need headroom; lower it if long agent turns burn through context or rate limits too quickly.",
+          "scope": "window"
+        },
+        "mightyMax.requestsPerMinute": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Maximum requests per minute sent per API key. Bursts beyond it (several parallel agent turns) are paced instead of hitting a 429. 0 disables pacing; rate-limit responses are still retried with backoff either way.",
+          "scope": "window"
+        },
+        "mightyMax.cacheTtl": {
+          "type": "string",
+          "enum": [
+            "default",
+            "5m",
+            "1h"
+          ],
+          "default": "default",
+          "enumDescriptions": [
+            "Use MiniMax's default prompt-cache lifetime.",
+            "Keep cached prompt prefixes for 5 minutes.",
+            "Keep cached prompt prefixes for 1 hour (fewer cold-cache turns in long sessions; MiniMax may bill cache writes differently)."
+          ],
+          "description": "Prompt-cache retention sent with every cache breakpoint on the Anthropic-compatible endpoint. MiniMax accepts the `ttl` field; whether a longer lifetime changes cache-write pricing is not documented, so this is opt-in.",
+          "scope": "window"
+        },
+        "mightyMax.useFilesApi": {
+          "type": "boolean",
+          "default": false,
+          "description": "Upload attached images and videos (64 KB and larger) to MiniMax's Files API and send a short reference instead of inlining base64 on every turn and retry. Uploads are cached for 12 hours. If an upload fails the media is sent inline as usual. Applies to M3-family (Anthropic dialect) requests.",
           "scope": "window"
         },
         "mightyMax.historyMaxChars": {
@@ -404,26 +458,11 @@
         }
       },
       {
-        "name": "mcp_list_servers",
-        "displayName": "MCP: List Servers",
-        "toolReferenceName": "mcp_list_servers",
-        "userDescription": "List the MCP servers currently loaded by VS Code.",
-        "modelDescription": "List the names of MCP (Model Context Protocol) servers currently loaded by VS Code. Use this when the model needs to discover which MCP servers are available before calling their tools.",
-        "tags": [
-          "mcp",
-          "minimax"
-        ],
-        "inputSchema": {
-          "type": "object",
-          "properties": {}
-        }
-      },
-      {
-        "name": "mcp_list_tools",
-        "displayName": "MCP: List Tools",
-        "toolReferenceName": "mcp_list_tools",
-        "userDescription": "List the tools available on a given MCP server.",
-        "modelDescription": "List the tools available on a specific MCP server. Use this after mcp_list_servers to discover tool names before invoking one.",
+        "name": "mcp_search_tools",
+        "displayName": "MCP: Search Tools",
+        "toolReferenceName": "mcp_search_tools",
+        "userDescription": "Search the loaded MCP tools by what you want to do.",
+        "modelDescription": "Search the MCP (Model Context Protocol) tools loaded by VS Code by what you need to do, e.g. 'create a github pull request'. Returns the best-matching tools across all servers with exact names, descriptions and parameters; then call mcp_load with a returned name.",
         "tags": [
           "mcp",
           "minimax"
@@ -431,13 +470,17 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "server": {
+            "query": {
               "type": "string",
-              "description": "The MCP server name (from mcp_list_servers)."
+              "description": "What you want to do, or keywords from the tool name or its parameters."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Maximum results (default 8, max 25)."
             }
           },
           "required": [
-            "server"
+            "query"
           ]
         }
       },
@@ -446,7 +489,7 @@
         "displayName": "MCP: Load Tool",
         "toolReferenceName": "mcp_load",
         "userDescription": "Invoke an MCP tool by name and return its result.",
-        "modelDescription": "Invoke an MCP tool by its mcp_<server>_<tool> name. Use this when the model needs to call a tool that the smart-filter LRU has dropped from the wire.",
+        "modelDescription": "Invoke an MCP tool by its mcp_<server>_<tool> name. Use this to run a tool found with mcp_search_tools, or one the smart-filter LRU has dropped from the wire.",
         "tags": [
           "mcp",
           "minimax"
@@ -593,6 +636,14 @@
             "promptOptimizer": {
               "type": "boolean",
               "description": "Let MiniMax expand the prompt before generating. Default false."
+            },
+            "referenceImages": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 1,
+              "description": "Absolute path of one local .png/.jpg/.webp image (max 10 MB) whose subject should stay consistent in the output, e.g. the path returned by an earlier generation. The file is uploaded to MiniMax."
             }
           },
           "required": [

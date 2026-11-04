@@ -6,7 +6,102 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-11-03
+
+Minor release. Acts on a comparison against MiniMax Code.app: it fixes
+usage accounting and the live model list, makes `toolFilterStrategy`
+do what it documents, uncaps the output budget, and adds image and
+attachment handling and MCP tool search. Two MCP discovery tools are
+removed — see **Removed**.
+
+### Fixed
+
+- **The Anthropic dialect never reported usage.** M3 and M3.1-Flash,
+  which speak it, produced no `usage` event, so cache accounting and the
+  usage gauge were dead on the path every current model takes. Input and
+  cache counters from `message_start` are now merged with the running
+  output count from `message_delta` into one event per turn, with a
+  `message_stop` fallback for servers that omit `message_delta`.
+- **New MiniMax models never reached the picker.**
+  `CatalogAdapter.setLiveModels()` had no call site, so the ids returned
+  by `/v1/models` during key validation were discarded. They now feed the
+  catalog at startup and on every validation. Media models (H3, H3-Max,
+  image-01) never enter the chat picker, and retired models keep their
+  deprecated entries.
+- **`mightyMax.toolFilterStrategy` was dead configuration.** The setting
+  and `SMART_TOOL_FILTERING.md` described a relevance/usage scoring that
+  did not exist; the cap evicted by VS Code's arbitrary order. After
+  history-referenced and always-include tools are pinned, the remaining
+  slots are now filled by score: `relevance` (prompt/name/description
+  overlap), `usage` (calls this session) or `hybrid` (`0.6 / 0.4`). The
+  "dropped tools" log lists the top-scored kept tools. The documentation
+  and the README row are corrected.
+- **`tool_choice: none` still sent every tool schema.** It now withholds
+  the `tools` array on both dialects.
+- **Output was capped at 32K though 128K is advertised.** See
+  `mightyMax.maxOutputTokens` below; the token budget now follows the
+  catalog and the room left in the context window.
+- **The token-plan URL ignored `mightyMax.baseUrl`.** It is derived from
+  the base URL (`api.minimaxi.com` → `www.minimaxi.com`).
+- **MCP search edge cases** (found while testing the new search tool):
+  the search and load tools were counted as MCP server tools, so they
+  appeared as phantom servers, crowded real results and could invoke
+  themselves; a hyphenated server id such as `mcp_sequential-th_*`
+  vanished from the inventory; and a description containing a numbered
+  list forged extra `N. <name>` result lines.
+
+### Added
+
+- **`mightyMax.maxOutputTokens`** (default `64000`). Bounded by the
+  model's catalog budget and dynamically clamped to the context window
+  minus the estimated input, so a long conversation no longer overflows
+  into an HTTP 400 and a short one gets the full budget.
+- **`mightyMax.contextWindow`** (`512000` or `1000000`, default
+  `1000000`). Picks the window the M3 family advertises; the input
+  budget is the window minus the 128K output budget. The 1M choice is
+  tagged "(higher usage)" in the picker.
+- **Thinking controls in the model details pane.** M3.1-Flash gets a
+  *Thinking effort* dropdown, M3 a *Thinking* (adaptive / disabled) one,
+  via the host's `configurationSchema`. Older hosts ignore it and the
+  `mightyMax.*` settings keep applying. `mightyMax.m31ThinkingEffort`
+  also gains a `default` level that leaves depth to MiniMax.
+- **The image tool returns its images to the model**, so it can see and
+  iterate on its own output, and accepts `referenceImages` (one local
+  png/jpg/webp, up to 10 MB) as an image-01 subject reference.
+- **`mightyMax.useFilesApi`** (default off). Uploads attached images and
+  videos of 64 KB or more and sends an `mm_file://` reference instead of
+  inlining base64 on every turn and retry. Fail-open and cached for 12
+  hours.
+- **`mightyMax.requestsPerMinute`** (default `0`, off). Paces requests
+  per API key instead of sending bursts into a 429.
+- **`mightyMax.cacheTtl`** (`default`, `5m`, `1h`). Stamps a retention
+  `ttl` on cache breakpoints. Opt-in: MiniMax accepts the field, but the
+  billing of a longer lifetime is undocumented.
+- **`mcp_search_tools`**: a BM25 relevance search over every loaded MCP
+  tool (names, descriptions and parameter names; camelCase- and
+  CJK-aware, with stop words and light stemming). It replaces browsing
+  one server at a time.
+- **Session token totals in the status-bar tooltip** for keys with no
+  Token Plan quota: turns, input, output and cache-hit rate.
+- **Video output dimensions** in the video tool result.
+- **Retired-model replacement.** A request on a model that is deprecated
+  *and* no longer in `/v1/models` is sent as the first current model
+  instead of failing; a healthy model is never swapped.
+
+### Changed
+
+- **The default picker detail now reads `1M ctx (higher usage) · …`.**
+  The window itself is unchanged.
+- **`mightyMax.toolFilterStrategy` now has an effect**; its enum
+  descriptions and the README row describe the real behaviour.
+
 ### Removed
+
+- **`mcp_list_servers` and `mcp_list_tools` are gone**, replaced by
+  `mcp_search_tools`. `mcp_load` is unchanged. A session or prompt that
+  names either removed tool will get a "tool not found"; point it at
+  `mcp_search_tools`.
+
 
 - **Open VSX publishing is dropped, not deferred.** The `greysquirr3l`
   namespace was granted on Open VSX on 2026-07-24, so the release
@@ -19,6 +114,15 @@ project adheres to [Semantic Versioning](https://semver.org/).
   dropping a token into the secret, no workflow change" — the step no
   longer exists, so re-enabling is now a deliberate change with a
   dependency to pin, not a one-liner.
+
+### Dependencies
+
+- `@vscode/vsce` 3.9.2 → 4.1.0, which also drops the transitive
+  `undici`, `fast-uri` and `markdown-it` from the lockfile.
+- Dev dependencies: `@types/node` 26.6.6, `eslint` 10.13.0, `prettier`
+  3.9.10, `typescript-eslint` 8.72.1. `qs` override `^6.17.1`.
+- GitHub Actions (still SHA-pinned): `setup-node`, `download-artifact`
+  8.0.2, `upload-artifact` 7.0.2.
 
 ## [0.12.0] — 2026-10-31
 

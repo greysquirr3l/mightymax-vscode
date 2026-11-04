@@ -246,6 +246,11 @@ export function buildGenerateBody(request: ImageRequest): Record<string, unknown
   if (request.count !== undefined) body['n'] = request.count;
   if (request.seed !== undefined) body['seed'] = request.seed;
   if (request.promptOptimizer !== undefined) body['prompt_optimizer'] = request.promptOptimizer;
+  if (request.subjectReference !== undefined) {
+    body['subject_reference'] = [
+      { type: 'character', image_file: request.subjectReference.imageFile },
+    ];
+  }
   return body;
 }
 

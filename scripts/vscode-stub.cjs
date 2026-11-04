@@ -100,6 +100,9 @@ class LanguageModelDataPart {
     this.data = data;
     this.mimeType = mimeType;
   }
+  static image(data, mimeType) {
+    return new LanguageModelDataPart(data, mimeType);
+  }
 }
 
 // T27: VS Code 1.128+ exposes a proposed-API `LanguageModelThinkingPart`

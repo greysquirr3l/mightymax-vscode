@@ -20,7 +20,15 @@ import {
   renderGenerateImageToolResult,
   validateImageToolInput,
 } from '../lib/domain/image-tool.js';
-import { IMAGE_ASPECT_DIMENSIONS, type ImageResult } from '../lib/domain/image.js';
+import { readFile } from 'node:fs/promises';
+
+import {
+  IMAGE_ASPECT_DIMENSIONS,
+  IMAGE_REFERENCE_MAX_BYTES,
+  referenceImageMime,
+  type ImageRequest,
+  type ImageResult,
+} from '../lib/domain/image.js';
 import { ImageGenerationError } from './image-01-adapter.js';
 
 export interface GenerateImageToolConfig {
@@ -34,6 +42,8 @@ export interface GenerateImageToolAdapterDeps {
   readonly imageGenerator: ImageGenerator;
   readonly mediaStore: MediaArtifactStore;
   readonly config: GenerateImageToolConfig;
+  /** Test seam for reading reference images. Defaults to `fs.promises.readFile`. */
+  readonly readFile?: (path: string) => Promise<Uint8Array>;
 }
 
 /**
@@ -58,9 +68,16 @@ export async function runGenerateImagePipeline(
     );
   }
 
+  const { referencePaths, ...baseRequest } = req;
+  let request: ImageRequest = { ...baseRequest };
+  const referencePath = referencePaths?.[0];
+  if (referencePath !== undefined) {
+    request = { ...request, subjectReference: await loadReference(referencePath, deps) };
+  }
+
   let images;
   try {
-    images = await deps.imageGenerator.generate(req, pick.key, signal);
+    images = await deps.imageGenerator.generate(request, pick.key, signal);
   } catch (err) {
     throw translateError(err);
   }
@@ -84,7 +101,29 @@ export async function runGenerateImagePipeline(
     absolutePaths,
     totalSizeBytes,
     mime: images[0]?.mime ?? 'image/png',
+    images: images.map((image) => ({ bytes: image.bytes, mime: image.mime })),
   };
+}
+
+/** Read a reference image from disk as a data URL, enforcing the size ceiling. */
+async function loadReference(
+  path: string,
+  deps: GenerateImageToolAdapterDeps,
+): Promise<{ imageFile: string }> {
+  const mime = referenceImageMime(path);
+  if (mime === undefined) throw new Error(`reference image ${path} has an unsupported extension`);
+  let bytes: Uint8Array;
+  try {
+    bytes = await (deps.readFile ?? readFile)(path);
+  } catch {
+    throw new Error(`could not read reference image ${path}`);
+  }
+  if (bytes.length > IMAGE_REFERENCE_MAX_BYTES) {
+    throw new Error(
+      `reference image ${path} is ${String(bytes.length)} bytes; the limit is ${String(IMAGE_REFERENCE_MAX_BYTES)}`,
+    );
+  }
+  return { imageFile: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}` };
 }
 
 function translateError(err: unknown): Error {
@@ -97,6 +136,21 @@ function translateError(err: unknown): Error {
 
 function asToolResult(text: string): vscode.LanguageModelToolResult {
   return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+}
+
+/**
+ * Text plus the generated image bytes. The data parts are what let the
+ * model see, critique and iterate on its own output ("make it blue");
+ * the text keeps the saved paths for the user.
+ */
+function asImageToolResult(result: ImageResult): vscode.LanguageModelToolResult {
+  const parts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelDataPart> = [
+    new vscode.LanguageModelTextPart(renderGenerateImageToolResult(result)),
+  ];
+  for (const image of result.images ?? []) {
+    parts.push(vscode.LanguageModelDataPart.image(image.bytes, image.mime));
+  }
+  return new vscode.LanguageModelToolResult(parts);
 }
 
 /** Register `mightyMax_generateImage` with VS Code's LM host. */
@@ -116,11 +170,15 @@ export function registerGenerateImageTool(deps: GenerateImageToolAdapterDeps): v
       const model = typeof input['model'] === 'string' ? input['model'] : 'image-01';
       const ratio = typeof input['aspectRatio'] === 'string' ? input['aspectRatio'] : '1:1';
       const count = typeof input['count'] === 'number' ? input['count'] : 1;
+      const refs = input['referenceImages'];
+      const refPath = Array.isArray(refs) && typeof refs[0] === 'string' ? refs[0] : undefined;
       const dims = IMAGE_ASPECT_DIMENSIONS[ratio as keyof typeof IMAGE_ASPECT_DIMENSIONS];
       return {
         confirmationMessages: {
           title: `Generate ${String(count)} ${model} image(s)`,
-          message: `Mighty Max will submit a synchronous image generation request to MiniMax (${dims ?? ratio}).`,
+          message:
+            `Mighty Max will submit a synchronous image generation request to MiniMax (${dims ?? ratio}).` +
+            (refPath !== undefined ? ` The reference image ${refPath} will be uploaded.` : ''),
         },
         invocationMessage: `Generating ${dims ?? ratio} image…`,
       };
@@ -138,7 +196,7 @@ export function registerGenerateImageTool(deps: GenerateImageToolAdapterDeps): v
           aspectRatio: result.aspectRatio,
           totalSizeBytes: result.totalSizeBytes,
         });
-        return asToolResult(renderGenerateImageToolResult(result));
+        return asImageToolResult(result);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         deps.logger.warn('mightyMax_generateImage failed', { error: message });

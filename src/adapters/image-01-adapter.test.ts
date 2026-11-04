@@ -241,3 +241,19 @@ function s_abort(): FetchLike {
     return new Response('{}', { status: 200 });
   };
 }
+
+describe('buildGenerateBody — subject reference', () => {
+  it('emits a character subject_reference when a reference is set', () => {
+    const body = buildGenerateBody({
+      ...req(),
+      subjectReference: { imageFile: 'data:image/png;base64,AQID' },
+    });
+    assert.deepEqual(body['subject_reference'], [
+      { type: 'character', image_file: 'data:image/png;base64,AQID' },
+    ]);
+  });
+
+  it('omits subject_reference by default', () => {
+    assert.equal('subject_reference' in buildGenerateBody(req()), false);
+  });
+});

@@ -13,6 +13,7 @@ import {
   IMAGE_DIMENSION_MAX,
   IMAGE_DIMENSION_MIN,
   IMAGE_PROMPT_MAX_CHARS,
+  IMAGE_REFERENCE_MAX,
   renderImageToolError,
   renderImageToolResult,
   validateImageRequest,
@@ -97,6 +98,15 @@ export function buildGenerateImageDescriptor(): ImageToolDescriptor {
         promptOptimizer: {
           type: 'boolean',
           description: 'Let MiniMax expand the prompt before generating. Default false.',
+        },
+        referenceImages: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: IMAGE_REFERENCE_MAX,
+          description:
+            'Absolute path of one local .png/.jpg/.webp image (max 10 MB) whose subject should ' +
+            'stay consistent in the output, e.g. the path returned by an earlier generation. ' +
+            'The file is uploaded to MiniMax.',
         },
       },
       required: ['model', 'prompt'],

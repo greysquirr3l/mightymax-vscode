@@ -209,3 +209,19 @@ describe('image renderers', () => {
     assert.match(text, /sensitive prompt/);
   });
 });
+
+describe('validateImageRequest — referenceImages', () => {
+  const base = { model: 'image-01', prompt: 'a crab' };
+
+  it('accepts one supported local image path', () => {
+    const r = validateImageRequest({ ...base, referenceImages: ['/tmp/a.PNG'] });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.deepEqual(r.normalized.referencePaths, ['/tmp/a.PNG']);
+  });
+
+  it('rejects more than one reference, a bad extension, or a non-array', () => {
+    assert.equal(validateImageRequest({ ...base, referenceImages: ['/a.png', '/b.png'] }).ok, false);
+    assert.equal(validateImageRequest({ ...base, referenceImages: ['/a.gif'] }).ok, false);
+    assert.equal(validateImageRequest({ ...base, referenceImages: '/a.png' }).ok, false);
+  });
+});

@@ -145,7 +145,14 @@ export class HailuoVideoAdapter implements VideoGenerator {
         const downloadUrl =
           extractNestedString(json, ['content', 'url']) ??
           extractNestedString(json, ['content', 'video_url']);
-        return { kind: 'success', taskId, ...(downloadUrl !== undefined ? { downloadUrl } : {}) };
+        const width = extractPositiveInt(json, 'video_width');
+        const height = extractPositiveInt(json, 'video_height');
+        return {
+          kind: 'success',
+          taskId,
+          ...(downloadUrl !== undefined ? { downloadUrl } : {}),
+          ...(width !== undefined && height !== undefined ? { width, height } : {}),
+        };
       }
       case 'Fail': {
         const code = String(statusCode);
@@ -339,6 +346,11 @@ async function requestJson(
     throw new HailuoVideoError('parse', response.status, 'response body is not an object');
   }
   return parsed as Record<string, unknown>;
+}
+
+function extractPositiveInt(json: Record<string, unknown>, key: string): number | undefined {
+  const value = json[key];
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function extractString(json: Record<string, unknown>, key: string): string | undefined {

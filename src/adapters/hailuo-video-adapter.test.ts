@@ -291,6 +291,27 @@ describe('HailuoVideoAdapter.pollStatus', () => {
     if (state.kind === 'success') assert.equal(state.downloadUrl, undefined);
   });
 
+  it('surfaces video_width / video_height on success', async () => {
+    const fetch_ = new ScriptedFetch().enqueueJson(200, {
+      task_id: 'task-1',
+      status: 'Success',
+      file_id: '1',
+      video_width: 1280,
+      video_height: 720,
+      base_resp: { status_code: 0, status_msg: 'success' },
+    });
+    const adapter = new HailuoVideoAdapter({
+      fetchImpl: fetch_.fetch,
+      logger: makeSilentLogger(),
+    });
+    const state = await adapter.pollStatus('task-1', API_KEY, new AbortController().signal);
+    assert.equal(state.kind, 'success');
+    if (state.kind === 'success') {
+      assert.equal(state.width, 1280);
+      assert.equal(state.height, 720);
+    }
+  });
+
   it('returns kind: fail with code + message on terminal failure', async () => {
     const fetch_ = new ScriptedFetch().enqueueJson(200, {
       task_id: 'task-1',

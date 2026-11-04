@@ -6,11 +6,14 @@ import {
   type MiniMaxDialect,
   type MiniMaxStreamEvent,
   type MiniMaxTokenCountRequest,
+  type MiniMaxUsageDelta,
   type MiniMaxWireContentPart,
   type MiniMaxWireMessage,
   type MiniMaxWireToolCall,
 } from '../ports/minimax-client.js';
 import { sanitizeAnthropicSchema } from '../lib/domain/anthropic-transform.js';
+import { RequestRateLimiter } from '../lib/domain/rate-limiter.js';
+import { patchMediaBlocks, type UploadableMedia } from '../lib/domain/files-api.js';
 import { formatCaptureLine, type StreamCapture } from './stream-capture.js';
 
 /**
@@ -41,6 +44,24 @@ import { formatCaptureLine, type StreamCapture } from './stream-capture.js';
 export interface MiniMaxClientOptions {
   /** Reads the current base URL on every request. */
   baseUrl: () => string;
+  /**
+   * Optional Files API hook. When `enabled()` is true, inline image and
+   * video blocks on the Anthropic dialect are uploaded and replaced by
+   * `mm_file://` references (see `patchMediaBlocks`). Fail-open.
+   */
+  /**
+   * Requests per minute allowed per API key; a burst beyond it is
+   * paced rather than sent into a 429. 0 or unset disables pacing.
+   */
+  requestsPerMinute?: () => number;
+  filesApi?: {
+    enabled: () => boolean;
+    upload: (
+      apiKey: string,
+      media: UploadableMedia,
+      signal: AbortSignal,
+    ) => Promise<string | undefined>;
+  };
   /** Default: 3. Maximum 429 retries before surfacing RateLimitError. */
   maxRetries?: number;
   /** Default: 250ms. Initial backoff delay before the first retry. */
@@ -338,6 +359,30 @@ interface MutableParseState {
    */
   lastCacheCreateTokens: number | undefined;
   /**
+   * Cumulative `input_tokens` reported by the Anthropic dialect's
+   * `message_start` record. Anthropic splits the input side across
+   * three counters — `input_tokens` (uncached), `cache_read_input_tokens`
+   * and `cache_creation_input_tokens` — so the TOTAL input consumed
+   * by the request is their sum. Every value in this group is a
+   * CUMULATIVE SNAPSHOT, never a delta: a counter reported again in a
+   * later record replaces the earlier reading rather than adding to
+   * it (see `mergeAnthropicUsage`).
+   */
+  lastInputTokens: number | undefined;
+  /**
+   * Cumulative `output_tokens` reported by the Anthropic dialect.
+   * `message_start` seeds it with the first token; `message_delta`
+   * carries the running total for the turn.
+   */
+  lastOutputTokens: number | undefined;
+  /**
+   * Set once a merged usage event has been yielded to the consumer.
+   * The Anthropic stream ends with `message_stop`, which is used as a
+   * fallback for servers that omit `message_delta`; this flag stops
+   * the fallback from emitting a SECOND usage event for the same turn.
+   */
+  usageEmitted: boolean;
+  /**
    * Buffer of pending `content_block_start` (tool_use) events
    * keyed by content block index. Anthropic emits the tool
    * header and argument fragments as separate SSE records; the
@@ -375,6 +420,9 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
   private readonly semaphore: Semaphore;
   /** T41 diagnostic sink; `undefined` unless explicitly enabled. */
   private readonly streamCapture: StreamCapture | undefined;
+  private readonly filesApi: MiniMaxClientOptions['filesApi'];
+  private readonly requestsPerMinute: (() => number) | undefined;
+  private readonly rateLimiter = new RequestRateLimiter();
 
   constructor(options: MiniMaxClientOptions) {
     this.baseUrl = options.baseUrl;
@@ -390,6 +438,8 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     this.idleTimeoutMs = timeoutGetter(options.idleTimeoutMs, IDLE_TIMEOUT_MS);
     this.semaphore = new Semaphore(options.maxConcurrentRequests ?? DEFAULTS.maxConcurrentRequests);
     this.streamCapture = options.streamCapture;
+    this.filesApi = options.filesApi;
+    this.requestsPerMinute = options.requestsPerMinute;
   }
 
   /**
@@ -593,6 +643,9 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         deliveredAnyEvent: false,
         lastCacheReadTokens: undefined,
         lastCacheCreateTokens: undefined,
+        lastInputTokens: undefined,
+        lastOutputTokens: undefined,
+        usageEmitted: false,
         pendingToolUseStarts: new Map(),
         pendingThinking: undefined,
       };
@@ -808,6 +861,12 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
         if (signal.aborted) {
           throw new MiniMaxClientError('abort', 'request aborted', { cause: signal.reason });
         }
+        // The key only indexes an in-memory bucket map; it is never logged.
+        const paceMs = this.rateLimiter.reserve(apiKey, this.requestsPerMinute?.() ?? 0);
+        if (paceMs > 0) {
+          logger.info('Pacing request to stay under the per-key rate limit', { paceMs });
+          await sleepUnlessAborted(paceMs, signal);
+        }
         firstByteTimer = setTimeout(() => {
           firstByteTimedOut = true;
           attemptController.abort(new Error(`no response headers after ${firstByteTimeoutMs}ms`));
@@ -982,10 +1041,19 @@ export class MiniMaxClientAdapter implements MiniMaxClient {
     if (dialect === 'anthropic') {
       headers['anthropic-version'] = ANTHROPIC_VERSION;
     }
-    const body =
-      dialect === 'anthropic'
-        ? JSON.stringify(serializeAnthropicRequest(request))
-        : JSON.stringify(serializeOpenAiRequest(request));
+    let body: string;
+    if (dialect === 'anthropic') {
+      const serialized = serializeAnthropicRequest(request);
+      const filesApi = this.filesApi;
+      if (filesApi?.enabled() === true) {
+        await patchMediaBlocks(serialized.messages, (media) =>
+          filesApi.upload(apiKey, media, signal),
+        );
+      }
+      body = JSON.stringify(serialized);
+    } else {
+      body = JSON.stringify(serializeOpenAiRequest(request));
+    }
 
     const response = await this.fetchImpl(url, {
       method: 'POST',
@@ -1033,7 +1101,7 @@ function serializeOpenAiRequest(request: MiniMaxCompletionRequest): OpenAiReques
     messages: serializeOpenAiMessages(request.messages, request.systemPrompt),
     stream: true,
   };
-  if (request.tools !== undefined) {
+  if (request.tools !== undefined && request.toolChoice !== 'none') {
     // Tool schemas are passed through verbatim. The Anthropic-only
     // `sanitizeAnthropicSchema` lowering happens inside
     // `serializeAnthropicRequest` so the OpenAI wire body carries the
@@ -1284,6 +1352,10 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
     stream: true,
     max_tokens: request.maxTokens ?? 32_000,
   };
+  const cacheControl: { type: 'ephemeral'; ttl?: '5m' | '1h' } = {
+    type: 'ephemeral',
+    ...(request.cacheTtl !== undefined ? { ttl: request.cacheTtl } : {}),
+  };
   if (systemParts.length > 0) {
     // System block always carries `cache_control: ephemeral` so
     // the prefix is reused across requests. The Anthropic
@@ -1294,7 +1366,7 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
       {
         type: 'text',
         text: systemParts.join('\n'),
-        cache_control: { type: 'ephemeral' },
+        cache_control: cacheControl,
       },
     ];
   } else if (request.systemPrompt !== undefined && request.systemPrompt.length > 0) {
@@ -1302,11 +1374,11 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
       {
         type: 'text',
         text: request.systemPrompt,
-        cache_control: { type: 'ephemeral' },
+        cache_control: cacheControl,
       },
     ];
   }
-  if (request.tools !== undefined && request.tools.length > 0) {
+  if (request.tools !== undefined && request.tools.length > 0 && request.toolChoice !== 'none') {
     // Convert OpenAI-format tools to Anthropic format. Tool schemas
     // arrive at the wire boundary in VS Code style (T03 / mapToolsToMiniMax
     // keeps them verbatim so the same array can be serialized to either
@@ -1330,7 +1402,8 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
     } else if (request.toolChoice === 'required') {
       out.tool_choice = { type: 'any' };
     } else if (request.toolChoice === 'none') {
-      // Anthropic doesn't have 'none' - just don't send tools
+      // Anthropic has no `tool_choice: none`; the tools array is
+      // withheld above so the model cannot call anything.
     } else if (typeof request.toolChoice === 'object' && request.toolChoice.function?.name) {
       out.tool_choice = { type: 'tool', name: request.toolChoice.function.name };
     }
@@ -1379,7 +1452,7 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
         // Convert string content to a single text block with the
         // cache_control marker; preserves the wire compatibility
         // for the chat-provider.
-        msg.content = [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }];
+        msg.content = [{ type: 'text', text: content, cache_control: cacheControl }];
       } else if (Array.isArray(content)) {
         // Find the last text or tool_use block. Skip image
         // blocks (Anthropic does not honor cache_control on
@@ -1387,7 +1460,7 @@ export function serializeAnthropicRequest(request: MiniMaxCompletionRequest): An
         for (let i = content.length - 1; i >= 0; i -= 1) {
           const block = content[i] as { type?: unknown };
           if (block.type === 'text' || block.type === 'tool_use') {
-            (content[i] as { cache_control?: unknown }).cache_control = { type: 'ephemeral' };
+            (content[i] as { cache_control?: unknown }).cache_control = cacheControl;
             break;
           }
         }
@@ -1899,6 +1972,77 @@ function flushPendingThinking(parseState: MutableParseState): MiniMaxStreamEvent
   return event;
 }
 
+/**
+ * Merge an Anthropic `usage` block into the request-scoped parse state.
+ *
+ * Every Anthropic usage counter is a CUMULATIVE SNAPSHOT of the turn so
+ * far, not a delta. A counter that appears in two records is therefore
+ * the SAME quantity measured twice — summing them would double-count.
+ * Each field keeps the MAXIMUM value seen, which is safe for
+ * monotonically non-decreasing counters and also survives a proxy that
+ * re-reports a smaller value in a later record.
+ */
+function mergeAnthropicUsage(parseState: MutableParseState, raw: unknown): void {
+  if (!isObject(raw)) return;
+  const u = raw as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    cache_read_input_tokens?: unknown;
+    cache_creation_input_tokens?: unknown;
+  };
+  const keepMax = (current: number | undefined, next: unknown): number | undefined => {
+    if (typeof next !== 'number' || !Number.isFinite(next)) return current;
+    return current === undefined ? next : Math.max(current, next);
+  };
+  parseState.lastInputTokens = keepMax(parseState.lastInputTokens, u.input_tokens);
+  parseState.lastOutputTokens = keepMax(parseState.lastOutputTokens, u.output_tokens);
+  parseState.lastCacheReadTokens = keepMax(
+    parseState.lastCacheReadTokens,
+    u.cache_read_input_tokens,
+  );
+  parseState.lastCacheCreateTokens = keepMax(
+    parseState.lastCacheCreateTokens,
+    u.cache_creation_input_tokens,
+  );
+}
+
+/**
+ * Build the single merged usage event for an Anthropic turn.
+ *
+ * `promptTokens` is the TOTAL input the request consumed —
+ * `input_tokens` + `cache_read_input_tokens` +
+ * `cache_creation_input_tokens` — because Anthropic's `input_tokens`
+ * counts only the UNCACHED portion. This matches the OpenAI dialect,
+ * where `prompt_tokens` includes cached tokens, so the context-window
+ * math reads the same on both dialects.
+ *
+ * Returns `undefined` when the server reported no usage at all: the
+ * chat provider must be able to tell "no usage reported" apart from
+ * "zero tokens used".
+ */
+function buildAnthropicUsageEvent(parseState: MutableParseState): MiniMaxStreamEvent | undefined {
+  const input = parseState.lastInputTokens;
+  const output = parseState.lastOutputTokens;
+  const cacheRead = parseState.lastCacheReadTokens;
+  const cacheCreate = parseState.lastCacheCreateTokens;
+  if (
+    input === undefined &&
+    output === undefined &&
+    cacheRead === undefined &&
+    cacheCreate === undefined
+  ) {
+    return undefined;
+  }
+  const usage: MiniMaxUsageDelta = {};
+  if (input !== undefined || cacheRead !== undefined || cacheCreate !== undefined) {
+    usage.promptTokens = (input ?? 0) + (cacheRead ?? 0) + (cacheCreate ?? 0);
+  }
+  if (output !== undefined) usage.completionTokens = output;
+  if (cacheRead !== undefined) usage.cacheReadTokens = cacheRead;
+  if (cacheCreate !== undefined) usage.cacheCreateTokens = cacheCreate;
+  return { usage };
+}
+
 function* anthropicEventToStreamEvents(
   parsed: unknown,
   parseState: MutableParseState,
@@ -1921,6 +2065,18 @@ function* anthropicEventToStreamEvents(
         },
         finishReason: 'error',
       };
+    }
+    return;
+  }
+  if (type === 'message_start') {
+    // The Anthropic dialect reports the input side of usage here:
+    // `message.usage.input_tokens` (uncached only) plus the two
+    // cache counters. `message_delta` only carries the cumulative
+    // output, so the input half has to be captured here or it is
+    // lost for the turn.
+    const message = (parsed as { message?: unknown }).message;
+    if (isObject(message)) {
+      mergeAnthropicUsage(parseState, (message as { usage?: unknown }).usage);
     }
     return;
   }
@@ -2062,28 +2218,31 @@ function* anthropicEventToStreamEvents(
         yield { finishReason: normalizeAnthropicStopReason(stop) };
       }
     }
-    // Anthropic's `message_delta` event also carries a
-    // top-level `usage` block (cumulative tokens so far,
-    // including cache_read_input_tokens and
-    // cache_creation_input_tokens). Stash the cache values
-    // on parseState so the transport's slow-request warn can
-    // include them. We don't yield a `usage` event from the
-    // message_delta — the chat-provider already gets one
-    // from the `message_start` event if it asks for it; the
-    // transport uses the cumulative value for its own
-    // diagnostic log only.
-    const usage = (parsed as { usage?: unknown }).usage;
-    if (isObject(usage)) {
-      const u = usage as {
-        cache_read_input_tokens?: unknown;
-        cache_creation_input_tokens?: unknown;
-      };
-      if (typeof u.cache_read_input_tokens === 'number') {
-        parseState.lastCacheReadTokens = u.cache_read_input_tokens;
-      }
-      if (typeof u.cache_creation_input_tokens === 'number') {
-        parseState.lastCacheCreateTokens = u.cache_creation_input_tokens;
-      }
+    // Anthropic's `message_delta` event also carries a top-level
+    // `usage` block: the cumulative output tokens for the turn
+    // (plus, on some deployments, a re-report of the cache
+    // counters). Merge it into the input side captured at
+    // `message_start` and yield ONE merged usage event — the
+    // chat-provider has never seen a usage event on this
+    // dialect, which is the dialect every current model uses.
+    mergeAnthropicUsage(parseState, (parsed as { usage?: unknown }).usage);
+    const usageEvent = buildAnthropicUsageEvent(parseState);
+    if (usageEvent && !parseState.usageEmitted) {
+      parseState.usageEmitted = true;
+      yield usageEvent;
+    }
+    return;
+  }
+  if (type === 'message_stop') {
+    // Fallback: a server (or proxy) that omits `message_delta`
+    // still ends the turn with `message_stop`. Surface whatever
+    // usage was captured so the context-window accounting is not
+    // silently zero for the turn. `usageEmitted` keeps this from
+    // producing a second usage event on a normal stream.
+    const usageEvent = buildAnthropicUsageEvent(parseState);
+    if (usageEvent && !parseState.usageEmitted) {
+      parseState.usageEmitted = true;
+      yield usageEvent;
     }
     return;
   }
@@ -2332,3 +2491,22 @@ function computeBackoff(opts: BackoffOpts): number {
 // Re-export the wire-call shape from the port so consumers can use
 // the adapter's types without importing the port module separately.
 export type { MiniMaxWireToolCall };
+
+/** Sleep `ms`, rejecting as an abort error if `signal` fires first. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fail = (): void => {
+      reject(new MiniMaxClientError('abort', 'request aborted while pacing', { cause: signal.reason }));
+    };
+    if (signal.aborted) return fail();
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      fail();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}

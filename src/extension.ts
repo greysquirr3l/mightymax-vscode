@@ -4,7 +4,9 @@ import { LoggerAdapter, type LogLevel } from './adapters/logger.js';
 import { SecretStoreAdapter } from './adapters/secret-store.js';
 import { KeyProviderAdapter } from './adapters/key-provider.js';
 import { MiniMaxClientAdapter } from './adapters/transport.js';
+import { setModelIdsObserver, validateApiKey } from './adapters/api-key-validator.js';
 import { CatalogAdapter } from './adapters/catalog.js';
+import { FilesApiUploader } from './adapters/files-api-adapter.js';
 import { ChatProvider } from './providers/chat-provider.js';
 import { StatusBarAdapter } from './adapters/status-bar.js';
 import { UsageTransportAdapter } from './adapters/usage-transport.js';
@@ -227,8 +229,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // changes apply on the next request without an extension-host
   // restart. Out-of-range values are clamped to the transport's
   // built-in defaults at read time.
+  const filesApiUploader = new FilesApiUploader({ baseUrl, logger });
   const client = new MiniMaxClientAdapter({
     baseUrl,
+    requestsPerMinute: () =>
+      vscode.workspace.getConfiguration('mightyMax').get<number>('requestsPerMinute') ?? 0,
+    filesApi: {
+      enabled: () =>
+        vscode.workspace.getConfiguration('mightyMax').get<boolean>('useFilesApi') ?? false,
+      upload: (apiKey, media, signal) => filesApiUploader.upload(apiKey, media, signal),
+    },
     firstByteTimeoutMs: () =>
       vscode.workspace.getConfiguration('mightyMax').get<number>('firstByteTimeoutMs') ?? 45_000,
     idleTimeoutMs: () =>
@@ -240,6 +250,20 @@ export function activate(context: vscode.ExtensionContext): void {
   // `showDeprecatedModels` refreshes the picker) — register it so the
   // extension host tears it down on deactivate.
   context.subscriptions.push(catalog);
+  // Every key validation reports the models the key can reach; feed
+  // them to the catalog so a newly released model reaches the picker
+  // without a release. The startup sync below covers restarts, since
+  // a stored key is otherwise never re-validated.
+  setModelIdsObserver((ids) => {
+    catalog.setLiveModelIds(ids);
+  });
+  context.subscriptions.push({ dispose: () => setModelIdsObserver(undefined) });
+  void keyProvider
+    .pickKey()
+    .then((pick) => (pick ? validateApiKey(pick.key, baseUrl()) : undefined))
+    .catch((error: unknown) => {
+      logger.debug('Live model sync skipped', { error: String(error) });
+    });
   const recentTurnUsage = new RecentTurnUsageStore();
   const mcpRecency = new McpToolRecencyTracker();
   const chatProvider = new ChatProvider(
@@ -252,8 +276,9 @@ export function activate(context: vscode.ExtensionContext): void {
     mcpRecency,
   );
 
-  // T35 — register the three MCP server-level discovery tools
-  // (`mcp_list_servers`, `mcp_list_tools`, `mcp_load`) with VS Code's
+  // T35 — register the MCP discovery tools (`mcp_search_tools`,
+  // a BM25 relevance search over every loaded MCP tool, and
+  // `mcp_load`) with VS Code's
   // LM host. They're the only path the model has to find an MCP tool
   // that the rolling LRU has dropped from the wire, and `mcp_load`
   // resolves and invokes the underlying tool by name. The live tool
@@ -352,7 +377,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // the API key updates the indicator without waiting for the next
   // tick. A PAYG key or network failure surfaces as a neutral icon,
   // never a red one, matching the "click for details" affordance.
-  const usageClient = new UsageTransportAdapter({ logger });
+  const usageClient = new UsageTransportAdapter({ logger, getBaseUrl: baseUrl });
   const statusBar = new StatusBarAdapter({
     logger,
     keyProvider,

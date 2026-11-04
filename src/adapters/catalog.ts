@@ -20,20 +20,28 @@ import type { Logger } from '../ports/logger.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
 import {
   BUILT_IN_CATALOG,
+  applyContextWindow,
+  coerceContextWindow,
+  DEFAULT_CONTEXT_WINDOW,
   type CatalogEntry,
   filterDeprecated,
+  liveEntriesFromIds,
   mergeCatalog,
+  normalizeModelId,
 } from '../lib/domain/catalog.js';
 
 /** Settings key that re-exposes deprecated models in the picker. */
 const SHOW_DEPRECATED_KEY = 'showDeprecatedModels';
+const CONTEXT_WINDOW_KEY = 'contextWindow';
 
 export class CatalogAdapter implements ModelCatalog {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   private liveModels: ReadonlyArray<CatalogEntry> = [];
+  private servedIds: ReadonlySet<string> | undefined;
   private cachedMerged: ReadonlyArray<ModelInfo> | undefined;
   private cachedMergedLiveKey: ReadonlyArray<CatalogEntry> | undefined;
   private cachedShowDeprecated: boolean | undefined;
+  private cachedWindow: number | undefined;
   private readonly configSub: vscode.Disposable;
 
   constructor(private readonly logger: Logger) {
@@ -43,6 +51,12 @@ export class CatalogAdapter implements ModelCatalog {
     // subscribe so a settings change drops the cache and refreshes
     // the picker instead of waiting for the next API-key rotation.
     this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration(`mightyMax.${CONTEXT_WINDOW_KEY}`)) {
+        // The merged list embeds the window, so it must be rebuilt.
+        this.cachedMerged = undefined;
+        this.changeEmitter.fire();
+        return;
+      }
       if (!e.affectsConfiguration(`mightyMax.${SHOW_DEPRECATED_KEY}`)) return;
       const next = this.readShowDeprecated();
       if (this.cachedShowDeprecated === next) return;
@@ -67,6 +81,12 @@ export class CatalogAdapter implements ModelCatalog {
         .getConfiguration('mightyMax')
         .get<boolean>(SHOW_DEPRECATED_KEY, false) === true
     );
+  }
+
+  /** `mightyMax.contextWindow`, defaulting to the 1M window the catalog advertised before it was selectable. */
+  private readContextWindow(): number {
+    const raw = vscode.workspace.getConfiguration('mightyMax').get<unknown>(CONTEXT_WINDOW_KEY);
+    return coerceContextWindow(raw) ?? DEFAULT_CONTEXT_WINDOW;
   }
 
   public dispose(): void {
@@ -115,14 +135,36 @@ export class CatalogAdapter implements ModelCatalog {
     this.changeEmitter.fire();
   }
 
+  /**
+   * Sync the picker with the ids `/v1/models` reported. Ids the static
+   * catalog already covers are dropped by `mergeCatalog`, so only
+   * genuinely new models change the merged list.
+   */
+  public setLiveModelIds(ids: ReadonlyArray<string>): void {
+    // An empty list is indistinguishable from "the endpoint told us
+    // nothing", so it never counts as evidence that a model is retired.
+    this.servedIds = ids.length > 0 ? new Set(ids.map(normalizeModelId)) : undefined;
+    this.setLiveModels(liveEntriesFromIds(ids));
+  }
+
   private computeMerged(): ReadonlyArray<ModelInfo> {
-    if (this.cachedMerged && this.cachedMergedLiveKey === this.liveModels) {
+    const window = this.readContextWindow();
+    if (
+      this.cachedMerged &&
+      this.cachedMergedLiveKey === this.liveModels &&
+      this.cachedWindow === window
+    ) {
       return this.cachedMerged;
     }
-    const merged = mergeCatalog(BUILT_IN_CATALOG, this.liveModels);
+    const merged = applyContextWindow(mergeCatalog(BUILT_IN_CATALOG, this.liveModels), window);
     this.cachedMerged = Object.freeze(merged);
     this.cachedMergedLiveKey = this.liveModels;
+    this.cachedWindow = window;
     return this.cachedMerged;
+  }
+
+  servedModelIds(): ReadonlySet<string> | undefined {
+    return this.servedIds;
   }
 
   /** Test seam: returns the live list as currently set. */

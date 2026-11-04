@@ -543,8 +543,8 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
     strictEqual(sent.temperature, 1.0);
     strictEqual(sent.topP, 0.95);
     strictEqual(sent.topK, 20);
-    // Output token clamp (opencode OUTPUT_TOKEN_MAX).
-    strictEqual(sent.maxTokens, 32_000);
+    // Output tokens are bounded by the catalog entry's budget.
+    strictEqual(sent.maxTokens, 16_384);
     // M3 native thinking is opted in with `adaptive` (opencode
     // transform.ts:680-688, 1147-1150). M3's Anthropic interface
     // defaults thinking off; the chat-provider must opt in.

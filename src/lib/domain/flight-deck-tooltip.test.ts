@@ -116,6 +116,23 @@ describe('buildFlightDeckTooltip', () => {
     equal(md.includes('5h window:'), false);
   });
 
+  it('adds session token totals under the usage-unavailable line', () => {
+    const md = buildFlightDeckTooltip(
+      baseInput({
+        usage: undefined,
+        usageUnavailable: true,
+        sessionTotals: {
+          turns: 3,
+          promptTokens: 120_000,
+          completionTokens: 4_000,
+          cacheReadTokens: 90_000,
+          cacheCreateTokens: 10_000,
+        },
+      }),
+    );
+    equal(md.includes('Session: 3 turns · input 120k · output 4000 · cache hit 75%'), true);
+  });
+
   it('falls back to "just now" for sub-minute last-fallback ages', () => {
     const now = Date.UTC(2025, 0, 1, 16, 24, 3);
     const md = buildFlightDeckTooltip(

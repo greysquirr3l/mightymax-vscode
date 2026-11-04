@@ -62,6 +62,19 @@ function extractModelIds(json: unknown): string[] {
   return [];
 }
 
+type ModelIdsObserver = (modelIds: ReadonlyArray<string>) => void;
+
+let modelIdsObserver: ModelIdsObserver | undefined;
+
+/**
+ * Register the single listener told about the model ids every
+ * successful validation returns. The extension uses it to feed the
+ * live catalog; validation call sites stay unaware of the catalog.
+ */
+export function setModelIdsObserver(observer: ModelIdsObserver | undefined): void {
+  modelIdsObserver = observer;
+}
+
 export async function validateApiKey(
   apiKey: string,
   baseUrl: string,
@@ -105,5 +118,7 @@ export async function validateApiKey(
   } catch {
     return { ok: false, reason: 'malformed', status: response.status };
   }
-  return { ok: true, modelIds: extractModelIds(json) };
+  const modelIds = extractModelIds(json);
+  modelIdsObserver?.(modelIds);
+  return { ok: true, modelIds };
 }

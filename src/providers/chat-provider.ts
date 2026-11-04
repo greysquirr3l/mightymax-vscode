@@ -36,9 +36,10 @@ import {
   collapseSubAgentToolResultsInDomain,
 } from '../lib/domain/subagent-synthesis.js';
 import { dialectForModel } from '../lib/domain/dialect.js';
-import { wireModelId } from '../lib/domain/catalog.js';
+import { resolveRetiredModel, wireModelId } from '../lib/domain/catalog.js';
 import {
   filterTools,
+  coerceToolFilterStrategy,
   discoverMcpTools,
   selectMcpToolsToInclude,
   DEFAULT_ALWAYS_INCLUDE_TOOLS,
@@ -48,10 +49,13 @@ import {
   type ToolFilterConfig,
 } from '../lib/domain/tool-filter.js';
 import {
-  MCP_LIST_SERVERS_TOOL,
-  MCP_LIST_TOOLS_TOOL,
+  MCP_SEARCH_TOOLS_TOOL,
   MCP_LOAD_TOOL,
 } from '../lib/domain/mcp-search-tools.js';
+import {
+  clampMaxTokensToContext,
+  estimateInputTokens,
+} from '../lib/domain/context-budget.js';
 import { pumpProviderStream } from './stream-pump.js';
 import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
@@ -61,6 +65,7 @@ import {
   coerceThinkingEffort,
   DEFAULT_THINKING_EFFORT,
   isM31FlashFamily,
+  THINKING_EFFORT_VALUES,
   type M3ThinkingMode,
   type ThinkingEffort,
 } from '../lib/domain/anthropic-transform.js';
@@ -267,7 +272,14 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // The id MiniMax should see on the wire. Usually the same as the
     // catalog id, but a deprecated alias (e.g. the M3.1 Flash preview
     // id) sends the model it stands in for.
-    const wireId = wireModelId(modelInfo) ?? model.id;
+    const replacement = resolveRetiredModel(modelInfo, this.catalog.servedModelIds?.());
+    if (replacement !== undefined) {
+      this.logger.warn('ChatProvider: MiniMax no longer serves this model — using its replacement', {
+        model: model.id,
+        replacement,
+      });
+    }
+    const wireId = replacement ?? wireModelId(modelInfo) ?? model.id;
 
     if (modelInfo?.deprecated === true) {
       this.logger.warn(
@@ -403,8 +415,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // them the model has no path to MCP tools beyond the small
     // always-included subset.
     const mcpSearchTools: ReadonlyArray<string> = [
-      MCP_LIST_SERVERS_TOOL,
-      MCP_LIST_TOOLS_TOOL,
+      MCP_SEARCH_TOOLS_TOOL,
       MCP_LOAD_TOOL,
     ];
 
@@ -422,14 +433,23 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         ...mcpSelection.included,
       ],
     };
-    const filterDecision = filterTools(allTools, historyToolNames, effectiveConfig);
+    const filterDecision = filterTools(allTools, historyToolNames, effectiveConfig, {
+      prompt: latestUserPromptText(messages),
+      usage: this.toolUsageStats,
+      strategy: coerceToolFilterStrategy(this.readMightyMaxSetting('toolFilterStrategy')),
+    });
     const keptTools = filterDecision.kept
       .map((name) => allTools.find((t) => t.name === name))
       .filter((t): t is ChatTool => t !== undefined);
     if (filterDecision.dropped.length > 0) {
+      const scores = filterDecision.scores ?? {};
       this.logger.warn('Smart tool filtering dropped tools', {
         droppedCount: filterDecision.dropped.length,
         droppedNames: filterDecision.dropped,
+        topScoredTools: filterDecision.kept
+          .filter((name) => scores[name] !== undefined)
+          .slice(0, 5)
+          .map((name) => ({ name, score: (scores[name] ?? 0).toFixed(3) })),
       });
     }
     const tools = keptTools;
@@ -449,9 +469,30 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // The M-series is tuned at temp=1.0, topP=0.95, topK=20-40; sending
     // the upstream default produces noticeably different outputs.
     const sampler = getModelSampler(model.id);
-    // Clamp max_tokens to 32K (opencode OUTPUT_TOKEN_MAX) so an
-    // agent turn cannot burn the whole context window.
-    const maxTokens = getMaxTokensForModel(model.id);
+    // `mightyMax.maxOutputTokens` bounds an agent turn so it cannot
+    // burn the whole context window; the catalog budget is the ceiling.
+    const ceiling = getMaxTokensForModel(
+      model.id,
+      this.readMaxOutputTokens(),
+      modelInfo?.maxOutputTokens,
+    );
+    // MiniMax 400s when input + max_tokens overflows the context window,
+    // so shrink the ceiling as the conversation grows.
+    const maxTokens =
+      modelInfo === undefined
+        ? ceiling
+        : clampMaxTokensToContext(
+            ceiling,
+            modelInfo.maxInputTokens + modelInfo.maxOutputTokens,
+            estimateInputTokens(
+              mappingResult.messages,
+              miniMaxTools,
+              this.readSystemPromptOverride(),
+            ),
+          );
+    if (maxTokens < ceiling) {
+      this.logger.info('max_tokens reduced to fit the context window', { ceiling, maxTokens });
+    }
     // M3 native thinking: opt the model in to its reasoning block
     // (Anthropic interface defaults thinking OFF, unlike Chat
     // Completions). Without this, M3 rushes the first tool call.
@@ -460,13 +501,20 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     // depth knob (the spec: M3.1-Flash always thinks and rejects
     // `thinking: { type: 'disabled' }` with 400, so `getThinkingConfig`
     // clamps the mode and surfaces the depth here instead).
-    const thinkingMode = this.readM3ThinkingMode();
+    const modelConfiguration = (
+      options as { modelConfiguration?: Readonly<Record<string, unknown>> }
+    ).modelConfiguration;
+    const thinkingMode = modelConfiguration?.['thinkingMode'] === 'disabled' ||
+      modelConfiguration?.['thinkingMode'] === 'adaptive'
+      ? modelConfiguration['thinkingMode']
+      : this.readM3ThinkingMode();
     const thinkingConfig = getThinkingConfig(
       model.id,
       thinkingStyle,
       maxTokens,
       thinkingMode,
-      this.readM31ThinkingEffort(),
+      coerceThinkingEffort(modelConfiguration?.['thinkingEffort']) ??
+        this.readM31ThinkingEffort(),
     );
     if (isM31FlashFamily(model.id) && thinkingMode === 'disabled') {
       // A user with `m3ThinkingMode: 'disabled'` on M3.1-Flash
@@ -475,6 +523,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         model: model.id,
       });
     }
+    const cacheTtl = this.readCacheTtl();
     // User-overridable system prompt.
     const systemPrompt = this.readSystemPromptOverride();
 
@@ -488,6 +537,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       topP: sampler.topP,
       topK: sampler.topK,
       maxTokens,
+      ...(cacheTtl !== undefined ? { cacheTtl } : {}),
       stream: true,
       dialect,
       ...(thinkingConfig !== undefined ? { thinking: thinkingConfig.thinking } : {}),
@@ -859,6 +909,19 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     return Math.min(4_000_000, Math.max(8_000, Math.floor(raw)));
   }
 
+  /** `mightyMax.cacheTtl`: `5m` / `1h`, or undefined for the server default. */
+  private readCacheTtl(): '5m' | '1h' | undefined {
+    const raw = this.readMightyMaxSetting('cacheTtl');
+    return raw === '5m' || raw === '1h' ? raw : undefined;
+  }
+
+  /** `mightyMax.maxOutputTokens`; undefined falls back to the domain default. */
+  private readMaxOutputTokens(): number | undefined {
+    const raw = this.readMightyMaxSetting('maxOutputTokens');
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+    return Math.min(128_000, Math.max(4_096, Math.floor(raw)));
+  }
+
   private readMightyMaxSetting(key: string): unknown {
     if (this.configReader !== undefined) return this.configReader(key);
     const ws = (vscode as { workspace?: { getConfiguration?: (s: string) => unknown } }).workspace;
@@ -1040,11 +1103,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
   }
 
   /**
-   * Track tool usage for any downstream consumer that wants to
-   * learn which tools the model selects most often. T21 keeps
-   * the accumulator around even though the active filtering
-   * path no longer reads it directly — the next iteration can
-   * surface a "frequently-used tools" hint without rebuilding.
+   * Track successful tool calls per name for the session. Read by
+   * `filterTools` as the usage half of the relevance/usage score.
    */
   private recordToolUsage(toolName: string): void {
     const current = this.toolUsageStats.get(toolName) ?? 0;
@@ -1154,6 +1214,50 @@ export function toLanguageModelChatInformation(
     capabilities: {
       imageInput: entry.capabilities.imageInput,
       toolCalling: entry.capabilities.toolCalling,
+    },
+    ...buildConfigurationSchema(entry),
+  };
+}
+
+/**
+ * Per-model picker controls (VS Code's `configurationSchema`). The host
+ * renders each property in the model's details pane and hands the
+ * chosen values back as `options.modelConfiguration`. The field is
+ * outside the stable `@types/vscode` surface, so it is attached as an
+ * untyped extra; a host that does not know it ignores it and the
+ * `mightyMax.*` settings keep applying.
+ */
+function buildConfigurationSchema(entry: ModelInfo): Record<string, unknown> {
+  if (entry.thinkingStyle !== 'anthropic') return {};
+  if (isM31FlashFamily(entry.id)) {
+    return {
+      configurationSchema: {
+        properties: {
+          thinkingEffort: {
+            type: 'string',
+            title: 'Thinking effort',
+            description:
+              'How deeply the model reasons. Default hands the choice to MiniMax; higher levels think longer.',
+            enum: [...THINKING_EFFORT_VALUES],
+            default: DEFAULT_THINKING_EFFORT,
+            group: 'navigation',
+          },
+        },
+      },
+    };
+  }
+  return {
+    configurationSchema: {
+      properties: {
+        thinkingMode: {
+          type: 'string',
+          title: 'Thinking',
+          description: 'Adaptive lets the model decide when to think; disabled turns thinking off.',
+          enum: ['adaptive', 'disabled'],
+          default: 'adaptive',
+          group: 'navigation',
+        },
+      },
     },
   };
 }
@@ -1546,6 +1650,26 @@ function readToolFilterConfig(): ToolFilterConfig {
  * turn cannot be silently dropped by the filter — the model
  * expects to see the result on the next turn.
  */
+/**
+ * Text of the most recent user message that carries any, capped so a
+ * large pasted context does not dilute relevance scoring. Tool-result
+ * only turns are skipped: they hold no request wording.
+ */
+function latestUserPromptText(msgs: ReadonlyArray<vscode.LanguageModelChatRequestMessage>): string {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m === undefined || m.role !== vscode.LanguageModelChatMessageRole.User) continue;
+    const parts =
+      typeof m.content === 'string' ? [new vscode.LanguageModelTextPart(m.content)] : m.content;
+    const text = parts
+      .filter((p): p is vscode.LanguageModelTextPart => p instanceof vscode.LanguageModelTextPart)
+      .map((p) => p.value)
+      .join('\n');
+    if (text.trim().length > 0) return text.slice(-4000);
+  }
+  return '';
+}
+
 function collectHistoryReferencedToolNames(
   msgs: ReadonlyArray<vscode.LanguageModelChatRequestMessage>,
 ): ReadonlyArray<string> {

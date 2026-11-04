@@ -41,7 +41,14 @@ export type VideoTaskState =
   /** Task queued or actively generating; caller should poll again. */
   | { readonly kind: 'pending'; readonly taskId: string; readonly progress?: number }
   /** Task succeeded; caller should download. */
-  | { readonly kind: 'success'; readonly taskId: string; readonly downloadUrl?: string }
+  | {
+      readonly kind: 'success';
+      readonly taskId: string;
+      readonly downloadUrl?: string;
+      /** Output dimensions, when the poll response reports them. */
+      readonly width?: number;
+      readonly height?: number;
+    }
   /** Task failed terminally; retry will not help without changing inputs. */
   | {
       readonly kind: 'fail';
@@ -71,6 +78,9 @@ export interface VideoResult {
   readonly absolutePath: string;
   readonly sizeBytes: number;
   readonly mime: string;
+  /** Output dimensions in pixels, when MiniMax reported them. */
+  readonly width?: number;
+  readonly height?: number;
 }
 
 /** Limits enforced by `validateVideoRequest` (not model-specific). */
@@ -154,7 +164,7 @@ export function validateVideoRequest(req: unknown): VideoValidationResult {
 export function renderVideoToolResult(result: VideoResult): string {
   return (
     `Generated ${result.durationSec}s ${result.model} video at ${result.absolutePath} ` +
-    `(${formatSize(result.sizeBytes)}, task ${result.taskId}). ` +
+    `(${formatDimensions(result)}${formatSize(result.sizeBytes)}, task ${result.taskId}). ` +
     `Tell the user the path; they can open it from the chat widget.`
   );
 }
@@ -170,6 +180,13 @@ export function renderVideoNotificationBody(result: VideoResult): string {
 /** Render the error copy returned to the model when generation fails. */
 export function renderVideoToolError(errorCode: string, errorMessage: string): string {
   return `Video generation failed (${errorCode}): ${errorMessage}`;
+}
+
+/** `1280x720, ` when both dimensions are known, else empty. */
+function formatDimensions(result: VideoResult): string {
+  return result.width !== undefined && result.height !== undefined
+    ? `${String(result.width)}x${String(result.height)}, `
+    : '';
 }
 
 function formatSize(bytes: number): string {

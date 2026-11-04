@@ -1,16 +1,21 @@
 /**
- * T35 - MCP server-level tool discovery.
+ * T35 - MCP tool discovery.
  *
- * Pure domain module. Defines three lightweight invoker tools the
- * chat-provider always includes in the wire so the model can find
- * and call MCP tools without the rolling LRU having to fit every
- * MCP tool schema into the wire on every request.
+ * Pure domain module. Defines two lightweight tools the chat-provider
+ * always includes in the wire so the model can find and call MCP tools
+ * without the rolling LRU having to fit every MCP tool schema into the
+ * wire on every request: `mcp_search_tools` (BM25 relevance search over
+ * every loaded MCP tool) and `mcp_load` (invoke one by exact name).
  */
 import type { Logger } from '../../ports/logger.js';
+import { schemaPropertyNames, searchTools } from './tool-search.js';
 
-export const MCP_LIST_SERVERS_TOOL = 'mcp_list_servers';
-export const MCP_LIST_TOOLS_TOOL = 'mcp_list_tools';
+export const MCP_SEARCH_TOOLS_TOOL = 'mcp_search_tools';
 export const MCP_LOAD_TOOL = 'mcp_load';
+
+/** Default and maximum number of search hits returned. */
+export const MCP_SEARCH_DEFAULT_LIMIT = 8;
+export const MCP_SEARCH_MAX_LIMIT = 25;
 
 export interface LiveMcpToolInfo {
   readonly name: string;
@@ -29,7 +34,7 @@ export interface ToolDescriptor {
 
 export interface McpInvokerResponse {
   readonly text: string;
-  readonly kind: 'servers' | 'tools' | 'tool-result' | 'error';
+  readonly kind: 'search' | 'tool-result' | 'error';
   readonly resolvedTool?: string;
 }
 
@@ -38,8 +43,9 @@ export interface McpLoadOptions {
   readonly logger?: Logger;
 }
 
-export interface McpListToolsInput {
-  readonly server: string;
+export interface McpSearchInput {
+  readonly query: string;
+  readonly limit?: number;
 }
 
 export interface McpLoadInput {
@@ -109,25 +115,27 @@ export function findLiveTool(
 export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
   return [
     {
-      name: MCP_LIST_SERVERS_TOOL,
+      name: MCP_SEARCH_TOOLS_TOOL,
       description:
-        'List the MCP servers currently loaded by VS Code. Returns the server names; call mcp_list_tools with a server name to see what tools that server exposes. Use this when you need to use an MCP tool that is not in your current tool list.',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      tags: ['mcp-discovery'],
-    },
-    {
-      name: MCP_LIST_TOOLS_TOOL,
-      description:
-        'List the tools exposed by one MCP server. Pass the server name from mcp_list_servers to see the tools it exposes. Returned format: <name> -- <description> per tool.',
+        'Search the MCP tools currently loaded by VS Code by what you need to do (for example "create a github pull request" or "query a postgres table"). Returns the best-matching tools with their exact names, descriptions and parameters, across all MCP servers; then call mcp_load with a returned name. Use this when you need an MCP tool that is not in your current tool list.',
       inputSchema: {
         type: 'object',
         properties: {
-          server: {
+          query: {
             type: 'string',
-            description: 'Server name from mcp_list_servers (e.g. "github", "clickup").',
+            description: 'What you want to do, or keywords from the tool name or its parameters.',
+          },
+          limit: {
+            type: 'number',
+            description:
+              'Maximum results (default ' +
+              String(MCP_SEARCH_DEFAULT_LIMIT) +
+              ', max ' +
+              String(MCP_SEARCH_MAX_LIMIT) +
+              ').',
           },
         },
-        required: ['server'],
+        required: ['query'],
         additionalProperties: false,
       },
       tags: ['mcp-discovery'],
@@ -135,13 +143,13 @@ export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
     {
       name: MCP_LOAD_TOOL,
       description:
-        'Invoke one MCP tool by exact name and return its result. The named tool does not need to be in your current tool list; calling mcp_load records the tool as recently used so it joins your tool list for subsequent turns in this session. Use this when you need to run an MCP tool that is not currently in your tool list (typically because the rolling cap dropped it).',
+        'Invoke one MCP tool by exact name and return its result. The named tool does not need to be in your current tool list; calling mcp_load records the tool as recently used so it joins your tool list for subsequent turns in this session. Use this to run an MCP tool found with mcp_search_tools.',
       inputSchema: {
         type: 'object',
         properties: {
           tool: {
             type: 'string',
-            description: 'Exact tool name from mcp_list_tools, e.g. "mcp_github_list_issues".',
+            description: 'Exact tool name from mcp_search_tools, e.g. "mcp_github_list_issues".',
           },
           input: {
             type: 'object',
@@ -158,53 +166,59 @@ export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
   ];
 }
 
-export function handleMcpListServers(opts: McpLoadOptions): McpInvokerResponse {
-  const servers = uniqueMcpServers(opts.tools);
-  if (servers.length === 0) {
-    return { kind: 'servers', text: 'No MCP servers are currently loaded into VS Code.' };
-  }
-  const lines = servers.map(
-    (s, i) =>
-      String(i + 1) + '. ' + s + ' (' + String(toolsForServer(opts.tools, s).length) + ' tools)',
+/** One search hit as the model reads it: exact name, description, parameter names. */
+function renderSearchHit(tool: LiveMcpToolInfo, rank: number): string {
+  const params = schemaPropertyNames(tool.inputSchema, 0);
+  const required = (tool.inputSchema as { required?: unknown } | undefined)?.required;
+  const requiredSet = new Set(Array.isArray(required) ? (required as string[]) : []);
+  const paramText =
+    params.length === 0
+      ? ''
+      : ' | params: ' + params.map((p) => (requiredSet.has(p) ? p + '*' : p)).join(', ');
+  return (
+    String(rank) + '. ' + tool.name + ' -- ' + (tool.description || '(no description)') + paramText
   );
-  return {
-    kind: 'servers',
-    text:
-      String(servers.length) +
-      ' MCP server(s) loaded:\n' +
-      lines.join('\n') +
-      '\n\nCall mcp_list_tools with a server name to see its tools.',
-  };
 }
 
-export function handleMcpListTools(
-  input: McpListToolsInput,
+export function handleMcpSearchTools(
+  input: McpSearchInput,
   opts: McpLoadOptions,
 ): McpInvokerResponse {
-  const trimmed = input.server.trim();
-  if (trimmed === '') {
+  const query = input.query.trim();
+  if (query === '') {
     return {
       kind: 'error',
-      text: '`server` parameter is required. Call mcp_list_servers for the list of loaded servers.',
+      text: '`query` parameter is required. Describe what you want to do, e.g. "create a github pull request".',
     };
   }
-  const tools = toolsForServer(opts.tools, trimmed);
-  if (tools.length === 0) {
-    const known = uniqueMcpServers(opts.tools).join(', ');
+  if (opts.tools.length === 0) {
+    return { kind: 'search', text: 'No MCP tools are currently loaded into VS Code.' };
+  }
+  const limit = Math.min(
+    MCP_SEARCH_MAX_LIMIT,
+    Math.max(1, Math.floor(input.limit ?? MCP_SEARCH_DEFAULT_LIMIT)),
+  );
+  const hits = searchTools(query, opts.tools, limit);
+  if (hits.length === 0) {
     return {
-      kind: 'error',
+      kind: 'search',
       text:
-        'No tools found for server "' +
-        trimmed +
-        '". Currently loaded servers: ' +
-        (known || '(none)') +
-        '.',
+        'No loaded MCP tool matches "' +
+        query +
+        '" (' +
+        String(opts.tools.length) +
+        ' tools across ' +
+        String(uniqueMcpServers(opts.tools).length) +
+        ' server(s)). Try different keywords.',
     };
   }
-  const lines = tools.map((t) => '- ' + t.name + ' -- ' + (t.description || '(no description)'));
   return {
-    kind: 'tools',
-    text: String(tools.length) + ' tool(s) on server "' + trimmed + '":\n' + lines.join('\n'),
+    kind: 'search',
+    text:
+      String(hits.length) +
+      ' matching tool(s) (* = required parameter):\n' +
+      hits.map((h, i) => renderSearchHit(h.tool, i + 1)).join('\n') +
+      '\n\nCall mcp_load with the exact tool name and its input.',
   };
 }
 
@@ -215,7 +229,7 @@ export function validateMcpLoad(input: McpLoadInput, opts: McpLoadOptions): McpL
       ok: false,
       error: {
         kind: 'error',
-        text: '`tool` parameter is required. Call mcp_list_servers then mcp_list_tools to find the exact tool name.',
+        text: '`tool` parameter is required. Call mcp_search_tools to find the exact tool name.',
       },
     };
   }
@@ -243,7 +257,7 @@ export function validateMcpLoad(input: McpLoadInput, opts: McpLoadOptions): McpL
           trimmed +
           '" is not currently loaded. Available servers: ' +
           (known.join(', ') || '(none)') +
-          '. Call mcp_list_tools with a server name for the full list.',
+          '. Call mcp_search_tools to find the exact tool name.',
       },
     };
   }

@@ -153,6 +153,47 @@ function formatTokenCount(tokens: number): string {
  *            structured outputs.
  *  - M1   — 32 768 ctx, tool calling, no native thinking.
  */
+/**
+ * Context windows the M3 family runs with: the 512K default MiniMax Code
+ * ships and the 1M option (which MiniMax flags as higher usage).
+ */
+export const CONTEXT_WINDOW_OPTIONS: ReadonlyArray<number> = Object.freeze([512_000, 1_000_000]);
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+
+export function formatContextWindow(tokens: number): string {
+  return tokens >= 1_000_000 ? `${String(tokens / 1_000_000)}M` : `${String(Math.round(tokens / 1000))}K`;
+}
+
+/** Narrow a setting value to an offered window, or `undefined`. */
+export function coerceContextWindow(raw: unknown): number | undefined {
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return typeof n === 'number' && CONTEXT_WINDOW_OPTIONS.includes(n) ? n : undefined;
+}
+
+/**
+ * Re-size every entry that offers `contextWindowOptions` to `window`:
+ * the input budget becomes `window - maxOutputTokens` and the leading
+ * "NNN ctx" of `detail` is rewritten to match. Entries that do not
+ * offer that window are returned unchanged.
+ *
+ * Pure: no I/O, no vscode.
+ */
+export function applyContextWindow(
+  entries: ReadonlyArray<CatalogEntry>,
+  window: number,
+): CatalogEntry[] {
+  return entries.map((entry) => {
+    if (entry.contextWindowOptions?.includes(window) !== true) return entry;
+    const label = formatContextWindow(window);
+    const hint = window === Math.max(...entry.contextWindowOptions) ? ' (higher usage)' : '';
+    return {
+      ...entry,
+      maxInputTokens: window - entry.maxOutputTokens,
+      detail: entry.detail.replace(/^\S+ ctx/, `${label} ctx${hint}`),
+    };
+  });
+}
+
 export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
   Object.freeze({
     id: 'MiniMax-M3',
@@ -161,6 +202,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     family: MINIMAX_FAMILY,
     maxInputTokens: 872_000,
     maxOutputTokens: 128_000,
+    contextWindowOptions: CONTEXT_WINDOW_OPTIONS,
     capabilities: Object.freeze({
       // Frontier agentic model. The Agent Host's tool picker advertises
       // this number directly (Insiders 1.142+). Verified against live
@@ -181,6 +223,7 @@ export const BUILT_IN_CATALOG: ReadonlyArray<CatalogEntry> = Object.freeze([
     family: MINIMAX_FAMILY,
     maxInputTokens: 872_000,
     maxOutputTokens: 128_000,
+    contextWindowOptions: CONTEXT_WINDOW_OPTIONS,
     capabilities: Object.freeze({
       // Same frontier tier as M3; tunable `effort` parameter does not
       // change the tool slot count.
@@ -371,6 +414,32 @@ export function wireModelId(entry: CatalogEntry | undefined): string | undefined
   return entry.wireId ?? entry.id;
 }
 
+/**
+ * The model to send in place of a retired one.
+ *
+ * A model is treated as retired only when BOTH signals agree: the
+ * static catalog marks it deprecated, and the platform's own
+ * `/v1/models` list (`servedIds`) no longer contains it. Either signal
+ * alone is not enough — a hidden model can still be served, and a live
+ * list can be incomplete — so a healthy model is never swapped.
+ * The replacement is the first current model the platform serves,
+ * falling back to the first current model.
+ *
+ * Returns `undefined` when no replacement applies.
+ *
+ * Pure: no I/O, no vscode.
+ */
+export function resolveRetiredModel(
+  entry: CatalogEntry | undefined,
+  servedIds: ReadonlySet<string> | undefined,
+  currentIds: ReadonlyArray<string> = CURRENT_MODEL_IDS,
+): string | undefined {
+  if (entry === undefined || entry.deprecated !== true) return undefined;
+  if (entry.wireId !== undefined) return undefined; // an alias already names its stand-in
+  if (servedIds === undefined || servedIds.has(entry.id)) return undefined;
+  return currentIds.find((id) => servedIds.has(id)) ?? currentIds[0];
+}
+
 // -----------------------------------------------------------------------------
 // Live-merge
 // -----------------------------------------------------------------------------
@@ -429,6 +498,49 @@ export function normalizeModelId(raw: string): string {
   if (typeof raw !== 'string' || raw.length === 0) return raw;
   return /^minimax-/i.test(raw) ? raw : `MiniMax-${raw}`;
 }
+
+/**
+ * True for ids the platform serves alongside the chat models but that
+ * are not chat models (video, image, speech, music, embeddings). They
+ * share `/v1/models` with the chat family and must never reach the
+ * chat picker.
+ */
+export function isNonChatModelId(id: string): boolean {
+  return /^(minimax-)?(h\d|hailuo|image-|speech-|music-|video-|embo-|t2a|s2v)/i.test(id);
+}
+
+/**
+ * Build bare live entries from the ids `/v1/models` reports. The
+ * endpoint carries no token budgets, so these take the defaults;
+ * `mergeCatalog` then drops any id the static catalog already covers.
+ */
+export function liveEntriesFromIds(
+  ids: ReadonlyArray<string>,
+  defaults: Readonly<LiveModelDefaults> = DEFAULT_LIVE_DEFAULTS,
+): CatalogEntry[] {
+  const out: CatalogEntry[] = [];
+  const seen = new Set<string>();
+  for (const raw of ids) {
+    const id = normalizeModelId(raw.trim());
+    if (id.length === 0 || seen.has(id) || isNonChatModelId(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      displayName: id,
+      vendor: defaults.vendor,
+      family: defaults.family,
+      maxInputTokens: DEFAULT_LIVE_INPUT_TOKENS,
+      maxOutputTokens: defaults.maxOutputTokens,
+      capabilities: { ...defaults.capabilities },
+      thinkingStyle: defaults.thinkingStyle,
+      detail: '',
+    });
+  }
+  return out;
+}
+
+/** Input budget assumed for a live model the static catalog does not know. */
+const DEFAULT_LIVE_INPUT_TOKENS = 200_000;
 
 /**
  * Merge the static built-in catalog with a live list of models fetched
@@ -494,6 +606,7 @@ function fillLiveDefaults(
 ): CatalogEntry | undefined {
   const id = typeof raw.id === 'string' && raw.id.length > 0 ? raw.id : undefined;
   if (!id) return undefined;
+  if (isNonChatModelId(id)) return undefined;
   if (raw.maxInputTokens <= 0 || raw.maxOutputTokens <= 0) return undefined;
 
   const displayName =

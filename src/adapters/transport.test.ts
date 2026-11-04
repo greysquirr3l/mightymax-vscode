@@ -1187,3 +1187,53 @@ describe('T38 — Anthropic image/video content blocks', () => {
     strictEqual(parseDataUri('data:image/png;base64,')?.data, '');
   });
 });
+
+describe('serializeAnthropicRequest — tool_choice none', () => {
+  const tool = {
+    type: 'function' as const,
+    function: { name: 'f', description: 'd', parameters: { type: 'object', properties: {} } },
+  };
+  const base = {
+    model: 'MiniMax-M3',
+    dialect: 'anthropic' as const,
+    messages: [{ role: 'user' as const, content: 'hi' }],
+    stream: true as const,
+    tools: [tool],
+  };
+
+  it('withholds the tools array so none can be called', () => {
+    const body = serializeAnthropicRequest({ ...base, toolChoice: 'none' });
+    strictEqual(body.tools, undefined);
+    strictEqual(body.tool_choice, undefined);
+  });
+
+  it('still sends the tools for auto', () => {
+    const body = serializeAnthropicRequest({ ...base, toolChoice: 'auto' });
+    strictEqual(body.tools?.length, 1);
+  });
+});
+
+describe('serializeAnthropicRequest — cacheTtl', () => {
+  const base = {
+    model: 'MiniMax-M3',
+    dialect: 'anthropic' as const,
+    messages: [{ role: 'user' as const, content: 'hi' }],
+    stream: true as const,
+    systemPrompt: 'sys',
+    cacheMarkers: [1],
+  };
+
+  it('stamps the ttl on the system block and message breakpoints', () => {
+    const body = serializeAnthropicRequest({ ...base, cacheTtl: '1h' });
+    const system = body.system as unknown as Array<{ cache_control?: unknown }>;
+    deepStrictEqual(system[0]?.cache_control, { type: 'ephemeral', ttl: '1h' });
+    const content = body.messages[0]?.content as Array<{ cache_control?: unknown }>;
+    deepStrictEqual(content[0]?.cache_control, { type: 'ephemeral', ttl: '1h' });
+  });
+
+  it('sends a bare ephemeral marker when no ttl is configured', () => {
+    const body = serializeAnthropicRequest(base);
+    const system = body.system as unknown as Array<{ cache_control?: unknown }>;
+    deepStrictEqual(system[0]?.cache_control, { type: 'ephemeral' });
+  });
+});

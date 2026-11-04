@@ -569,16 +569,19 @@ export function getModelSampler(modelId: string): ModelSampler {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Output-token cap for an agent turn. Opencode clamps to 32,000
- * (OUTPUT_TOKEN_MAX in `transform.ts:36`). MiniMax supports larger
- * outputs, but an agent turn that runs the full 65K burns through
- * the context window and the 200 RPM budget faster than necessary.
- * 32K is the opencode sweet spot.
+ * Fallback output-token cap for an agent turn when
+ * `mightyMax.maxOutputTokens` is unset (opencode's OUTPUT_TOKEN_MAX).
+ * The configured value is bounded by the model's catalog budget.
  */
 const AGENT_TURN_MAX_TOKENS = 32_000;
 
-export function getMaxTokensForModel(_modelId: string): number {
-  return AGENT_TURN_MAX_TOKENS;
+export function getMaxTokensForModel(
+  _modelId: string,
+  configured?: number,
+  catalogMax?: number,
+): number {
+  const wanted = configured ?? AGENT_TURN_MAX_TOKENS;
+  return catalogMax !== undefined && catalogMax > 0 ? Math.min(wanted, catalogMax) : wanted;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -597,7 +600,7 @@ export interface ThinkingConfig {
    * other models ignore the field.
    */
   readonly outputConfig?: {
-    readonly effort: ThinkingEffort;
+    readonly effort: Exclude<ThinkingEffort, 'default'>;
   };
 }
 
@@ -638,7 +641,7 @@ export type M3ThinkingMode = 'adaptive' | 'disabled';
  *  2. This is M3.1-only. M3 and the M2.x family ignore the field, so
  *     `getThinkingConfig` never emits it for them.
  */
-export type ThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type ThinkingEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
  * The spec's own default when `output_config` is omitted. We default
@@ -649,6 +652,7 @@ export const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'max';
 
 /** Every valid effort value, in ascending order of depth. */
 export const THINKING_EFFORT_VALUES: ReadonlyArray<ThinkingEffort> = Object.freeze([
+  'default',
   'low',
   'medium',
   'high',
@@ -706,6 +710,7 @@ export function getThinkingConfig(
     },
     // `output_config` is M3.1-only per the spec; M3 and M2.x
     // ignore it, so we don't send it there.
-    ...(isFlash ? { outputConfig: { effort } } : {}),
+    // `default` hands depth back to the server by omitting the field.
+    ...(isFlash && effort !== 'default' ? { outputConfig: { effort } } : {}),
   };
 }

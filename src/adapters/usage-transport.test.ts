@@ -14,7 +14,7 @@
 import { describe, it } from 'node:test';
 import { ok, strictEqual } from 'node:assert/strict';
 
-import { UsageTransportAdapter, DEFAULT_REMAINS_URL } from './usage-transport.js';
+import { UsageTransportAdapter, DEFAULT_REMAINS_URL, remainsUrlForBaseUrl } from './usage-transport.js';
 import { UsageUnavailableError } from '../ports/usage-client.js';
 import type { Logger } from '../ports/logger.js';
 
@@ -204,5 +204,19 @@ describe('UsageTransportAdapter — error mapping', () => {
     if (captured !== undefined) {
       strictEqual(captured.kind, 'parse');
     }
+  });
+});
+
+describe('remainsUrlForBaseUrl', () => {
+  it('maps the international and CN api hosts to their www hosts', () => {
+    strictEqual(remainsUrlForBaseUrl('https://api.minimax.io'), DEFAULT_REMAINS_URL);
+    strictEqual(
+      remainsUrlForBaseUrl('https://api.minimaxi.com/'),
+      'https://www.minimaxi.com/v1/token_plan/remains',
+    );
+  });
+  it('falls back to the default for unparseable or non-api hosts', () => {
+    strictEqual(remainsUrlForBaseUrl('not a url'), DEFAULT_REMAINS_URL);
+    strictEqual(remainsUrlForBaseUrl('https://proxy.example.com'), DEFAULT_REMAINS_URL);
   });
 });

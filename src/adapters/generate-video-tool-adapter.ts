@@ -86,6 +86,7 @@ export async function runGenerateVideoPipeline(
   }
 
   // Poll until success or fail.
+  let dimensions: { width: number; height: number } | undefined;
   const started = Date.now();
   const timeoutMs = deps.config.getTimeoutMs();
   while (true) {
@@ -101,7 +102,12 @@ export async function runGenerateVideoPipeline(
     } catch (err) {
       throw translateAdapterError(err);
     }
-    if (state.kind === 'success') break;
+    if (state.kind === 'success') {
+      if (state.width !== undefined && state.height !== undefined) {
+        dimensions = { width: state.width, height: state.height };
+      }
+      break;
+    }
     if (state.kind === 'fail') {
       throw new Error(renderGenerateVideoToolError(state.errorCode, state.errorMessage));
     }
@@ -127,6 +133,7 @@ export async function runGenerateVideoPipeline(
     absolutePath: ref.absolutePath,
     sizeBytes: ref.sizeBytes,
     mime: ref.mime,
+    ...(dimensions ?? {}),
   };
 }
 

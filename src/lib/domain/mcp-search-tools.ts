@@ -13,6 +13,25 @@ import { schemaPropertyNames, searchTools } from './tool-search.js';
 export const MCP_SEARCH_TOOLS_TOOL = 'mcp_search_tools';
 export const MCP_LOAD_TOOL = 'mcp_load';
 
+/** Our own discovery tools: they carry the `mcp_` prefix but are not MCP-server tools. */
+export const MCP_DISCOVERY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  MCP_SEARCH_TOOLS_TOOL,
+  MCP_LOAD_TOOL,
+]);
+
+/**
+ * True for a tool contributed by an MCP server: `mcp_`-prefixed, and not
+ * one of our own discovery tools. Counting those as MCP tools put them
+ * in the search index, made `mcp_load` able to invoke itself, and
+ * crowded real tools out of the results.
+ */
+export function isMcpServerTool(name: string): boolean {
+  return name.startsWith('mcp_') && !MCP_DISCOVERY_TOOL_NAMES.has(name);
+}
+
+/** Longest description shown per search hit, in characters. */
+export const MCP_SEARCH_DESCRIPTION_MAX_CHARS = 200;
+
 /** Default and maximum number of search hits returned. */
 export const MCP_SEARCH_DEFAULT_LIMIT = 8;
 export const MCP_SEARCH_MAX_LIMIT = 25;
@@ -60,48 +79,6 @@ export interface McpLoadValidation {
   readonly resolvedTool?: string;
 }
 
-/**
- * Parse mcp_<server>_<tool> to { server, tool }. The server is a
- * single snake_case token; the tool is the remainder and may
- * itself contain underscores.
- */
-export function parseMcpName(name: string): { server: string; tool: string } | undefined {
-  if (!name.startsWith('mcp_') || name.length <= 4) return undefined;
-  const rest = name.slice(4);
-  const firstUnderscoreIdx = rest.indexOf('_');
-  if (firstUnderscoreIdx === -1) {
-    return { server: rest, tool: '' };
-  }
-  const server = rest.slice(0, firstUnderscoreIdx);
-  const tool = rest.slice(firstUnderscoreIdx + 1);
-  if (server.length === 0 || !/^[A-Za-z0-9_]+$/.test(server)) return undefined;
-  return { server, tool };
-}
-
-export function uniqueMcpServers(tools: ReadonlyArray<LiveMcpToolInfo>): ReadonlyArray<string> {
-  const seen = new Set<string>();
-  for (const tool of tools) {
-    const parsed = parseMcpName(tool.name);
-    if (parsed === undefined || parsed.server === '') continue;
-    seen.add(parsed.server);
-  }
-  return [...seen].sort();
-}
-
-export function toolsForServer(
-  tools: ReadonlyArray<LiveMcpToolInfo>,
-  server: string,
-): ReadonlyArray<LiveMcpToolInfo> {
-  if (server === '') return [];
-  const prefix = 'mcp_' + server + '_';
-  const matched: LiveMcpToolInfo[] = [];
-  for (const tool of tools) {
-    if (tool.name.startsWith(prefix)) matched.push(tool);
-  }
-  matched.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return matched;
-}
-
 export function findLiveTool(
   tools: ReadonlyArray<LiveMcpToolInfo>,
   name: string,
@@ -111,6 +88,14 @@ export function findLiveTool(
   }
   return undefined;
 }
+
+/** Shared by the runtime descriptor and `package.json`; a test keeps them equal. */
+export const MCP_SEARCH_LIMIT_DESCRIPTION =
+  'Maximum results (default ' +
+  String(MCP_SEARCH_DEFAULT_LIMIT) +
+  ', max ' +
+  String(MCP_SEARCH_MAX_LIMIT) +
+  ').';
 
 export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
   return [
@@ -127,12 +112,7 @@ export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
           },
           limit: {
             type: 'number',
-            description:
-              'Maximum results (default ' +
-              String(MCP_SEARCH_DEFAULT_LIMIT) +
-              ', max ' +
-              String(MCP_SEARCH_MAX_LIMIT) +
-              ').',
+            description: MCP_SEARCH_LIMIT_DESCRIPTION,
           },
         },
         required: ['query'],
@@ -166,6 +146,20 @@ export function buildSearchToolDescriptors(): ReadonlyArray<ToolDescriptor> {
   ];
 }
 
+/**
+ * Collapse a description to a single bounded line. A multi-line
+ * description containing its own numbered list would otherwise inject
+ * phantom `N. <name>` entries into the ranked output, which the model
+ * reads as real tool names.
+ */
+export function oneLine(description: string): string {
+  const flat = description.replace(/\s+/g, ' ').trim();
+  if (flat === '') return '(no description)';
+  return flat.length > MCP_SEARCH_DESCRIPTION_MAX_CHARS
+    ? flat.slice(0, MCP_SEARCH_DESCRIPTION_MAX_CHARS - 1).trimEnd() + '…'
+    : flat;
+}
+
 /** One search hit as the model reads it: exact name, description, parameter names. */
 function renderSearchHit(tool: LiveMcpToolInfo, rank: number): string {
   const params = schemaPropertyNames(tool.inputSchema, 0);
@@ -175,9 +169,7 @@ function renderSearchHit(tool: LiveMcpToolInfo, rank: number): string {
     params.length === 0
       ? ''
       : ' | params: ' + params.map((p) => (requiredSet.has(p) ? p + '*' : p)).join(', ');
-  return (
-    String(rank) + '. ' + tool.name + ' -- ' + (tool.description || '(no description)') + paramText
-  );
+  return String(rank) + '. ' + tool.name + ' -- ' + oneLine(tool.description) + paramText;
 }
 
 export function handleMcpSearchTools(
@@ -191,25 +183,24 @@ export function handleMcpSearchTools(
       text: '`query` parameter is required. Describe what you want to do, e.g. "create a github pull request".',
     };
   }
-  if (opts.tools.length === 0) {
+  const tools = opts.tools.filter((t) => isMcpServerTool(t.name));
+  if (tools.length === 0) {
     return { kind: 'search', text: 'No MCP tools are currently loaded into VS Code.' };
   }
   const limit = Math.min(
     MCP_SEARCH_MAX_LIMIT,
     Math.max(1, Math.floor(input.limit ?? MCP_SEARCH_DEFAULT_LIMIT)),
   );
-  const hits = searchTools(query, opts.tools, limit);
+  const hits = searchTools(query, tools, limit);
   if (hits.length === 0) {
     return {
       kind: 'search',
       text:
         'No loaded MCP tool matches "' +
         query +
-        '" (' +
-        String(opts.tools.length) +
-        ' tools across ' +
-        String(uniqueMcpServers(opts.tools).length) +
-        ' server(s)). Try different keywords.',
+        '" among ' +
+        String(tools.length) +
+        ' loaded MCP tools. Try different keywords.',
     };
   }
   return {
@@ -245,9 +236,20 @@ export function validateMcpLoad(input: McpLoadInput, opts: McpLoadOptions): McpL
       },
     };
   }
+  if (MCP_DISCOVERY_TOOL_NAMES.has(trimmed)) {
+    return {
+      ok: false,
+      error: {
+        kind: 'error',
+        text:
+          '"' +
+          trimmed +
+          '" is a discovery tool, not an MCP server tool, and cannot be loaded. Call mcp_search_tools to find a tool to run.',
+      },
+    };
+  }
   const liveTool = findLiveTool(opts.tools, trimmed);
   if (liveTool === undefined) {
-    const known = uniqueMcpServers(opts.tools);
     return {
       ok: false,
       error: {
@@ -255,9 +257,7 @@ export function validateMcpLoad(input: McpLoadInput, opts: McpLoadOptions): McpL
         text:
           'Tool "' +
           trimmed +
-          '" is not currently loaded. Available servers: ' +
-          (known.join(', ') || '(none)') +
-          '. Call mcp_search_tools to find the exact tool name.',
+          '" is not currently loaded. Call mcp_search_tools to find the exact tool name.',
       },
     };
   }

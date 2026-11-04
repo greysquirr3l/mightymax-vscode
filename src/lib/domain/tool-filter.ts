@@ -33,6 +33,8 @@
  *    next request's filter pass.
  */
 
+import { isMcpServerTool } from './mcp-search-tools.js';
+
 export interface ToolFilterConfig {
   enableSmartToolFiltering: boolean;
   maxTools: number;
@@ -275,7 +277,8 @@ export function matchesAlwaysInclude(
  * the always-include list of a `ToolFilterConfig` BEFORE calling
  * `filterTools`, so the cap cannot drop them.
  *
- * The `mcp_` prefix is the wire convention — we don't enumerate
+ * The `mcp_` prefix is the wire convention (minus our own discovery
+ * tools, which carry it too — see `isMcpServerTool`) — we don't enumerate
  * server names because doing so would require a hard-coded list
  * that goes stale the moment the user adds a new server. If VS
  * Code ever changes the MCP tool-name convention, update this
@@ -284,7 +287,7 @@ export function matchesAlwaysInclude(
 export function discoverMcpTools(allTools: ReadonlyArray<{ name: string }>): ReadonlyArray<string> {
   const out: string[] = [];
   for (const tool of allTools) {
-    if (tool.name.startsWith('mcp_')) out.push(tool.name);
+    if (isMcpServerTool(tool.name)) out.push(tool.name);
   }
   return out;
 }

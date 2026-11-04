@@ -24,6 +24,7 @@ import {
 } from './lib/domain/slot-labels.js';
 import { RecentTurnUsageStore } from './lib/domain/recent-turn-usage.js';
 import { McpToolRecencyTracker } from './lib/domain/mcp-tool-recency.js';
+import { isMcpServerTool } from './lib/domain/mcp-search-tools.js';
 import {
   registerMcpSearchTools,
   type McpSearchAdapterDeps,
@@ -289,7 +290,7 @@ export function activate(context: vscode.ExtensionContext): void {
     logger,
     getLiveMcpTools: () =>
       vscode.lm.tools
-        .filter((t) => t.name.startsWith('mcp_'))
+        .filter((t) => isMcpServerTool(t.name))
         .map((t) => ({
           name: t.name,
           description: t.description,

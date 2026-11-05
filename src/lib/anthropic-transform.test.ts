@@ -528,11 +528,11 @@ describe('coerceThinkingEffort', () => {
 describe('getThinkingConfig — M3.1 Flash', () => {
   const FLASH = 'MiniMax-M3.1-Flash-Preview';
 
-  it('carries output_config.effort defaulting to `max`', () => {
+  it('carries output_config.effort defaulting to `medium`', () => {
     const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000);
     ok(cfg);
     equal(cfg?.thinking.type, 'adaptive');
-    equal(cfg?.outputConfig?.effort, 'max');
+    equal(cfg?.outputConfig?.effort, 'medium');
   });
 
   it('honors an explicit effort level', () => {

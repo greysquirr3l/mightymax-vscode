@@ -644,11 +644,12 @@ export type M3ThinkingMode = 'adaptive' | 'disabled';
 export type ThinkingEffort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
- * The spec's own default when `output_config` is omitted. We default
- * the setting to this so that "unset" and "set to default" produce
- * identical behaviour rather than silently downgrading depth.
+ * Default depth for the setting. The spec's own default when
+ * `output_config` is omitted is `max`, but that is slow enough to read
+ * as a stall in an agent loop, so we default to `medium`. Choose
+ * `default` to omit the field and get the API's own depth.
  */
-export const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'max';
+export const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'medium';
 
 /** Every valid effort value, in ascending order of depth. */
 export const THINKING_EFFORT_VALUES: ReadonlyArray<ThinkingEffort> = Object.freeze([

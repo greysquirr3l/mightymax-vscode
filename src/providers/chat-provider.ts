@@ -877,7 +877,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
    *
    * Falls back to `DEFAULT_THINKING_EFFORT` on an unknown value so
    * a typo or a future MiniMax-only level degrades to the spec's own
-   * default (`max`) rather than 400-ing the request.
+   * default (`medium`) rather than 400-ing the request.
    */
   private readM31ThinkingEffort(): ThinkingEffort {
     return (
@@ -1237,7 +1237,7 @@ function buildConfigurationSchema(entry: ModelInfo): Record<string, unknown> {
             type: 'string',
             title: 'Thinking effort',
             description:
-              'How deeply the model reasons. Default hands the choice to MiniMax; higher levels think longer.',
+              'How deeply the model reasons. Higher levels think longer; Default hands the choice to MiniMax.',
             enum: [...THINKING_EFFORT_VALUES],
             default: DEFAULT_THINKING_EFFORT,
             group: 'navigation',

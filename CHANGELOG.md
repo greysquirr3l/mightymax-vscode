@@ -6,6 +6,19 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-11-05
+
+Hotfix. Agent turns on MiniMax-M3.1-Flash could look hung because the
+default thinking depth was the slowest one.
+
+### Changed
+
+- **`mightyMax.m31ThinkingEffort` now defaults to `medium` (was `max`).**
+  M3.1 Flash always thinks, so `max` made routine agent turns slow.
+  Explicit settings are unaffected. Choose `default` to omit
+  `output_config.effort` (MiniMax then thinks at `max`), or `max` to
+  keep the old behaviour. M3 and the M2.x family ignore the field.
+
 ## [0.13.0] — 2026-11-03
 
 Minor release. Acts on a comparison against MiniMax Code.app: it fixes

@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -285,14 +285,14 @@
             "xhigh",
             "max"
           ],
-          "default": "max",
+          "default": "medium",
           "enumDescriptions": [
-            "Let MiniMax choose the depth (the field is omitted from the request).",
+            "Let MiniMax choose the depth (the field is omitted from the request; the API then thinks at its own default, which is `max`).",
             "Shallowest reasoning — fastest, lowest token cost.",
             "Light reasoning for routine edits and lookups.",
             "Balanced reasoning for most agentic work.",
             "Deep reasoning for architecture and multi-step refactors.",
-            "Fullest reasoning — slowest and most expensive. Matches the API's own default when the field is omitted."
+            "Fullest reasoning — slowest and most expensive."
           ],
           "description": "Thinking depth for MiniMax-M3.1-Flash, sent as `output_config.effort` on the Anthropic-compatible endpoint. Affects M3.1 Flash only — MiniMax documents that M3 and the M2.x family ignore this field. M3.1 Flash cannot disable thinking entirely, so 'low' is the cheapest option. Higher levels increase latency and token spend.",
           "scope": "window"

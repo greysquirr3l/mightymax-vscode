@@ -56,6 +56,46 @@ export function estimateInputTokens(
 }
 
 /**
+ * Per-turn output caps by thinking depth. Reasoning tokens count
+ * against `max_tokens`, so a shallow depth gets a smaller host-owned
+ * ceiling: the server cannot think past it however long it wants to.
+ * `high` and above leave the configured ceiling alone.
+ */
+const EFFORT_OUTPUT_CAPS: Readonly<Record<string, number>> = Object.freeze({
+  low: 16_384,
+  medium: 32_768,
+});
+
+/** Apply the effort-scaled cap; efforts without one return `maxTokens` unchanged. */
+export function capMaxTokensForEffort(maxTokens: number, effort: string | undefined): number {
+  const cap = effort === undefined ? undefined : EFFORT_OUTPUT_CAPS[effort];
+  return cap === undefined ? maxTokens : Math.min(maxTokens, cap);
+}
+
+/**
+ * Tokens a thinking turn is expected to spend on reasoning, by depth
+ * (pi-ai's default budgets: low 2048, medium 8192, high 16384). With
+ * adaptive thinking there is no `budget_tokens` to hand the server, so
+ * this is the estimate the context clamp pre-deducts to keep
+ * input + reasoning + answer inside the window. Thinking off reserves
+ * nothing; an unspecified depth is treated as the deepest.
+ */
+export function thinkingReserveTokens(
+  thinkingType: 'enabled' | 'adaptive' | 'disabled' | undefined,
+  effort: string | undefined,
+): number {
+  if (thinkingType === undefined || thinkingType === 'disabled') return 0;
+  switch (effort) {
+    case 'low':
+      return 2_048;
+    case 'medium':
+      return 8_192;
+    default:
+      return 16_384;
+  }
+}
+
+/**
  * Clamp the configured output ceiling to the room left in the context
  * window. `contextWindow` is input + output capacity of the model.
  */
@@ -63,7 +103,9 @@ export function clampMaxTokensToContext(
   configured: number,
   contextWindow: number,
   estimatedInputTokens: number,
+  thinkingReserve = 0,
 ): number {
-  const room = contextWindow - estimatedInputTokens - DYNAMIC_MAX_TOKENS_SAFETY_MARGIN;
+  const room =
+    contextWindow - estimatedInputTokens - DYNAMIC_MAX_TOKENS_SAFETY_MARGIN - thinkingReserve;
   return Math.min(configured, Math.max(DYNAMIC_MAX_TOKENS_FLOOR, room));
 }

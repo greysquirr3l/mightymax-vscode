@@ -18,9 +18,10 @@
  *     Auto-rotation: ON
  *     Last fallback: slot 2 · 3m ago
  *     ─────────────────────────
- *     5h window: 42% used `████░░░░░░`
- *     Weekly:    18% used `██░░░░░░░░`
- *     as of 16:24:03 · click for details
+ *     5h window: 42% used `████░░░░░░` · resets in 1h 13m (15:42) · limiting
+ *     Weekly:    18% used `██░░░░░░░░` · resets in 5d 10h (Sat 08:00)
+ *     Video: 0/3 today · 0/21 this week · resets in 10h (02:00)
+ *     as of 16:24:03 UTC · click for details
  *
  * Red-dot overlay (T32 acceptance): the status-bar item's text gets
  * ` $(error)` appended whenever the active slot is in cooldown, so
@@ -41,7 +42,13 @@
  *     the renderer is defensive).
  */
 import type { KeySlot } from './key-pool.js';
-import type { TokenPlanUsage } from './usage-normalization.js';
+import { bindingWindow, type TokenPlanPool, type TokenPlanUsage } from './usage-normalization.js';
+import {
+  formatClockSeconds,
+  formatCount,
+  formatReset,
+  utcOffsetLabel,
+} from './usage-format.js';
 import type { RecentTurnUsage, SessionUsageTotals } from './recent-turn-usage.js';
 
 export interface FlightDeckTooltipInput {
@@ -72,7 +79,14 @@ export interface FlightDeckTooltipInput {
   readonly noKey: boolean;
   /** True when the usage fetch returned `UsageUnavailableError` (PAYG key etc.). */
   readonly usageUnavailable: boolean;
+  /** Why the fetch failed; absent is treated as `not-token-plan` (the legacy meaning). */
+  readonly usageFailure?: UsageFailure;
+  /** Minutes east of UTC for rendered clock times; defaults to 0 (labelled `UTC`). */
+  readonly utcOffsetMinutes?: number;
 }
+
+/** `not-token-plan`: a key with no plan bar. `network`: unreachable or server error. `schema`: unrecognised body. */
+export type UsageFailure = 'not-token-plan' | 'network' | 'schema';
 
 const SEPARATOR = '─────────────────────────';
 
@@ -89,18 +103,6 @@ function relativeAgo(fromMs: number, nowMs: number): string {
   }
   const h = Math.floor(delta / (60 * 60_000));
   return `${String(h)}h ago`;
-}
-
-function fmtClock(ms: number): string {
-  // Use UTC components so the rendered timestamp is independent of
-  // the host's local timezone — important for cross-host CI and for
-  // tests that want a deterministic output. Real wall-clock displays
-  // should use `toLocaleTimeString()` if the host's tz is wanted.
-  const d = new Date(ms);
-  const hh = String(d.getUTCHours()).padStart(2, '0');
-  const mm = String(d.getUTCMinutes()).padStart(2, '0');
-  const ss = String(d.getUTCSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
 }
 
 /** 10-cell Unicode block bar. Same convention as the webview tooltip. */
@@ -140,7 +142,12 @@ function slotLine(slot: KeySlot, input: FlightDeckTooltipInput): string {
   return `${slotPrefix(slot)} ${dot} healthy${activeMark}${labelSuffix}`;
 }
 
-function usageLine(windowLabel: string, pct: number): string {
+function usageLine(
+  windowLabel: string,
+  pct: number,
+  resets: string | undefined,
+  limiting: boolean,
+): string {
   // Map the canonical labels to the compact form the T32 spec
   // uses in the tooltip so the line width stays tight. Anything
   // else falls through verbatim.
@@ -149,9 +156,25 @@ function usageLine(windowLabel: string, pct: number): string {
       ? '5h window'
       : windowLabel === 'Weekly window'
         ? 'Weekly'
-        : windowLabel;
+        : windowLabel === 'Daily window'
+          ? 'Daily'
+          : windowLabel;
   const padded = `${compact}:`.padEnd(11, ' ');
-  return `${padded}${String(pct)}% used ${bar(pct)}`;
+  const tail = [
+    ...(resets !== undefined ? [`resets ${resets}`] : []),
+    ...(limiting ? ['limiting'] : []),
+  ];
+  return `${padded}${String(pct)}% used ${bar(pct)}${tail.length > 0 ? ` · ${tail.join(' · ')}` : ''}`;
+}
+
+function poolLine(pool: TokenPlanPool, nowMs: number, offset: number): string {
+  const parts = pool.windows.map((w) => {
+    const count = formatCount(w);
+    return count ?? `${String(w.percentUsed)}% used (${w.label})`;
+  });
+  const soonest = pool.windows.find((w) => w.resetsAt !== undefined)?.resetsAt;
+  const resets = soonest !== undefined ? ` · resets ${formatReset(soonest, nowMs, offset)}` : '';
+  return `${pool.label}: ${parts.join(' · ')}${resets}`;
 }
 
 function recentTurnUsageLine(recent: RecentTurnUsage | undefined): string | undefined {
@@ -183,23 +206,46 @@ function sessionTotalsLine(totals: SessionUsageTotals | undefined): string | und
   return `Session: ${parts.join(' · ')}`;
 }
 
+function failureNote(failure: UsageFailure): string {
+  switch (failure) {
+    case 'network':
+      return "_Couldn't reach MiniMax to read quota — will retry automatically_";
+    case 'schema':
+      return "_Quota response wasn't recognised (MiniMax may have changed it) — click for details_";
+    case 'not-token-plan':
+      return '_usage unavailable (pay-as-you-go keys have no Token Plan bar)_';
+  }
+}
+
 function usageSection(input: FlightDeckTooltipInput): readonly string[] {
   if (input.usageUnavailable) {
     const session = sessionTotalsLine(input.sessionTotals);
     return [
-      '_usage unavailable (pay-as-you-go keys have no Token Plan bar)_',
+      failureNote(input.usageFailure ?? 'not-token-plan'),
       ...(session !== undefined ? [session] : []),
     ];
   }
   if (input.usage === undefined) {
     return ['_usage unavailable — click for details_'];
   }
+  const offset = input.utcOffsetMinutes ?? 0;
   const lines: string[] = [];
+  const binding = input.usage.windows.length > 1 ? bindingWindow(input.usage) : undefined;
   for (const w of input.usage.windows) {
-    lines.push(usageLine(w.label, w.percentUsed));
+    lines.push(
+      usageLine(
+        w.label,
+        w.percentUsed,
+        w.resetsAt !== undefined ? formatReset(w.resetsAt, input.nowMs, offset) : undefined,
+        w === binding,
+      ),
+    );
   }
   if (lines.length === 0) {
     lines.push('_No quota windows reported._');
+  }
+  for (const pool of input.usage.pools ?? []) {
+    lines.push(poolLine(pool, input.nowMs, offset));
   }
   return lines;
 }
@@ -236,7 +282,10 @@ export function buildFlightDeckTooltip(input: FlightDeckTooltipInput): string {
   for (const line of usageSection(input)) {
     lines.push(line);
   }
-  lines.push(`as of ${fmtClock(input.nowMs)} · click for details`);
+  const offset = input.utcOffsetMinutes ?? 0;
+  lines.push(
+    `as of ${formatClockSeconds(input.nowMs, offset)} ${utcOffsetLabel(offset)} · click for details`,
+  );
   // A plain '\n' is a markdown *soft* break — VS Code's renderer
   // collapses it to a space, so the whole tooltip reflows into one
   // paragraph. Two trailing spaces force a CommonMark hard break.
@@ -248,6 +297,8 @@ export interface FlightDeckTextInput {
   readonly icon: string;
   /** Headline percentage; undefined → just the icon, no percent. */
   readonly percentUsed: number | undefined;
+  /** Compact name of the window the percentage belongs to (`5h`, `wk`). */
+  readonly windowShort?: string;
   /** True when the user's active slot is currently in cooldown. */
   readonly activeInCooldown: boolean;
 }
@@ -258,8 +309,11 @@ export interface FlightDeckTextInput {
  * Pure.
  */
 export function buildFlightDeckText(input: FlightDeckTextInput): string {
+  const window = input.windowShort !== undefined ? `${input.windowShort} ` : '';
   const base =
-    input.percentUsed === undefined ? input.icon : `${input.icon} ${String(input.percentUsed)}%`;
+    input.percentUsed === undefined
+      ? input.icon
+      : `${input.icon} ${window}${String(input.percentUsed)}%`;
   return input.activeInCooldown ? `${base} $(error)` : base;
 }
 

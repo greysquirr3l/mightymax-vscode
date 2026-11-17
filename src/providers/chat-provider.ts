@@ -22,6 +22,7 @@ import type {
   MiniMaxClientErrorKind,
   MiniMaxCompletionRequest,
   MiniMaxTokenCountRequest,
+  MiniMaxWireMessage,
 } from '../ports/minimax-client.js';
 import { MiniMaxClientError } from '../ports/minimax-client.js';
 import type { ModelCatalog, ModelInfo } from '../ports/model-catalog.js';
@@ -53,9 +54,20 @@ import {
   MCP_LOAD_TOOL,
 } from '../lib/domain/mcp-search-tools.js';
 import {
+  DYNAMIC_MAX_TOKENS_FLOOR,
+  capMaxTokensForEffort,
   clampMaxTokensToContext,
+  thinkingReserveTokens,
   estimateInputTokens,
 } from '../lib/domain/context-budget.js';
+import {
+  COMPACTION_INSTRUCTIONS,
+  CompactionCache,
+  prefixKeys,
+  renderTranscript,
+} from '../lib/domain/compaction.js';
+import { createReviewGate, type ReviewGate } from './review-gate.js';
+import { OutputBudget } from '../lib/domain/output-budget.js';
 import { pumpProviderStream } from './stream-pump.js';
 import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
@@ -103,6 +115,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     128,
   );
   private readonly nativeTokenCountInFlight = new Map<string, Promise<number>>();
+  private readonly compactionCache = new CompactionCache();
+  private readonly outputBudget = new OutputBudget();
   private static readonly NATIVE_TOKEN_COUNT_TTL_MS = 30_000;
   /**
    * Floor between real `countTokens` network attempts, independent of the
@@ -290,18 +304,33 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     }
 
     // Map messages to MiniMax wire format (model first, then messages)
-    const mappingResult = mapRequestToMiniMax(
-      {
-        id: model.id,
+    const mapHistory = (compactionSummary?: string): ReturnType<typeof mapRequestToMiniMax> =>
+      mapRequestToMiniMax(
+        {
+          id: model.id,
+          thinkingStyle,
+          videoInput: modelInfo?.capabilities.videoInput,
+        },
+        enrichedMessages,
+        {
+          toolResultMaxChars: this.readToolResultMaxChars(),
+          historyMaxChars: this.readHistoryMaxChars(),
+          ...(compactionSummary !== undefined ? { compactionSummary } : {}),
+        },
+      );
+    let mappingResult = mapHistory();
+    // Compaction: rather than losing the exchanges the pruner dropped,
+    // fold them into a model-written summary and re-map with it.
+    if (mappingResult.prunedMessages.length > 0 && this.readCompactionEnabled()) {
+      const summary = await this.summarizeDropped(
+        wireId,
         thinkingStyle,
-        videoInput: modelInfo?.capabilities.videoInput,
-      },
-      enrichedMessages,
-      {
-        toolResultMaxChars: this.readToolResultMaxChars(),
-        historyMaxChars: this.readHistoryMaxChars(),
-      },
-    );
+        dialect,
+        mappingResult.prunedMessages,
+        token,
+      );
+      if (summary !== undefined) mappingResult = mapHistory(summary);
+    }
 
     // Log any mapping warnings, deduplicated. A long history
     // re-maps in full every request, so one structural quirk can
@@ -476,23 +505,6 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       this.readMaxOutputTokens(),
       modelInfo?.maxOutputTokens,
     );
-    // MiniMax 400s when input + max_tokens overflows the context window,
-    // so shrink the ceiling as the conversation grows.
-    const maxTokens =
-      modelInfo === undefined
-        ? ceiling
-        : clampMaxTokensToContext(
-            ceiling,
-            modelInfo.maxInputTokens + modelInfo.maxOutputTokens,
-            estimateInputTokens(
-              mappingResult.messages,
-              miniMaxTools,
-              this.readSystemPromptOverride(),
-            ),
-          );
-    if (maxTokens < ceiling) {
-      this.logger.info('max_tokens reduced to fit the context window', { ceiling, maxTokens });
-    }
     // M3 native thinking: opt the model in to its reasoning block
     // (Anthropic interface defaults thinking OFF, unlike Chat
     // Completions). Without this, M3 rushes the first tool call.
@@ -508,14 +520,69 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       modelConfiguration?.['thinkingMode'] === 'adaptive'
       ? modelConfiguration['thinkingMode']
       : this.readM3ThinkingMode();
-    const thinkingConfig = getThinkingConfig(
+    const plannedThinking = getThinkingConfig(
       model.id,
       thinkingStyle,
-      maxTokens,
+      ceiling,
       thinkingMode,
       coerceThinkingEffort(modelConfiguration?.['thinkingEffort']) ??
         this.readM31ThinkingEffort(),
     );
+    // MiniMax 400s when input + max_tokens overflows the context window,
+    // so shrink the ceiling as the conversation grows, pre-deducting
+    // the reasoning the turn is expected to spend.
+    //
+    // Emergency path: if sizing the request throws (an unserializable
+    // tool schema, say), send it with reasoning off and the floor
+    // budget rather than failing the turn.
+    let emergency = false;
+    let contextClamped = ceiling;
+    try {
+      if (modelInfo !== undefined) {
+        const contextWindow = modelInfo.maxInputTokens + modelInfo.maxOutputTokens;
+        contextClamped = clampMaxTokensToContext(
+          ceiling,
+          contextWindow,
+          await this.resolveInputTokens(model.id, mappingResult, miniMaxTools, contextWindow, token),
+          thinkingReserveTokens(plannedThinking?.thinking.type, plannedThinking?.outputConfig?.effort),
+        );
+      }
+    } catch (err) {
+      if (token.isCancellationRequested) throw err;
+      emergency = true;
+      contextClamped = Math.min(ceiling, DYNAMIC_MAX_TOKENS_FLOOR);
+      this.logger.warn('Request sizing failed; sending with reasoning off and the floor budget', {
+        error: err instanceof Error ? err.message : String(err),
+        maxTokens: contextClamped,
+      });
+    }
+    const thinkingConfig = emergency ? undefined : plannedThinking;
+    if (contextClamped < ceiling) {
+      this.logger.info('max_tokens reduced to fit the context window', {
+        ceiling,
+        maxTokens: contextClamped,
+      });
+    }
+    // Host-owned output cap by thinking depth: reasoning tokens count
+    // against max_tokens, so a shallow effort bounds how long the
+    // server can think regardless of what it decides adaptively.
+    const effortCapped = capMaxTokensForEffort(contextClamped, thinkingConfig?.outputConfig?.effort);
+    // Hard stop: a rolling output-token allowance that bounds total
+    // spend across turns whatever the model decides to think.
+    const budgetRemaining = this.outputBudgetRemaining();
+    if (budgetRemaining === 0) {
+      throw new Error(
+        'Mighty Max output-token budget exhausted (mightyMax.outputTokenBudget). ' +
+          'It refills as turns age out of the window; raise or set it to 0 to lift the limit.',
+      );
+    }
+    const maxTokens = Math.min(effortCapped, budgetRemaining ?? effortCapped);
+    if (maxTokens < contextClamped) {
+      this.logger.info('max_tokens capped by effort or output budget', {
+        effort: thinkingConfig?.outputConfig?.effort,
+        maxTokens,
+      });
+    }
     if (isM31FlashFamily(model.id) && thinkingMode === 'disabled') {
       // A user with `m3ThinkingMode: 'disabled'` on M3.1-Flash
       // would otherwise get an unexplained HTTP 400 on every turn.
@@ -565,6 +632,13 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       cacheMarkers: mappingResult.cacheMarkers.length,
     });
 
+    // Content-review gating: hold output until the stream's verdict
+    // when `streamUnreviewedOutput` is off.
+    const gate: ReviewGate = createReviewGate(
+      progress,
+      this.readMightyMaxSetting('streamUnreviewedOutput') === false,
+    );
+    let finalFinishReason: string | undefined;
     try {
       // Convert CancellationToken to AbortSignal. Each attempt
       // gets its own AbortController so that an auth failure on
@@ -601,7 +675,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
               attemptController.signal,
               this.logger,
             ),
-            progress,
+            progress: gate.progress,
             thinkingStyle,
             logger: this.logger,
             recordToolUsage: (name) => this.recordToolUsage(name),
@@ -631,6 +705,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
             });
           }
           lastError = undefined;
+          finalFinishReason = pumpResult.finishReason;
           break;
         } catch (err) {
           // Cancellation: never mark or rotate, just propagate.
@@ -716,6 +791,54 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
 
       if (pumpResult.usage !== undefined) {
         this.recentTurnUsage?.record(pumpResult.usage);
+        this.outputBudget.record(pumpResult.usage.completionTokens ?? 0, Date.now());
+      }
+
+      // Overthinking guard: the turn spent its whole output budget on
+      // reasoning and produced nothing the user or the tool loop can
+      // use. Thinking is never rendered as an answer, so retrying once
+      // with reasoning turned off (M3) or at its shallowest (M3.1-Flash,
+      // which rejects `disabled`) cannot duplicate visible output.
+      const retryRequest =
+        pick !== undefined &&
+        pumpResult.finishReason === 'length' &&
+        pumpResult.text.length === 0 &&
+        pumpResult.toolCallIds.length === 0 &&
+        pumpResult.thinking !== undefined
+          ? this.buildNoThinkingRetry(
+              request,
+              model.id,
+              Math.min(contextClamped, this.outputBudgetRemaining() ?? contextClamped),
+            )
+          : undefined;
+      if (pick !== undefined && retryRequest !== undefined) {
+        this.logger.warn('Turn exhausted max_tokens on reasoning alone; retrying with reduced thinking', {
+          model: model.id,
+          maxTokens: request.maxTokens,
+        });
+        const retryController = new AbortController();
+        const onRetryCancel = token.onCancellationRequested(() => retryController.abort());
+        try {
+          pumpResult = await pumpProviderStream({
+            events: this.client.streamCompletion(
+              retryRequest,
+              pick.key,
+              retryController.signal,
+              this.logger,
+            ),
+            progress: gate.progress,
+            thinkingStyle,
+            logger: this.logger,
+            recordToolUsage: (name) => this.recordToolUsage(name),
+          });
+          if (pumpResult.usage !== undefined) {
+            this.recentTurnUsage?.record(pumpResult.usage);
+            this.outputBudget.record(pumpResult.usage.completionTokens ?? 0, Date.now());
+          }
+          finalFinishReason = pumpResult.finishReason;
+        } finally {
+          onRetryCancel.dispose();
+        }
       }
 
       // Cache the thinking block if we captured one, keyed by message content hash.
@@ -777,6 +900,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
         throw new Error(`MiniMax API error (${err.kind}): ${err.message}`);
       }
       throw err;
+    } finally {
+      gate.release(finalFinishReason);
     }
   }
 
@@ -862,9 +987,153 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     this.thinkingCache.clear();
     this.nativeTokenCountCache.clear();
     this.nativeTokenCountInFlight.clear();
+    this.compactionCache.clear();
+    this.outputBudget.clear();
     this.recentTurnUsage?.clear();
     this.toolUsageStats.clear();
     this.mcpRecency?.clear();
+  }
+
+  /**
+   * Request for the one-shot retry after a reasoning-only `length`
+   * stop: thinking off for M3, `low` effort for M3.1-Flash (which
+   * 400s on `disabled`), with the full context-clamped output budget.
+   * Returns undefined when the request has no further thinking to shed.
+   */
+  private buildNoThinkingRetry(
+    request: MiniMaxCompletionRequest,
+    modelId: string,
+    maxTokens: number,
+  ): MiniMaxCompletionRequest | undefined {
+    if (request.thinking === undefined || maxTokens <= 0) return undefined;
+    if (isM31FlashFamily(modelId)) {
+      if (request.outputConfig?.effort === 'low' && maxTokens <= (request.maxTokens ?? 0)) return undefined;
+      return { ...request, maxTokens, outputConfig: { effort: 'low' } };
+    }
+    if (request.thinking.type === 'disabled') return undefined;
+    const { outputConfig: _drop, ...rest } = request;
+    void _drop;
+    return { ...rest, maxTokens, thinking: { type: 'disabled' } };
+  }
+
+  /**
+   * Input-token count for the max_tokens clamp. The chars/3 heuristic
+   * is pessimistic and only matters near the window limit, so the
+   * native `count_tokens` call (cached, throttled) is spent only once
+   * the estimate passes half the window; any failure keeps the estimate.
+   */
+  private async resolveInputTokens(
+    modelId: string,
+    mapped: { messages: MiniMaxCompletionRequest['messages']; cacheMarkers: ReadonlyArray<number> },
+    tools: MiniMaxCompletionRequest['tools'],
+    contextWindow: number,
+    token: vscode.CancellationToken,
+  ): Promise<number> {
+    const systemPrompt = this.readSystemPromptOverride();
+    const estimate = estimateInputTokens(mapped.messages, tools, systemPrompt);
+    if (estimate < contextWindow / 2 || !this.canUseNativeTokenCount(modelId)) return estimate;
+    const request: MiniMaxTokenCountRequest = {
+      model: modelId,
+      messages: mapped.messages.filter((m) => m.role !== undefined),
+      ...(tools !== undefined ? { tools } : {}),
+      systemPrompt,
+      ...(mapped.cacheMarkers.length > 0 ? { cacheMarkers: mapped.cacheMarkers } : {}),
+    };
+    return this.getNativeTokenCount(this.nativeTokenCountCacheKey(request), request, token, estimate);
+  }
+
+  /** `mightyMax.enableContextCompaction`: summarize pruned history (default on). */
+  private readCompactionEnabled(): boolean {
+    return this.readMightyMaxSetting('enableContextCompaction') !== false;
+  }
+
+  /** Tokens left in the rolling output budget, or undefined when it is off. */
+  private outputBudgetRemaining(): number | undefined {
+    const tokens = this.readMightyMaxSetting('outputTokenBudget');
+    const minutes = this.readMightyMaxSetting('outputBudgetWindowMinutes');
+    return this.outputBudget.remaining(
+      {
+        tokens: typeof tokens === 'number' && Number.isFinite(tokens) ? Math.floor(tokens) : 0,
+        windowMs:
+          (typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 ? minutes : 60) *
+          60_000,
+      },
+      Date.now(),
+    );
+  }
+
+  /**
+   * Summarize the exchanges the history pruner dropped. Cached by
+   * dropped-prefix hash, so a growing conversation only pays to fold
+   * its newly dropped tail into the previous summary. Fails open: any
+   * error returns the best cached summary, or undefined (plain pruning).
+   */
+  private async summarizeDropped(
+    wireId: string,
+    thinkingStyle: ThinkingStyle,
+    dialect: ReturnType<typeof dialectForModel>,
+    dropped: ReadonlyArray<MiniMaxWireMessage>,
+    token: vscode.CancellationToken,
+  ): Promise<string | undefined> {
+    const keys = prefixKeys(wireId, dropped);
+    const hit = this.compactionCache.find(keys);
+    if (hit !== undefined && hit.covered === dropped.length) return hit.summary;
+    const controller = new AbortController();
+    const onCancel = token.onCancellationRequested(() => controller.abort());
+    try {
+      const pick = await this.keyProvider.pickKey();
+      if (pick === undefined) return hit?.summary;
+      const budget = this.outputBudgetRemaining();
+      if (budget !== undefined && budget < 1_024) return hit?.summary;
+      const prompt =
+        COMPACTION_INSTRUCTIONS +
+        (hit === undefined
+          ? '\n\nConversation to summarize:\n'
+          : `\n\nExisting summary:\n${hit.summary}\n\nNew turns to fold into it:\n`) +
+        renderTranscript(dropped.slice(hit?.covered ?? 0));
+      const thinking = getThinkingConfig(wireId, thinkingStyle, 4_096, 'disabled', 'low');
+      const request: MiniMaxCompletionRequest = {
+        model: wireId,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        maxTokens: Math.min(4_096, budget ?? 4_096),
+        stream: true,
+        dialect,
+        ...(thinking !== undefined ? { thinking: thinking.thinking } : {}),
+        ...(thinking?.outputConfig !== undefined ? { outputConfig: thinking.outputConfig } : {}),
+      };
+      let summary = '';
+      for await (const event of this.client.streamCompletion(
+        request,
+        pick.key,
+        controller.signal,
+        this.logger,
+      )) {
+        if (event.textDelta !== undefined) summary += event.textDelta;
+        if (event.usage?.completionTokens !== undefined) {
+          this.outputBudget.record(event.usage.completionTokens, Date.now());
+        }
+        if (event.error !== undefined) throw new Error(event.error.message);
+      }
+      summary = summary.trim().slice(0, 12_000);
+      if (summary.length === 0) return hit?.summary;
+      const lastKey = keys[keys.length - 1];
+      if (lastKey !== undefined) this.compactionCache.set(lastKey, summary);
+      this.logger.info('Compacted pruned history into a summary', {
+        droppedMessages: dropped.length,
+        summaryChars: summary.length,
+        incremental: hit !== undefined,
+      });
+      return summary;
+    } catch (err) {
+      if (controller.signal.aborted) throw err;
+      this.logger.warn('History compaction failed; falling back to plain pruning', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return hit?.summary;
+    } finally {
+      onCancel.dispose();
+    }
   }
 
   private readM3ThinkingMode(): M3ThinkingMode {

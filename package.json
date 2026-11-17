@@ -2,7 +2,7 @@
   "name": "mighty-max",
   "displayName": "Mighty Max",
   "description": "MiniMax M-series language models for VS Code Chat (BYOK)",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "publisher": "greysquirr3l",
   "license": "MIT",
   "icon": "assets/img/mighty_max_head.png",
@@ -291,8 +291,8 @@
             "Shallowest reasoning — fastest, lowest token cost.",
             "Light reasoning for routine edits and lookups.",
             "Balanced reasoning for most agentic work.",
-            "Deep reasoning for architecture and multi-step refactors.",
-            "Fullest reasoning — slowest and most expensive."
+            "Deep reasoning for architecture and multi-step refactors. Sent as `high`.",
+            "Sent as `high`; the API's own `max` is only reachable through `default`."
           ],
           "description": "Thinking depth for MiniMax-M3.1-Flash, sent as `output_config.effort` on the Anthropic-compatible endpoint. Affects M3.1 Flash only — MiniMax documents that M3 and the M2.x family ignore this field. M3.1 Flash cannot disable thinking entirely, so 'low' is the cheapest option. Higher levels increase latency and token spend.",
           "scope": "window"
@@ -380,6 +380,32 @@
           "minimum": 8000,
           "maximum": 4000000,
           "description": "Maximum characters of conversation history sent to MiniMax in one request. Complements toolResultMaxChars: that caps each tool result, this caps the whole request. When the history exceeds this budget the OLDEST complete exchanges are dropped (a tool call and its result are always dropped together, never split). Raise it for long sessions with large file reads; lower it if requests fail with HTTP 500 on long-running chats.",
+          "scope": "window"
+        },
+        "mightyMax.enableContextCompaction": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the history exceeds historyMaxChars, summarize the oldest exchanges with a short model call and keep the summary, instead of silently dropping them. Costs one extra low-effort request on turns where more history is pruned; falls back to plain dropping if the call fails.",
+          "scope": "window"
+        },
+        "mightyMax.outputTokenBudget": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Hard cap on total output tokens (reasoning included) across turns within outputBudgetWindowMinutes. Each request's max_tokens is cut to what is left, and requests are refused once it is spent. 0 disables the budget.",
+          "scope": "window"
+        },
+        "mightyMax.outputBudgetWindowMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "description": "Sliding window for outputTokenBudget. Spend older than this no longer counts against the budget.",
+          "scope": "window"
+        },
+        "mightyMax.streamUnreviewedOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream model output to the chat as it arrives. Turn off to hold each turn's output until the stream ends, so a response MiniMax's content filter withheld is replaced by a notice instead of partly shown. Costs the live typing effect.",
           "scope": "window"
         },
         "mightyMax.enableAutoKeyRotation": {
@@ -685,7 +711,8 @@
   },
   "overrides": {
     "markdown-it": "^14.2.0",
-    "serialize-javascript": "^7.0.5",
+    "serialize-javascript": "^7.1.3",
+    "minimatch": "^11.0.1",
     "xml2js": "^0.5.0",
     "qs": "^6.17.1"
   },
@@ -696,13 +723,13 @@
     "@types/vscode": "1.125.0",
     "@vscode/test-cli": "0.0.15",
     "@vscode/test-electron": "3.1.0",
-    "@vscode/vsce": "4.1.0",
+    "@vscode/vsce": "4.1.1",
     "esbuild": "0.28.2",
     "eslint": "10.14.0",
     "mocha": "12.0.3",
-    "prettier": "3.9.10",
-    "rimraf": "6.1.3",
+    "prettier": "3.10.1",
+    "rimraf": "6.1.4",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.72.1"
+    "typescript-eslint": "8.72.2"
   }
 }

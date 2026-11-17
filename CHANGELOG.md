@@ -6,6 +6,57 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-11-17
+
+Reins in MiniMax overthinking and keeps long sessions coherent.
+
+### Added
+
+- Overthinking clamps: `xhigh`/`max` effort is sent as `high`; `low`/`medium`
+  effort cap per-turn `max_tokens`; a reasoning-only `length` stop is retried
+  once with thinking off (M3) or `low` effort (M3.1 Flash).
+- The `max_tokens` context clamp uses the native `count_tokens` result once the
+  estimate passes half the window.
+- `mightyMax.enableContextCompaction`: pruned history is summarized (cached,
+  incremental) instead of dropped.
+- `mightyMax.outputTokenBudget` / `outputBudgetWindowMinutes`: rolling hard cap
+  on total output tokens across turns.
+- Context clamp pre-deducts expected reasoning tokens by effort; if sizing the
+  request throws, it is sent with reasoning off and the floor budget.
+- Content-filter handling: a filtered turn shows a notice; with
+  `mightyMax.streamUnreviewedOutput` off, output is held until the stream's
+  verdict. Anthropic `refusal` stops now map to the content filter.
+- "Summarize pruned history" toggle in the Settings submenu of Manage.
+- Clearer quota display: the status-bar percentage names its window (`5h 27%`),
+  the tooltip and Usage panel show local reset times ("resets in 55m (10:00)")
+  and mark the limiting window, window names come from their real length, the
+  video pool's daily/weekly counts are shown, tooltip clocks say which zone they
+  are in, and "pay-as-you-go key", "couldn't reach MiniMax" and "unrecognised
+  response" are now distinct messages.
+
+### Changed
+
+- **`xhigh` and `max` effort are now sent to MiniMax as `high`.** Only
+  `default` still reaches the API's own (deepest) depth. `low` and `medium`
+  also cap per-turn `max_tokens` (16,384 / 32,768) on M3.1 Flash.
+- **History compaction is on by default** (`mightyMax.enableContextCompaction`).
+  Turns that prune more history make one extra low-effort request; turn it off
+  in Manage → Settings, or set the option to `false`, to keep plain dropping.
+
+### Security
+
+- Cleared the open Dependabot alerts by overriding `minimatch` to `^11.0.1`
+  (denial of service via glob amplification) and `serialize-javascript` to
+  `^7.1.3` (XSS). Both are dev-only transitive dependencies and do not ship in
+  the extension.
+- Folded in the open Dependabot updates: dev-dependency group (`@vscode/vsce`
+  4.1.1, `prettier` 3.10.1, `rimraf` 6.1.4, `typescript-eslint` 8.72.2) and
+  `softprops/action-gh-release` 3.0.4.
+- Compaction sends the exchanges being pruned to MiniMax, to the same endpoint
+  and with the same key as a normal turn, as a summary request. Summaries are
+  held in memory only (at most eight, never written to disk) and are not
+  logged; logs carry counts only. See `SECURITY.md`.
+
 ## [0.13.1] — 2026-11-05
 
 Hotfix. Agent turns on MiniMax-M3.1-Flash could look hung because the
@@ -114,7 +165,6 @@ removed — see **Removed**.
   `mcp_search_tools`. `mcp_load` is unchanged. A session or prompt that
   names either removed tool will get a "tool not found"; point it at
   `mcp_search_tools`.
-
 
 - **Open VSX publishing is dropped, not deferred.** The `greysquirr3l`
   namespace was granted on Open VSX on 2026-07-24, so the release
@@ -323,7 +373,7 @@ false`, so the Agent Host received a plain boolean and the cap did
 ### Fixed
 
 - **The protocol scrubber no longer eats the model's answer.** The
-  first cut of the scrubber treated _any_ marker as the start of
+  first cut of the scrubber treated *any* marker as the start of
   protocol and suppressed everything up to the next `>`. A marker with
   no tag behind it — which happens whenever the model writes the
   sequence without a protocol tag — therefore swallowed the prose that
@@ -396,7 +446,7 @@ false`, so the Agent Host received a plain boolean and the cap did
 
 - **`Stream finished` no longer logs `toolCallCount: 0` for every
   request.** The count came from `currentToolCallIds`, which
-  `flushAccumulator` only populates _after_ the finish event is logged,
+  `flushAccumulator` only populates *after* the finish event is logged,
   so the field could never report anything but zero — 800 of 800
   streams in a captured log. That makes every agent turn look like it
   produced no tool call, which is actively misleading when diagnosing
@@ -448,7 +498,7 @@ still-unconfirmed stream-corruption report.
   image out of a `LanguageModelToolResultPart` and flushes the binary
   onto the same turn, so a result-carrying turn looks like
   `[tool-result, image]`. Because that turn had image parts, the user
-  wire message carrying the image was pushed _before_ the tool-result
+  wire message carrying the image was pushed *before* the tool-result
   flush, producing:
 
   ```
@@ -456,8 +506,8 @@ still-unconfirmed stream-corruption report.
   ```
 
   Anthropic and MiniMax both reject that with HTTP 400,
-  `invalid_request_error`: _invalid params, tool call result does not
-  follow tool call (2013)_. The orphan reconciler could not catch it —
+  `invalid_request_error`: *invalid params, tool call result does not
+  follow tool call (2013)*. The orphan reconciler could not catch it —
   that pass checks id **membership** in a conversation-wide set, not
   adjacency, so the result still "found" its call.
 
@@ -466,7 +516,7 @@ still-unconfirmed stream-corruption report.
   request rejected on every key in the pool — which then rotated all
   three slots looking for an auth fault that did not exist.
 
-  On a `user`-role turn the results now flush _first_ and the user
+  On a `user`-role turn the results now flush *first* and the user
   turn (text plus images) follows. An `assistant`-role turn keeps its
   original order, because that message is the one carrying the
   `tool_use`; flushing its results early would invert them ahead of
@@ -563,7 +613,7 @@ Gates: compile clean · `eslint src --max-warnings 0` clean ·
 - **`mightyMax.historyMaxChars` caps the whole request.** New setting
   (default 500,000) bounding total conversation history, complementing
   `toolResultMaxChars`, which caps each result. Nothing previously
-  bounded the message _count_ — a captured session grew to 186
+  bounded the message *count* — a captured session grew to 186
   messages / ~269k chars and ended in a hard 500. When history
   exceeds the budget the **oldest complete exchanges** are dropped. A
   tool call and its result are always dropped together, never split,
@@ -617,7 +667,7 @@ built-in capability on the floor; all are now closed.
 - **Images returned by a tool now reach the model.** Asking the agent
   to look at an image and report back produced
   `[tool result data omitted: image/png, 9328978 bytes]` in place of
-  the image — the agent could see a file the _user_ attached, but
+  the image — the agent could see a file the *user* attached, but
   never one it had just fetched itself (reproduced live against the
   real `view_image` tool). The tool-result wire is string-only, but
   the domain content array already has an `image` variant, so the
@@ -646,7 +696,7 @@ built-in capability on the floor; all are now closed.
   removed `runSubagent` from the always-include pin list so the model
   would prefer our `minimax_subagent` wrapper (single chat box
   instead of a wall of blank boxes). That made the built-in sub-agent
-  tool _droppable_: on an install with 80+ tools, `mightyMax.maxTools`
+  tool *droppable*: on an install with 80+ tools, `mightyMax.maxTools`
   could remove sub-agent delegation for a whole turn with no visible
   error. "Prefer our wrapper" is a description-ordering concern; "the
   built-in is always available" is a correctness one, so both are now
@@ -720,8 +770,8 @@ capability, the image-01 generator, and repo visibility for
   Two spec details worth calling out:
 
   - The adapter requests `response_format: "base64"` rather than
-    the default `"url"`. The spec warns _"⚠️ Note: url expires in
-    24 hours"_, and the artifact store wants bytes on disk, so
+    the default `"url"`. The spec warns *"⚠️ Note: url expires in
+    24 hours"*, and the artifact store wants bytes on disk, so
     this avoids a second round-trip and removes the expiry window.
   - `aspectRatio` combined with `width`/`height` is **rejected**
     rather than resolved. The spec says `aspect_ratio` "takes
@@ -795,7 +845,7 @@ Minor release — two additive features, no breaking changes.
   match. Beta access is gated to the M Plan / MiniMax Code tier;
   the catalog entry advertises the model but calls /v1/messages
   against your stored API key as usual. **Known gap:** the
-  docs note M3 and M3.1-Flash-Preview also accept _video_ input
+  docs note M3 and M3.1-Flash-Preview also accept *video* input
   via Anthropic content blocks; this PR only lights up image
   input. Video input is a separate message-mapping change
   (tracked as a follow-up; will require a new `videoInput`
@@ -1559,7 +1609,7 @@ fellBackFrom, atMs)` and `readonly lastFallback` so the
 
 - **`node:test` suites no longer silently skip under the VS Code
   test harness.** Nearly every test file registered with
-  `node:test`, but `@vscode/test-cli` only awaits _Mocha's_
+  `node:test`, but `@vscode/test-cli` only awaits *Mocha's*
   completion before tearing down the extension host — so slow
   `node:test` suites raced the teardown and lost: `chat-provider`,
   `stream-pump`, and the standalone `tool-filtering` label reported
@@ -1599,7 +1649,7 @@ fellBackFrom, atMs)` and `readonly lastFallback` so the
 
 - **`node:test` suites no longer silently skip under the VS Code
   test harness.** Nearly every test file registers with `node:test`,
-  but `@vscode/test-cli` only awaits _Mocha's_ completion before
+  but `@vscode/test-cli` only awaits *Mocha's* completion before
   tearing down the extension host — so slow `node:test` suites
   raced the teardown and lost: `chat-provider.test.js` and
   `stream-pump.test.js` (unit label) and the entire standalone
@@ -1804,7 +1854,7 @@ watchdogs close the gap:
   `MiniMaxClientError` kind, `stall`.
 - **Idle timeout** (`mightyMax.idleTimeoutMs`, default 60s): no bytes
   on an open stream within the budget cuts the connection with
-  `stall`. Silence _before_ the first delivered event is re-issued
+  `stall`. Silence *before* the first delivered event is re-issued
   transparently (the consumer saw nothing); silence after surfaces a
   user-facing chat error, since re-issuing would duplicate delivered
   content. The watchdog measures gaps between bytes, never total
@@ -1946,7 +1996,7 @@ shrinks below the 900-line godfile threshold.
 
 ### Added
 
-- **T20 — Utility-model onboarding**: new command `mightyMax.configureUtilityModels` (and a "Configure utility models" row on the `mightyMax.manage` QuickPick) writes one of three settings with a single click. **Activation nudge** (this release) fires at most once per VS Code install: when the API key is stored AND `chat.byokUtilityModelDefault` is `'none'`/unset AND `chat.utilityModel` is unset AND the user has not previously dismissed the prompt, an information message surfaces with _Configure_ / _Don't ask again_ buttons. The dismissal flag persists in `globalState` (key `minimax.utilityNudgeDismissed.v1`); the prompt never reappears after either outcome.
+- **T20 — Utility-model onboarding**: new command `mightyMax.configureUtilityModels` (and a "Configure utility models" row on the `mightyMax.manage` QuickPick) writes one of three settings with a single click. **Activation nudge** (this release) fires at most once per VS Code install: when the API key is stored AND `chat.byokUtilityModelDefault` is `'none'`/unset AND `chat.utilityModel` is unset AND the user has not previously dismissed the prompt, an information message surfaces with *Configure* / *Don't ask again* buttons. The dismissal flag persists in `globalState` (key `minimax.utilityNudgeDismissed.v1`); the prompt never reappears after either outcome.
 - **Stream-pump extraction**: the per-event `for await` consumer inside `ChatProvider.provideLanguageModelChatResponse` moved to `src/providers/stream-pump.ts` (`pumpProviderStream`). The function consumes a `MiniMaxStreamEvent` iterable, projects it onto `vscode.Progress<vscode.LanguageModelResponsePart>`, accumulates text / thinking / tool-calls, and flushes the tool-call accumulator on every terminal path (mid-stream error, any `finishReason`, stream-end with no finish marker). New tests in `src/providers/stream-pump.test.ts` lock the four T19 invariants (finish/tool_calls, finish/stop after tool-call, stream-end with no marker, mid-stream error). `chat-provider.ts` shrinks to ~720 lines, below the 900-line godfile threshold the T19 spec called out.
 
   Closes the `No utility model is configured for 'copilot-utility-small'` error users hit the moment they select a MiniMax model as the main agent model. The pure `decideUtilityNudge` helper (the 4-condition conjunction, 8-case truth table fully tested) drives the new activation nudge.

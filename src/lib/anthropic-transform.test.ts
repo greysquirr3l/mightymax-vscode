@@ -553,6 +553,12 @@ describe('getThinkingConfig — M3.1 Flash', () => {
     );
   });
 
+  it('clamps xhigh and max to high on the wire', () => {
+    for (const level of ['xhigh', 'max'] as const) {
+      equal(getThinkingConfig(FLASH, 'anthropic', 32_000, 'adaptive', level)?.outputConfig?.effort, 'high');
+    }
+  });
+
   it('still carries effort when the mode was clamped', () => {
     const cfg = getThinkingConfig(FLASH, 'anthropic', 32_000, 'disabled', 'high');
     equal(cfg?.thinking.type, 'adaptive');

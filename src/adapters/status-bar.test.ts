@@ -21,7 +21,7 @@
 import { describe, it, beforeEach } from 'node:test';
 import { equal, ok } from 'node:assert/strict';
 
-import { StatusBarAdapter, type StatusBarDeps } from './status-bar.js';
+import { StatusBarAdapter, classifyUsageFailure, type StatusBarDeps } from './status-bar.js';
 import type { KeyProvider, KeySlot } from '../ports/key-provider.js';
 import type { Logger } from '../ports/logger.js';
 import type { SecretStore } from '../ports/secret-store.js';
@@ -111,6 +111,7 @@ function makeAdapterHarness(opts: {
       ? { getSlotLabelsRaw: opts.getSlotLabelsRaw }
       : {}),
     now: () => opts.nowMs ?? Date.UTC(2025, 0, 1, 16, 24, 3),
+    utcOffsetMinutes: () => 0,
     createItem: ((_id: string, _alignment: unknown, _priority: number) => {
       const item: FakeStatusBarItem = {
         text: '',
@@ -167,7 +168,7 @@ describe('StatusBarAdapter — T32 flight-deck render states', () => {
     ok(md.includes('Last fallback: (none yet)'));
     ok(md.includes('5h window: 42% used'));
     ok(md.includes('Weekly:    18% used'));
-    ok(md.includes('as of 16:24:03 · click for details'));
+    ok(md.includes('as of 16:24:03 UTC · click for details'));
   });
 
   it('one-slot-cooldown: shows "cooldown Ns" on the cooled-down slot AND a $(error) text suffix when the active slot is the one in cooldown', async () => {
@@ -239,3 +240,15 @@ describe('StatusBarAdapter — T32 flight-deck render states', () => {
 // other tools (the actual usage is in the type annotations above).
 void ({} as KeySlot);
 void ({} as KeyProvider);
+
+describe('classifyUsageFailure', () => {
+  it('separates a keyless plan from outages and schema drift', () => {
+    equal(classifyUsageFailure(new UsageUnavailableError('unavailable', 'HTTP 404')), 'not-token-plan');
+    equal(
+      classifyUsageFailure(new UsageUnavailableError('unavailable', 'HTTP 503', { retriable: true })),
+      'network',
+    );
+    equal(classifyUsageFailure(new UsageUnavailableError('network', 'down')), 'network');
+    equal(classifyUsageFailure(new UsageUnavailableError('parse', 'bad')), 'schema');
+  });
+});

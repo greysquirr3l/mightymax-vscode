@@ -33,7 +33,7 @@
  * host-glue-but-otherwise-pure tests.
  */
 
-import { deepStrictEqual, match, ok, strictEqual } from 'node:assert/strict';
+import { deepStrictEqual, match, ok, rejects, strictEqual } from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import * as vscode from 'vscode';
@@ -2222,5 +2222,178 @@ describe('ChatProvider T19 — response-part correctness', () => {
       toolCalls.length >= 1,
       'expected the in-flight tool call to be flushed before the error is surfaced',
     );
+  });
+});
+
+describe('ChatProvider — overthinking guards', () => {
+  const user = (text: string) =>
+    new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, text);
+  const run = async (
+    entry: ModelInfo,
+    client: MiniMaxClient,
+    config: Record<string, unknown> = {},
+    messages: vscode.LanguageModelChatMessage[] = [user('hi')],
+  ): Promise<void> => {
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([entry]),
+      (key) => config[key],
+    );
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(entry),
+      messages,
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      makeProgress().progress,
+      new vscode.CancellationTokenSource().token,
+    );
+  };
+  const reasoningOnly: MiniMaxStreamEvent[] = [
+    { thinkingDelta: 'hmm' },
+    { usage: { completionTokens: 100 } },
+    { finishReason: 'length' },
+  ];
+
+  it('retries an M3 reasoning-only length stop once with thinking disabled', async () => {
+    const client = makeFakeClient([reasoningOnly, [{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    await run(M3, client);
+    strictEqual(client.calls.length, 2);
+    strictEqual(client.calls[0]?.request.thinking?.type, 'adaptive');
+    strictEqual(client.calls[1]?.request.thinking?.type, 'disabled');
+  });
+
+  it('retries M3.1 Flash at low effort, never disabled', async () => {
+    const client = makeFakeClient([reasoningOnly, [{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    await run(M3_1_FLASH_PREVIEW, client, { m31ThinkingEffort: 'high' });
+    strictEqual(client.calls.length, 2);
+    strictEqual(client.calls[1]?.request.thinking?.type, 'adaptive');
+    strictEqual(client.calls[1]?.request.outputConfig?.effort, 'low');
+  });
+
+  it('does not retry when the turn produced text', async () => {
+    const client = makeFakeClient([
+      [{ thinkingDelta: 'hmm' }, { textDelta: 'partial' }, { finishReason: 'length' }],
+    ]);
+    await run(M3, client);
+    strictEqual(client.calls.length, 1);
+  });
+
+  it('caps max_tokens by effort on M3.1 Flash', async () => {
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    await run(M3_1_FLASH_PREVIEW, client, { m31ThinkingEffort: 'low' });
+    strictEqual(client.calls[0]?.request.maxTokens, 16_384);
+  });
+
+  it('refuses a request once the output-token budget is spent', async () => {
+    const client = makeFakeClient([
+      [{ textDelta: 'ok' }, { usage: { completionTokens: 5_000 } }, { finishReason: 'stop' }],
+    ]);
+    const config = { outputTokenBudget: 5_000 };
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([M3]),
+      (key) => config[key as keyof typeof config],
+    );
+    const call = () =>
+      provider.provideLanguageModelChatResponse(
+        toLanguageModelChatInformation(M3),
+        [user('hi')],
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        makeProgress().progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    await call();
+    strictEqual(client.calls[0]?.request.maxTokens, 5_000);
+    await rejects(call, /budget exhausted/);
+    strictEqual(client.calls.length, 1);
+  });
+
+  it('summarizes pruned history and injects it into the first user message', async () => {
+    const big = 'x'.repeat(5_000);
+    const history = [
+      user('original task'),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.Assistant, big),
+      user(big),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.Assistant, big),
+      user('latest question'),
+    ];
+    const client = makeFakeClient([
+      [{ textDelta: 'SUMMARY-TEXT' }, { finishReason: 'stop' }],
+      [{ textDelta: 'ok' }, { finishReason: 'stop' }],
+    ]);
+    await run(M3, client, { historyMaxChars: 8_000 }, history);
+    strictEqual(client.calls.length, 2);
+    const first = client.calls[1]?.request.messages[0];
+    const text = typeof first?.content === 'string' ? first.content : JSON.stringify(first?.content);
+    match(text, /SUMMARY-TEXT/);
+  });
+
+  it('falls back to plain pruning when the summary call fails', async () => {
+    const big = 'x'.repeat(5_000);
+    const history = [
+      user('original task'),
+      new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.Assistant, big),
+      user(big),
+      user('latest question'),
+    ];
+    const client = makeFakeClient([
+      [{ error: { message: 'boom', retriable: false } }],
+      [{ textDelta: 'ok' }, { finishReason: 'stop' }],
+    ]);
+    await run(M3, client, { historyMaxChars: 8_000 }, history);
+    strictEqual(client.calls.length, 2);
+    ok(!JSON.stringify(client.calls[1]?.request.messages[0]).includes('earlier_conversation_summary'));
+  });
+});
+
+describe('ChatProvider — emergency sizing and review gating', () => {
+  it('sends reasoning off at the floor budget when sizing the request throws', async () => {
+    const circular: Record<string, unknown> = { type: 'object' };
+    circular['self'] = circular;
+    const client = makeFakeClient([[{ textDelta: 'ok' }, { finishReason: 'stop' }]]);
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([M3]),
+    );
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(M3),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      {
+        tools: [{ name: 'loop', description: 'd', inputSchema: circular }],
+        toolMode: vscode.LanguageModelChatToolMode.Auto,
+      },
+      makeProgress().progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const sent = client.calls[0]?.request;
+    strictEqual(sent?.thinking, undefined);
+    strictEqual(sent?.maxTokens, 16_384);
+  });
+
+  it('shows the notice for a filtered turn and holds output when streamUnreviewedOutput is off', async () => {
+    const client = makeFakeClient([[{ textDelta: 'leaky' }, { finishReason: 'content_filter' }]]);
+    const provider = new ChatProvider(
+      makeRecordingLogger(),
+      makeProvider({ has: true, value: API_KEY }),
+      client,
+      makeCatalog([M3]),
+      (key) => (key === 'streamUnreviewedOutput' ? false : undefined),
+    );
+    const { parts, progress } = makeProgress();
+    await provider.provideLanguageModelChatResponse(
+      toLanguageModelChatInformation(M3),
+      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+      progress,
+      new vscode.CancellationTokenSource().token,
+    );
+    const shown = parts.map((p) => (p instanceof vscode.LanguageModelTextPart ? p.value : ''));
+    ok(!shown.includes('leaky'));
+    ok(shown.some((v) => v.includes('content filter')));
   });
 });

@@ -712,6 +712,17 @@ export function getThinkingConfig(
     // `output_config` is M3.1-only per the spec; M3 and M2.x
     // ignore it, so we don't send it there.
     // `default` hands depth back to the server by omitting the field.
-    ...(isFlash && effort !== 'default' ? { outputConfig: { effort } } : {}),
+    ...(isFlash && effort !== 'default' ? { outputConfig: { effort: clampEffort(effort) } } : {}),
   };
+}
+
+/**
+ * `xhigh` and `max` are the depths that read as a stall in an agent
+ * loop, so the wire value is capped at `high` (pi-ai `clampReasoning`).
+ * `default` is the explicit opt-out: it omits the field entirely.
+ */
+export function clampEffort(
+  effort: Exclude<ThinkingEffort, 'default'>,
+): Exclude<ThinkingEffort, 'default' | 'xhigh' | 'max'> {
+  return effort === 'xhigh' || effort === 'max' ? 'high' : effort;
 }

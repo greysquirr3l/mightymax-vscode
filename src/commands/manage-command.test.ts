@@ -705,3 +705,28 @@ describe('runManageCommand — Toggle auto-rotation', () => {
     );
   });
 });
+
+describe('runManageCommand — Summarize pruned history toggle', () => {
+  it('flips enableContextCompaction from the default ON to OFF in the Settings submenu', async () => {
+    const configCalls: Array<{ key: string; value: unknown }> = [];
+    const { ui, shown } = scriptedUi([
+      { pick: { label: '⚙ Settings' } },
+      { pick: { label: '● Summarize pruned history: ON' } },
+      { info: undefined },
+    ]);
+    const deps = makeDeps({
+      ui,
+      getConfig: () => ({
+        get: () => undefined,
+        update: async (k, v) => {
+          configCalls.push({ key: k, value: v });
+          return undefined;
+        },
+      }),
+    });
+    await runManageCommand(deps);
+    ok(JSON.stringify(shown).includes('Summarize pruned history: ON'));
+    equal(configCalls[0]?.key, 'enableContextCompaction');
+    equal(configCalls[0]?.value, false);
+  });
+});

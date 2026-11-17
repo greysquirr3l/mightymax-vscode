@@ -46,6 +46,8 @@ export interface HistoryPruneResult {
   readonly droppedMessages: number;
   /** Characters reclaimed, for the provider to log. */
   readonly droppedChars: number;
+  /** The dropped messages themselves, oldest first, so a caller can summarize them. */
+  readonly dropped: ReadonlyArray<MiniMaxWireMessage>;
 }
 
 /**
@@ -152,16 +154,16 @@ export function pruneHistory(
 
   // Cheap exit: under budget, or too short to have an exchange.
   if (messages.length <= 2) {
-    return { messages, droppedMessages: 0, droppedChars: 0 };
+    return { messages, droppedMessages: 0, droppedChars: 0, dropped: [] };
   }
   const totalChars = messages.reduce((sum, m) => sum + estimateWireChars(m), 0);
   if (totalChars <= maxChars) {
-    return { messages, droppedMessages: 0, droppedChars: 0 };
+    return { messages, droppedMessages: 0, droppedChars: 0, dropped: [] };
   }
 
   const groups = groupExchanges(messages);
   if (groups.length <= 1) {
-    return { messages, droppedMessages: 0, droppedChars: 0 };
+    return { messages, droppedMessages: 0, droppedChars: 0, dropped: [] };
   }
 
   const kept: MiniMaxWireMessage[] = [];
@@ -175,7 +177,7 @@ export function pruneHistory(
   const lastIndex = groups.length - 1;
   const lastGroup = groups[lastIndex];
   if (firstGroup === undefined || lastGroup === undefined) {
-    return { messages, droppedMessages: 0, droppedChars: 0 };
+    return { messages, droppedMessages: 0, droppedChars: 0, dropped: [] };
   }
   kept.push(...firstGroup.messages);
   keptChars += firstGroup.chars;
@@ -202,12 +204,14 @@ export function pruneHistory(
   // to be asked about.
   kept.push(...lastGroup.messages);
 
+  const dropped: MiniMaxWireMessage[] = [];
   for (let i = 1; i < lastIndex; i++) {
     const group = groups[i];
     if (group === undefined || admitted.includes(group)) continue;
+    dropped.push(...group.messages);
     droppedMessages += group.messages.length;
     droppedChars += group.chars;
   }
 
-  return { messages: kept, droppedMessages, droppedChars };
+  return { messages: kept, droppedMessages, droppedChars, dropped };
 }

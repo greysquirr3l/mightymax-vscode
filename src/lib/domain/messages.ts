@@ -218,6 +218,8 @@ export interface MessageMappingResult {
   readonly messages: ReadonlyArray<MiniMaxWireMessage>;
   readonly warnings: ReadonlyArray<MessageMappingError>;
   readonly cacheMarkers: ReadonlyArray<number>;
+  /** Messages the history pruner dropped, oldest first; empty when nothing was dropped. */
+  readonly prunedMessages: ReadonlyArray<MiniMaxWireMessage>;
 }
 
 /**
@@ -236,6 +238,12 @@ export interface MessageMappingOptions {
    * `DEFAULT_HISTORY_MAX_CHARS`.
    */
   readonly historyMaxChars?: number;
+  /**
+   * Summary of the exchanges the pruner drops. When set and pruning
+   * actually dropped something, it is appended to the first user
+   * message so the model keeps the gist instead of losing it.
+   */
+  readonly compactionSummary?: string;
 }
 
 const EMPTY_OPTIONS: MessageMappingOptions = Object.freeze({});
@@ -647,7 +655,11 @@ export function mapRequestToMiniMax(
   // separately.
   const systemTexts: string[] = [];
   const nonSystem: MiniMaxWireMessage[] = [];
-  for (const m of pruning.messages) {
+  const retained =
+    pruning.droppedMessages > 0 && options.compactionSummary !== undefined
+      ? withCompactionSummary(pruning.messages, options.compactionSummary)
+      : pruning.messages;
+  for (const m of retained) {
     if (m.role === 'system') {
       const text = typeof m.content === 'string' ? m.content : extractTextFromParts(m.content);
       if (text.length > 0) systemTexts.push(text);
@@ -661,7 +673,33 @@ export function mapRequestToMiniMax(
     if (mw !== undefined) warnings.push(mw);
   }
 
-  return { messages: transform.messages, warnings, cacheMarkers: transform.cacheMarkers };
+  return {
+    messages: transform.messages,
+    warnings,
+    cacheMarkers: transform.cacheMarkers,
+    prunedMessages: pruning.dropped,
+  };
+}
+
+/** Append the compaction summary to the first user message. */
+function withCompactionSummary(
+  messages: ReadonlyArray<MiniMaxWireMessage>,
+  summary: string,
+): ReadonlyArray<MiniMaxWireMessage> {
+  const index = messages.findIndex((m) => m.role === 'user');
+  const target = messages[index];
+  if (target === undefined) return messages;
+  const block =
+    '\n\n<earlier_conversation_summary>\n' +
+    'Older turns were compacted to save context. Summary of what happened:\n' +
+    `${summary}\n</earlier_conversation_summary>`;
+  const content =
+    typeof target.content === 'string'
+      ? target.content + block
+      : [...target.content, { type: 'text' as const, text: block }];
+  const out = [...messages];
+  out[index] = { ...target, content };
+  return out;
 }
 
 function anthropicWarningToMappingError(

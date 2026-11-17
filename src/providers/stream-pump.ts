@@ -59,6 +59,8 @@ export interface StreamPumpResult {
   accumulatorState: ToolCallAccumulatorState;
   /** Final normalized provider usage block, when MiniMax sent one. */
   usage: ChatUsageData | undefined;
+  /** Last `finishReason` the stream reported; `undefined` if it ended without one. */
+  finishReason: MiniMaxStreamEvent['finishReason'];
 }
 
 export interface StreamPumpDeps {
@@ -96,6 +98,7 @@ export async function pumpProviderStream(deps: StreamPumpDeps): Promise<StreamPu
   let currentThinking: { thinking: string; signature?: string } | undefined;
   let latestUsage: ChatUsageData | undefined;
   let currentText = '';
+  let lastFinishReason: MiniMaxStreamEvent['finishReason'];
   const currentToolCallIds: string[] = [];
   // Per-request text-channel scrubber state. Owned here rather than in
 // the domain module so two streams running concurrently (a subagent
@@ -234,6 +237,7 @@ const mappingState = createStreamMappingState();
       }
 
       if (event.finishReason !== undefined) {
+        lastFinishReason = event.finishReason;
         // `currentToolCallIds` is only populated by flushAccumulator,
         // which runs after this event. Reporting it here always logged
         // 0 and made every agent turn look like it produced no call.
@@ -289,6 +293,7 @@ const mappingState = createStreamMappingState();
     toolCallIds: currentToolCallIds,
     accumulatorState,
     usage: latestUsage,
+    finishReason: lastFinishReason,
   };
 }
 

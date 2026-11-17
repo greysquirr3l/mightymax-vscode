@@ -25,7 +25,9 @@
 
 import * as vscode from 'vscode';
 import type { StatusBarAdapter } from '../adapters/status-bar.js';
-import type { TokenPlanUsage } from '../ports/usage-client.js';
+import type { TokenPlanUsage, TokenPlanWindow } from '../ports/usage-client.js';
+import type { UsageFailure } from '../lib/domain/flight-deck-tooltip.js';
+import { exhaustedWindows, formatCount, formatReset } from '../lib/domain/usage-format.js';
 
 export function runShowUsageCommand(
   context: vscode.ExtensionContext,
@@ -46,7 +48,7 @@ export function runShowUsageCommand(
   );
 
   const render = (usage: TokenPlanUsage | undefined): void => {
-    panel.webview.html = renderHtml(usage);
+    panel.webview.html = renderHtml(usage, statusBar.getLastUsageFailure());
   };
 
   render(statusBar.getLastUsage());
@@ -80,28 +82,54 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function renderHtml(usage: TokenPlanUsage | undefined): string {
-  const exhausted = usage?.percentUsed !== undefined && usage.percentUsed >= 100;
-  const banner = exhausted
-    ? `<div class="banner err">Requests are paused until the quota resets.</div>`
-    : usage === undefined
-      ? `<div class="banner">No usage data — pay-as-you-go keys have no Token Plan bar.</div>`
-      : '';
+function failureBanner(failure: UsageFailure | undefined): string {
+  switch (failure) {
+    case 'network':
+      return "Couldn't reach MiniMax to read quota. It will retry automatically; press Refresh to try now.";
+    case 'schema':
+      return "MiniMax returned quota data in a shape this extension doesn't recognise. The raw response is below.";
+    default:
+      return 'No usage data — pay-as-you-go keys have no Token Plan bar.';
+  }
+}
 
-  const sections = (usage?.windows ?? [])
-    .map((w) => {
-      const width = Math.min(100, Math.max(0, w.percentUsed));
-      const fullClass = w.percentUsed >= 100 ? ' full' : '';
-      return `
+function windowSection(w: TokenPlanWindow, nowMs: number, offset: number): string {
+  const width = Math.min(100, Math.max(0, w.percentUsed));
+  const fullClass = w.percentUsed >= 100 ? ' full' : '';
+  const count = formatCount(w);
+  return `
       <section>
         <div class="row">
           <span class="label">${esc(w.label)}</span>
-          ${w.resetsAt !== undefined ? `<span class="meta">Resets ${esc(w.resetsAt)}</span>` : ''}
+          ${w.resetsAt !== undefined ? `<span class="meta">Resets ${esc(formatReset(w.resetsAt, nowMs, offset))}</span>` : ''}
         </div>
         <div class="big">${String(w.percentUsed)}% <span class="dim">used</span></div>
         <div class="track"><div class="fill${fullClass}" style="width:${String(width)}%"></div></div>
+        ${count !== undefined ? `<div class="meta count">${esc(count)}</div>` : ''}
       </section>`;
-    })
+}
+
+function renderHtml(usage: TokenPlanUsage | undefined, failure?: UsageFailure): string {
+  const nowMs = Date.now();
+  const offset = -new Date(nowMs).getTimezoneOffset();
+  const spent = usage !== undefined ? exhaustedWindows(usage) : [];
+  const spentReset = spent.find((w) => w.resetsAt !== undefined)?.resetsAt;
+  const banner =
+    spent.length > 0
+      ? `<div class="banner err">${esc(spent.map((w) => w.label).join(' and '))} used up — requests are paused${
+          spentReset !== undefined ? `, resuming ${esc(formatReset(spentReset, nowMs, offset))}` : ' until it resets'
+        }.</div>`
+      : usage === undefined
+        ? `<div class="banner">${esc(failureBanner(failure))}</div>`
+        : '';
+
+  const sections = (usage?.windows ?? []).map((w) => windowSection(w, nowMs, offset)).join('\n');
+  const poolSections = (usage?.pools ?? [])
+    .map(
+      (pool) =>
+        `<h3>${esc(pool.label)}</h3>` +
+        pool.windows.map((w) => windowSection(w, nowMs, offset)).join('\n'),
+    )
     .join('\n');
 
   const raw =
@@ -132,6 +160,8 @@ function renderHtml(usage: TokenPlanUsage | undefined): string {
   .row { display:flex; justify-content:space-between; font-size:12.5px; }
   .label { font-weight:600; }
   .meta, .dim { color: var(--vscode-descriptionForeground); }
+  h3 { font-size:13px; font-weight:600; margin:18px 0 0; }
+  .count { margin-top:6px; font-size:12px; }
   .big { font-size:26px; font-weight:700; margin:2px 0 8px; }
   .big .dim { font-size:13px; font-weight:400; }
   .track { position:relative; height:6px; border-radius:3px;
@@ -148,6 +178,7 @@ function renderHtml(usage: TokenPlanUsage | undefined): string {
   <h2>Mighty Max <button id="refresh">Refresh</button></h2>
   ${banner}
   ${sections}
+  ${poolSections}
   ${raw}
   <footer>${asOf}Source: platform.minimax.io Token Plan</footer>
   <script>

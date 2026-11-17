@@ -8,8 +8,8 @@ against them.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.13.x  | :white_check_mark: |
-| < 0.13  | :x:                |
+| 0.14.x  | :white_check_mark: |
+| < 0.14  | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -61,6 +61,24 @@ It does contain model output, which can echo content from your
 conversation. That is why it is off by default. Enable it only to
 investigate a suspected rendering defect, then turn it off and delete
 the file.
+
+### History Compaction and Output Gating
+
+When the conversation outgrows `mightyMax.historyMaxChars`, the exchanges
+being pruned are summarized by a short model request instead of discarded
+(`mightyMax.enableContextCompaction`, on by default; toggle it in Manage →
+Settings). It is designed to add no new trust boundary:
+
+- **Same destination and credential as a normal turn.** The summary request goes to the configured MiniMax endpoint with the active API key. Nothing is sent to any other host
+- **Bounded input.** Each message is truncated to 2,000 characters and the transcript to 200,000 characters
+- **Memory only.** Summaries are cached in the extension host's memory (at most eight, least-recently-used eviction), never written to settings, files or the log channel, and cleared when the extension is disposed
+- **Logged as counts only.** The log records dropped-message and summary-character counts, never their content
+- **Fail-safe.** Any error, cancellation, or an exhausted output budget falls back to plain pruning; compaction never blocks a turn
+
+Two related controls limit what a turn can do:
+
+- `mightyMax.outputTokenBudget` is an opt-in hard cap on output tokens across turns in a sliding window; requests are refused once it is spent
+- `mightyMax.streamUnreviewedOutput` (on by default). Turn it off to hold each response in memory until the stream ends, so output MiniMax's content filter withheld is replaced by a notice instead of partly shown
 
 ### Workspace Trust
 

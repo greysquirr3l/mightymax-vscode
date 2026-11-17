@@ -34,6 +34,22 @@ Reins in MiniMax overthinking and keeps long sessions coherent.
   are in, and "pay-as-you-go key", "couldn't reach MiniMax" and "unrecognised
   response" are now distinct messages.
 
+### Changed
+
+- **`xhigh` and `max` effort are now sent to MiniMax as `high`.** Only
+  `default` still reaches the API's own (deepest) depth. `low` and `medium`
+  also cap per-turn `max_tokens` (16,384 / 32,768) on M3.1 Flash.
+- **History compaction is on by default** (`mightyMax.enableContextCompaction`).
+  Turns that prune more history make one extra low-effort request; turn it off
+  in Manage → Settings, or set the option to `false`, to keep plain dropping.
+
+### Security
+
+- Compaction sends the exchanges being pruned to MiniMax, to the same endpoint
+  and with the same key as a normal turn, as a summary request. Summaries are
+  held in memory only (at most eight, never written to disk) and are not
+  logged; logs carry counts only. See `SECURITY.md`.
+
 ## [0.13.1] — 2026-11-05
 
 Hotfix. Agent turns on MiniMax-M3.1-Flash could look hung because the

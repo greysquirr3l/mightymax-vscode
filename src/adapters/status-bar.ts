@@ -37,7 +37,9 @@ import {
   FLIGHT_DECK_ICON,
   isActiveInCooldown,
   type FlightDeckTooltipInput,
+  type UsageFailure,
 } from '../lib/domain/flight-deck-tooltip.js';
+import { bindingWindow } from '../lib/domain/usage-normalization.js';
 import { cooldownRemainingMs, type KeySlot as KeySlotType } from '../lib/domain/key-pool.js';
 import { getLabel, parseLabelsFromGlobalState } from '../lib/domain/slot-labels.js';
 import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
@@ -81,6 +83,17 @@ export interface StatusBarDeps {
   /** Injected for tests. Defaults to `setInterval` / `clearInterval`. */
   readonly setIntervalImpl?: (handler: () => void, ms: number) => ReturnType<typeof setInterval>;
   readonly clearIntervalImpl?: (handle: ReturnType<typeof setInterval>) => void;
+  /** Minutes east of UTC for tooltip clock times; defaults to the host's local offset. */
+  readonly utcOffsetMinutes?: () => number;
+}
+
+/** Map a quota fetch failure to the reason the tooltip and panel explain. */
+export function classifyUsageFailure(err: UsageUnavailableError): UsageFailure {
+  if (err.kind === 'network') return 'network';
+  if (err.kind === 'parse') return 'schema';
+  // `unavailable` is an HTTP status: 5xx is retriable (server trouble),
+  // 4xx means this key has no Token Plan bar.
+  return err.retriable ? 'network' : 'not-token-plan';
 }
 
 export class StatusBarAdapter implements vscode.Disposable {
@@ -105,6 +118,8 @@ export class StatusBarAdapter implements vscode.Disposable {
   private recentTurnUsageSubscription: { dispose(): void } | undefined;
   private lastUsage: TokenPlanUsage | undefined;
   private lastUsageUnavailable = false;
+  private lastUsageFailure: UsageFailure | undefined;
+  private readonly utcOffsetMinutes: () => number;
 
   constructor(deps: StatusBarDeps) {
     this.logger = deps.logger;
@@ -115,6 +130,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     this.getSlotLabelsRaw = deps.getSlotLabelsRaw ?? (() => deps.slotLabelsRaw);
     this.recentTurnUsage = deps.recentTurnUsage;
     this.now = deps.now ?? Date.now;
+    this.utcOffsetMinutes = deps.utcOffsetMinutes ?? (() => -new Date().getTimezoneOffset());
     const createItem = deps.createItem ?? vscode.window.createStatusBarItem;
     this.setIntervalImpl = deps.setIntervalImpl ?? setInterval;
     this.clearIntervalImpl = deps.clearIntervalImpl ?? clearInterval;
@@ -165,6 +181,7 @@ export class StatusBarAdapter implements vscode.Disposable {
     if (pick === undefined) {
       this.lastUsage = undefined;
       this.lastUsageUnavailable = false;
+      this.lastUsageFailure = undefined;
       await this.renderNoKey();
       return undefined;
     }
@@ -172,6 +189,7 @@ export class StatusBarAdapter implements vscode.Disposable {
       const usage = await this.usageClient.fetchUsage(pick.key);
       this.lastUsage = usage;
       this.lastUsageUnavailable = false;
+      this.lastUsageFailure = undefined;
       await this.renderFlightDeck({ usage, currentSlot: pick.slot });
       return usage;
     } catch (err) {
@@ -180,9 +198,11 @@ export class StatusBarAdapter implements vscode.Disposable {
         // PAYG key, schema drift, or network blip — show neutral icon, no noise.
         this.logger.debug(`usage unavailable (kind=${err.kind}): ${err.message}`);
         this.lastUsageUnavailable = true;
+        this.lastUsageFailure = classifyUsageFailure(err);
       } else {
         this.logger.warn(`usage refresh failed: ${String(err)}`);
         this.lastUsageUnavailable = false;
+        this.lastUsageFailure = undefined;
       }
       await this.renderFlightDeck({ usage: undefined, currentSlot: pick.slot });
       return undefined;
@@ -201,6 +221,11 @@ export class StatusBarAdapter implements vscode.Disposable {
       return;
     }
     await this.renderFlightDeck({ usage: this.lastUsage, currentSlot: pick.slot });
+  }
+
+  /** Why the last quota fetch failed, or undefined when it succeeded. */
+  getLastUsageFailure(): UsageFailure | undefined {
+    return this.lastUsageFailure;
   }
 
   /** Last successfully fetched usage payload, for the webview panel. */
@@ -265,14 +290,18 @@ export class StatusBarAdapter implements vscode.Disposable {
       nowMs,
       noKey: false,
       usageUnavailable: this.lastUsageUnavailable,
+      ...(this.lastUsageFailure !== undefined ? { usageFailure: this.lastUsageFailure } : {}),
+      utcOffsetMinutes: this.utcOffsetMinutes(),
     };
 
     // T32 — text suffix for the active-in-cooldown case. Always
     // computed from the same snapshot so a tooltip hover and a
     // click are consistent.
+    const windowShort = opts.usage !== undefined ? bindingWindow(opts.usage)?.short : undefined;
     this.item.text = buildFlightDeckText({
       icon: ICON,
       percentUsed: opts.usage?.percentUsed,
+      ...(windowShort !== undefined ? { windowShort } : {}),
       activeInCooldown: isActiveInCooldown(input),
     });
 

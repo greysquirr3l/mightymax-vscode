@@ -62,7 +62,7 @@ describe('buildFlightDeckTooltip', () => {
     equal(md.includes('Last fallback: (none yet)'), true);
     equal(md.includes('5h window: 42% used'), true);
     equal(md.includes('Weekly:    18% used'), true);
-    equal(md.includes('as of 16:24:03 · click for details'), true);
+    equal(md.includes('as of 16:24:03 UTC · click for details'), true);
   });
 
   it('renders one-slot-cooldown with the "cooldown Ns" line', () => {
@@ -223,3 +223,81 @@ describe('flight-deck determinism', () => {
 // Suppress unused-variable warning for TokenPlanUsage when this file
 // is consumed by other tests in the future.
 void ({} as TokenPlanUsage);
+
+describe('quota clarity', () => {
+  const NOW = Date.UTC(2025, 0, 1, 16, 24, 3);
+  const withUsage = (extra: Partial<FlightDeckTooltipInput> = {}): string =>
+    buildFlightDeckTooltip(
+      baseInput({
+        usage: {
+          percentUsed: 42,
+          windows: [
+            {
+              label: '5-hour window',
+              short: '5h',
+              percentUsed: 42,
+              resetsAt: new Date(NOW + 73 * 60_000).toISOString(),
+            },
+            {
+              label: 'Weekly window',
+              short: 'wk',
+              percentUsed: 18,
+              resetsAt: new Date(NOW + 130 * 3_600_000).toISOString(),
+            },
+          ],
+          pools: [
+            {
+              name: 'video',
+              label: 'Video',
+              windows: [
+                { label: 'Daily window', short: 'day', percentUsed: 0, usedCount: 0, totalCount: 3 },
+                { label: 'Weekly window', short: 'wk', percentUsed: 0, usedCount: 0, totalCount: 21 },
+              ],
+            },
+          ],
+          raw: {},
+          fetchedAt: new Date(0),
+        },
+        nowMs: NOW,
+        ...extra,
+      }),
+    );
+
+  it('shows reset times and marks the limiting window', () => {
+    const md = withUsage();
+    ok(md.includes('5h window: 42% used'));
+    ok(md.includes('resets in 1h 13m (17:37) · limiting'));
+    ok(md.includes('resets in 5d 10h (Tue 02:24)'));
+    equal(md.split('limiting').length - 1, 1);
+  });
+
+  it('lists the video pool with counts', () => {
+    ok(withUsage().includes('Video: 0/3 today · 0/21 this week'));
+  });
+
+  it('renders clock times in the supplied offset and says which zone', () => {
+    const md = withUsage({ utcOffsetMinutes: -300 });
+    ok(md.includes('as of 11:24:03 UTC-5 · click for details'));
+    ok(md.includes('(12:37)'));
+  });
+
+  it('explains each failure differently', () => {
+    const fail = (usageFailure: 'not-token-plan' | 'network' | 'schema'): string =>
+      buildFlightDeckTooltip(baseInput({ usage: undefined, usageUnavailable: true, usageFailure }));
+    ok(fail('not-token-plan').includes('pay-as-you-go keys have no Token Plan bar'));
+    ok(fail('network').includes("Couldn't reach MiniMax"));
+    ok(fail('schema').includes("wasn't recognised"));
+  });
+
+  it('labels the status-bar number with its window', () => {
+    equal(
+      buildFlightDeckText({
+        icon: FLIGHT_DECK_ICON,
+        percentUsed: 42,
+        windowShort: '5h',
+        activeInCooldown: false,
+      }),
+      `${FLIGHT_DECK_ICON} 5h 42%`,
+    );
+  });
+});

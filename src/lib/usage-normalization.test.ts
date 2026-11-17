@@ -27,6 +27,8 @@ import {
   parseModelRemains,
   selectEntry,
   normalizeTokenPlanRemains,
+  describeWindow,
+  bindingWindow,
 } from './domain/usage-normalization.js';
 
 const FIXTURE = {
@@ -104,11 +106,13 @@ describe('normalizeTokenPlanRemains — semantics', () => {
     strictEqual(u.windows.length, 2);
     deepStrictEqual(u.windows[0], {
       label: '5-hour window',
+      short: '5h',
       percentUsed: 62,
       resetsAt: new Date(NOW + 5_400_000).toISOString(),
     });
     deepStrictEqual(u.windows[1], {
       label: 'Weekly window',
+      short: 'wk',
       percentUsed: 19,
       resetsAt: new Date(NOW + 172_800_000).toISOString(),
     });
@@ -196,5 +200,71 @@ describe('normalizeTokenPlanRemains — semantics', () => {
     const u = normalizeTokenPlanRemains(FIXTURE, NOW);
     ok(u.raw);
     strictEqual(u.fetchedAt.toISOString(), new Date(NOW).toISOString());
+  });
+});
+
+describe('window naming and pools', () => {
+  const H = 3_600_000;
+  it('names windows by their real length', () => {
+    deepStrictEqual(describeWindow(5 * H, 'interval'), { label: '5-hour window', short: '5h' });
+    deepStrictEqual(describeWindow(24 * H, 'interval'), { label: 'Daily window', short: 'day' });
+    deepStrictEqual(describeWindow(168 * H, 'weekly'), { label: 'Weekly window', short: 'wk' });
+    deepStrictEqual(describeWindow(12 * H, 'interval'), { label: '12-hour window', short: '12h' });
+    deepStrictEqual(describeWindow(undefined, 'weekly'), { label: 'Weekly window', short: 'wk' });
+  });
+
+  it('surfaces the video pool with counts and a daily window, and drops per-model text entries', () => {
+    const live = {
+      base_resp: { status_code: 0, status_msg: 'success' },
+      model_remains: [
+        {
+          model_name: 'general',
+          start_time: 0,
+          end_time: 5 * H,
+          remains_time: H,
+          current_interval_status: 1,
+          current_interval_remaining_percent: 74,
+          weekly_start_time: 0,
+          weekly_end_time: 168 * H,
+          weekly_remains_time: 100 * H,
+          current_weekly_status: 1,
+          current_weekly_remaining_percent: 71,
+          current_interval_total_count: 0,
+          current_interval_usage_count: 0,
+        },
+        {
+          model_name: 'video',
+          start_time: 0,
+          end_time: 24 * H,
+          remains_time: 10 * H,
+          current_interval_status: 1,
+          current_interval_remaining_percent: 100,
+          current_interval_total_count: 3,
+          current_interval_usage_count: 0,
+          weekly_start_time: 0,
+          weekly_end_time: 168 * H,
+          weekly_remains_time: 100 * H,
+          current_weekly_status: 1,
+          current_weekly_remaining_percent: 100,
+          current_weekly_total_count: 21,
+          current_weekly_usage_count: 0,
+        },
+        { model_name: 'MiniMax-M3', current_interval_status: 1, current_interval_remaining_percent: 50 },
+      ],
+    };
+    const u = normalizeTokenPlanRemains(live, NOW);
+    strictEqual(u.windows[0]?.usedCount, undefined, 'percent-only pool carries no counts');
+    strictEqual(u.pools?.length, 1);
+    const video = u.pools?.[0];
+    strictEqual(video?.label, 'Video');
+    strictEqual(video?.windows[0]?.label, 'Daily window');
+    strictEqual(video?.windows[0]?.totalCount, 3);
+    strictEqual(video?.windows[1]?.totalCount, 21);
+    strictEqual(u.percentUsed, 29, 'pools never drive the headline percentage');
+  });
+
+  it('picks the most-consumed window as the binding one', () => {
+    const u = normalizeTokenPlanRemains(FIXTURE, NOW);
+    strictEqual(bindingWindow(u)?.short, '5h');
   });
 });

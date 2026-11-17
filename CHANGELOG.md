@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-11-17
+
+Documentation hotfix.
+
+### Fixed
+
+- The README's Configuration section was a 1,000-character-wide Markdown table
+  that the Marketplace page rendered as one run-on paragraph of pipes and
+  dashes. It is now a list, one entry per setting, with the same scope, default
+  and description.
+
 ## [0.14.0] — 2026-11-17
 
 Reins in MiniMax overthinking and keeps long sessions coherent.

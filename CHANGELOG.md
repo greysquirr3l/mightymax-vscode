@@ -6,6 +6,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-11-17
+
+Reins in MiniMax overthinking and keeps long sessions coherent.
+
+### Added
+
+- Overthinking clamps: `xhigh`/`max` effort is sent as `high`; `low`/`medium`
+  effort cap per-turn `max_tokens`; a reasoning-only `length` stop is retried
+  once with thinking off (M3) or `low` effort (M3.1 Flash).
+- The `max_tokens` context clamp uses the native `count_tokens` result once the
+  estimate passes half the window.
+- `mightyMax.enableContextCompaction`: pruned history is summarized (cached,
+  incremental) instead of dropped.
+- `mightyMax.outputTokenBudget` / `outputBudgetWindowMinutes`: rolling hard cap
+  on total output tokens across turns.
+- Context clamp pre-deducts expected reasoning tokens by effort; if sizing the
+  request throws, it is sent with reasoning off and the floor budget.
+- Content-filter handling: a filtered turn shows a notice; with
+  `mightyMax.streamUnreviewedOutput` off, output is held until the stream's
+  verdict. Anthropic `refusal` stops now map to the content filter.
+- "Summarize pruned history" toggle in the Settings submenu of Manage.
+
 ## [0.13.1] — 2026-11-05
 
 Hotfix. Agent turns on MiniMax-M3.1-Flash could look hung because the

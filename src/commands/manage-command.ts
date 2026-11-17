@@ -130,6 +130,14 @@ const PICK_ITEMS: readonly ManagePickItem[] = [
 // computed per render rather than stored in the static PICK_ITEMS.
 const AUTO_ROTATION_KEY = 'enableAutoKeyRotation';
 const LOG_LEVEL_KEY = 'logLevel';
+const COMPACTION_KEY = 'enableContextCompaction';
+function compactionLabel(enabled: boolean): string {
+  return `${enabled ? '●' : '○'} Summarize pruned history: ${enabled ? 'ON' : 'OFF'}`;
+}
+function readCompactionEnabled(deps: ManageDeps): boolean {
+  // The package.json default is `true`; treat anything-but-`false` as on.
+  return deps.getConfig?.().get(COMPACTION_KEY) !== false;
+}
 function autoRotationLabel(enabled: boolean): string {
   return `${enabled ? '●' : '○'} Auto-rotate on auth failure: ${enabled ? 'ON' : 'OFF'}`;
 }
@@ -305,6 +313,7 @@ async function runSettingsMenu(deps: ManageDeps): Promise<void> {
   const autoRotationEnabled = readAutoRotationEnabled(deps);
   const logLevelRaw = deps.getConfig?.().get(LOG_LEVEL_KEY);
   const logLevel = typeof logLevelRaw === 'string' ? logLevelRaw : 'info';
+  const compactionEnabled = readCompactionEnabled(deps);
 
   const settingsItems: ManagePickItem[] = [
     {
@@ -330,6 +339,10 @@ async function runSettingsMenu(deps: ManageDeps): Promise<void> {
     {
       label: autoRotationLabel(autoRotationEnabled),
       description: `Currently ${autoRotationEnabled ? 'ON' : 'OFF'} — pick to flip`,
+    },
+    {
+      label: compactionLabel(compactionEnabled),
+      description: `Currently ${compactionEnabled ? 'ON' : 'OFF'} — summarize old history instead of dropping it; pick to flip`,
     },
   ];
 
@@ -359,7 +372,24 @@ async function runSettingsMenu(deps: ManageDeps): Promise<void> {
     choice.label === autoRotationLabel(false)
   ) {
     await handleToggleAutoRotation(deps, autoRotationEnabled);
+  } else if (choice.label === compactionLabel(true) || choice.label === compactionLabel(false)) {
+    await handleToggleCompaction(deps, compactionEnabled);
   }
+}
+
+async function handleToggleCompaction(deps: ManageDeps, currentValue: boolean): Promise<void> {
+  const nextValue = !currentValue;
+  const cfg = deps.getConfig?.();
+  if (!cfg) {
+    await deps.ui.showErrorMessage('History compaction cannot be toggled in this environment.');
+    return;
+  }
+  await cfg.update(COMPACTION_KEY, nextValue);
+  deps.logger.info('Manage command: context compaction toggled', {
+    from: currentValue,
+    to: nextValue,
+  });
+  await deps.ui.showInfoMessage(`Summarizing pruned history is now ${nextValue ? 'ON' : 'OFF'}.`);
 }
 
 async function handleLogLevel(deps: ManageDeps, current: string): Promise<void> {

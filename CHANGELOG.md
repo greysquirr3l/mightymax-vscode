@@ -49,6 +49,9 @@ Reins in MiniMax overthinking and keeps long sessions coherent.
   (denial of service via glob amplification) and `serialize-javascript` to
   `^7.1.3` (XSS). Both are dev-only transitive dependencies and do not ship in
   the extension.
+- Folded in the open Dependabot updates: dev-dependency group (`@vscode/vsce`
+  4.1.1, `prettier` 3.10.1, `rimraf` 6.1.4, `typescript-eslint` 8.72.2) and
+  `softprops/action-gh-release` 3.0.4.
 - Compaction sends the exchanges being pruned to MiniMax, to the same endpoint
   and with the same key as a normal turn, as a summary request. Summaries are
   held in memory only (at most eight, never written to disk) and are not

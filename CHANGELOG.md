@@ -45,6 +45,10 @@ Reins in MiniMax overthinking and keeps long sessions coherent.
 
 ### Security
 
+- Cleared the open Dependabot alerts by overriding `minimatch` to `^11.0.1`
+  (denial of service via glob amplification) and `serialize-javascript` to
+  `^7.1.3` (XSS). Both are dev-only transitive dependencies and do not ship in
+  the extension.
 - Compaction sends the exchanges being pruned to MiniMax, to the same endpoint
   and with the same key as a normal turn, as a summary request. Summaries are
   held in memory only (at most eight, never written to disk) and are not

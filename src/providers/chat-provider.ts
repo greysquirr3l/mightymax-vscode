@@ -68,7 +68,7 @@ import {
 } from '../lib/domain/compaction.js';
 import { createReviewGate, type ReviewGate } from './review-gate.js';
 import { OutputBudget } from '../lib/domain/output-budget.js';
-import { pumpProviderStream } from './stream-pump.js';
+import { pumpProviderStream, ReplyLoopError } from './stream-pump.js';
 import { mapToolsToMiniMax, mapToolModeToChoice } from '../lib/domain/tools.js';
 import {
   getMaxTokensForModel,
@@ -77,11 +77,16 @@ import {
   coerceThinkingEffort,
   DEFAULT_THINKING_EFFORT,
   isM31FlashFamily,
-  THINKING_EFFORT_VALUES,
   type M3ThinkingMode,
   type ThinkingEffort,
 } from '../lib/domain/anthropic-transform.js';
+import {
+  mapHostEffortToWire,
+  publishedDefaultForEffort,
+  PUBLISHED_EFFORT_VALUES,
+} from '../lib/domain/host-effort.js';
 import { LruMap } from '../lib/domain/lru.js';
+import { ReplyLoopGuard } from '../lib/domain/reply-loop-guard.js';
 import type { RecentTurnUsageStore } from '../lib/domain/recent-turn-usage.js';
 import type { McpToolRecencyTracker } from '../lib/domain/mcp-tool-recency.js';
 import type { ChatTool, ChatToolMode } from '../ports/tool-schema.js';
@@ -143,10 +148,28 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
    * available tools, prefer minimal tool calls, summarize
    * changes). The user can override it via the
    * `mightyMax.systemPrompt` configuration setting.
+   *
+   * T44 — the "act, don't narrate" rules are load-bearing, not
+   * decoration. Upstream MiniMax Code added the same guidance to its
+   * TUI system prompt (`SYSTEM.md.hbs`): "Never end a turn by
+   * announcing the next step (such as 'Writing the report now.');
+   * take that step, then reply with the result." The captured
+   * Mighty Max session had 100 of 165 rounds with zero visible text
+   * and 275 `read_file` calls in a run of 39 — a model narrating
+   * intent and re-reading the same files instead of editing them.
+   * These lines are the plugin-side equivalent of the upstream
+   * prompt, and they are what the model reads when VS Code delivers
+   * no agent instructions of its own.
    */
   private static readonly DEFAULT_SYSTEM_PROMPT =
     'You are a helpful coding assistant. Use the available tools to complete the task. ' +
-    'Prefer minimal tool calls and return a short summary of any changes you made.';
+    'Prefer minimal tool calls and return a short summary of any changes you made. ' +
+    'Act on the task in this turn: make the tool calls that do the work, then reply with the result. ' +
+    'Never end a turn by announcing the next step (such as "I will now edit the file."); ' +
+    'take that step, then reply with what you did. ' +
+    'Do not re-read a file you have already read in this session unless it may have changed ' +
+    'or you need a different part of it. ' +
+    'Stop when a step adds nothing new, and give the user your answer rather than another plan.';
 
   constructor(
     private readonly logger: Logger,
@@ -215,7 +238,11 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     try {
       const entries = await this.catalog.listModels();
       if (token.isCancellationRequested) return [];
-      const mapped = entries.map(toLanguageModelChatInformation);
+      const mapped = entries.map((entry) =>
+        toLanguageModelChatInformation(entry, {
+          defaultEffort: this.readM31ThinkingEffort(),
+        }),
+      );
       this.logger.debug('ChatProvider: returning catalog', {
         count: mapped.length,
         silent: options.silent,
@@ -525,8 +552,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       thinkingStyle,
       ceiling,
       thinkingMode,
-      coerceThinkingEffort(modelConfiguration?.['thinkingEffort']) ??
-        this.readM31ThinkingEffort(),
+      this.resolveRequestedEffort(modelConfiguration),
     );
     // MiniMax 400s when input + max_tokens overflows the context window,
     // so shrink the ceiling as the conversation grows, pre-deducting
@@ -659,10 +685,29 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
       // union) to `KeyPick` after the first non-undefined assignment.
       let pick: KeyPick | undefined = initialPick;
       let lastError: MiniMaxClientError | undefined;
+      // T44 — a reasoning loop that produced nothing the user or the
+      // tool loop can use is retried once, exactly as upstream's
+      // `loopRetries: 1` does. A loop in the VISIBLE text is not
+      // retried: the user has already seen those words, and
+      // replaying them would duplicate output.
+      let loopRetried = false;
       while (pick !== undefined) {
         const attemptController = new AbortController();
         const onCancel = token.onCancellationRequested(() => attemptController.abort());
         attemptedSlots.push(pick.slot);
+        // T44 — a reasoning-loop retry re-enters this loop with the
+        // SAME slot (the credential was never at fault). Pushing the
+        // slot again would make `attemptedSlots` hold it twice, and
+        // the fallback bookkeeping below reads the penultimate entry
+        // as "the slot we fell back FROM" — it would report a
+        // fallback from a slot to itself. Keep one entry per slot.
+        if (attemptedSlots.length > 1 && attemptedSlots[attemptedSlots.length - 2] === pick.slot) {
+          attemptedSlots.pop();
+        }
+        // T44 — the guard for this attempt. Kept in a variable so the
+        // catch below can ask whether the reply had already spoken
+        // when it looped.
+        const loopGuard = new ReplyLoopGuard();
         try {
           // T19 stream-pump extraction: every terminal-path flush,
           // thinking-vs-text routing, and usage-not-as-text invariant
@@ -679,6 +724,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
             thinkingStyle,
             logger: this.logger,
             recordToolUsage: (name) => this.recordToolUsage(name),
+            // T44 — cut the reply when its reasoning or text loops.
+            loopGuard,
           });
           // Success: clear any pending cooldown for this slot.
           this.keyProvider.markSucceeded(pick.slot);
@@ -711,6 +758,30 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           // Cancellation: never mark or rotate, just propagate.
           if (attemptController.signal.aborted) {
             throw err;
+          }
+          // T44 — the reply looped. When the loop was in the
+          // REASONING and the reply had not yet said anything the
+          // user or the tool loop could use, the request is asked
+          // again once (upstream's `loopRetries: 1`). A loop in the
+          // visible text is not retried — those words have already
+          // been shown, and replaying them would duplicate output.
+          if (err instanceof ReplyLoopError) {
+            if (err.trip.reasoning && !loopGuard.spoke && !loopRetried) {
+              loopRetried = true;
+              this.logger.warn('Reasoning looped before saying anything — retrying once', {
+                model: model.id,
+                reasoning: err.trip.reasoning,
+                units: err.trip.units.length,
+              });
+              continue;
+            }
+            this.logger.warn('Reply looped — ending the turn', {
+              model: model.id,
+              reasoning: err.trip.reasoning,
+              runOn: err.trip.runOn,
+              units: err.trip.units.length,
+            });
+            throw new Error(err.message);
           }
           // Non-MiniMax errors: re-throw (caller-visible programming
           // error, not a transport-class issue).
@@ -756,6 +827,33 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
           if (err.kind === 'abort') {
             // Cancellation is intentional — never penalize the slot.
             throw err;
+          }
+          if (err.kind === 'http') {
+            // T44 — an HTTP error is a property of the REQUEST, not of
+            // the credential. The transport already spent its retry
+            // budget on 5xx / 429 (see `src/adapters/transport.ts`), so
+            // by the time the failure reaches here the same payload
+            // was refused repeatedly. Rotating to another key would
+            // repeat the identical request against another account
+            // and burn the whole pool.
+            //
+            // Observed 2026-10-01: a 269k-character history was
+            // refused with `unknown error, 510 (1000)` 30 times in a
+            // row, and each refusal rotated the key pool — 7 "API key
+            // failed (http), falling back" lines for a single logical
+            // request. The keys were fine; the payload was too big.
+            this.logger.warn('HTTP error — not rotating keys (request-level failure)', {
+              failedSlot: pick.slot,
+              kind: err.kind,
+              status: err.status,
+            });
+            throw new Error(
+              `MiniMax rejected the request with HTTP ${err.status ?? 'error'}: ${err.message}. ` +
+                'This is a request-level failure, not an API-key problem, so the other keys ' +
+                'were left alone. Retrying the same request will not help — try a smaller ' +
+                'task, or raise the history budget (mightyMax.historyMaxChars) if the ' +
+                'conversation has grown very long.',
+            );
           }
           this.keyProvider.markFailed(pick.slot, mapErrorKindToFailureKind(err.kind));
           this.logger.warn(`API key failed (${err.kind}), falling back`, {
@@ -830,6 +928,8 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
             thinkingStyle,
             logger: this.logger,
             recordToolUsage: (name) => this.recordToolUsage(name),
+            // T44 — the retry is a fresh reply; it gets its own guard.
+            loopGuard: new ReplyLoopGuard(),
           });
           if (pumpResult.usage !== undefined) {
             this.recentTurnUsage?.record(pumpResult.usage);
@@ -1155,6 +1255,49 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
     );
   }
 
+  /**
+   * Resolve the thinking depth for one request.
+   *
+   * The host's reasoning-effort control arrives in
+   * `options.modelConfiguration.reasoningEffort` — the ONLY key the
+   * workbench reads (`configurationSchema?.properties?.reasoningEffort`)
+   * and the only one its own mapper scans for
+   * (`["reasoningEffort", "thinkingLevel"]`). The previous
+   * `thinkingEffort` key was in neither list, so the host control was
+   * inert: raising the thinking level changed nothing and every
+   * request fell back to the plugin setting.
+   *
+   * Two host-side facts shape the resolution:
+   *
+   *  - The extension host merges the schema `default` into the
+   *    stored model configuration (`{...defaults, ...saved}`), so
+   *    `modelConfiguration.reasoningEffort` is ALWAYS present. A
+   *    value equal to the published default therefore means "the
+   *    user has not picked a level", and the plugin setting stays
+   *    authoritative — which is what keeps the two in sync. Any
+   *    other value is an explicit user choice and wins.
+   *  - The host vocabulary is wider than the MiniMax wire
+   *    vocabulary (`none`/`minimal`/`ultra` have no direct wire
+   *    equivalent), so the value is mapped rather than passed
+   *    through. `none` is a hard 400 for M3.1-Flash, which always
+   *    thinks, so it falls back to the setting instead of sending a
+   *    request the API rejects.
+   */
+  private resolveRequestedEffort(
+    modelConfiguration: Readonly<Record<string, unknown>> | undefined,
+  ): ThinkingEffort {
+    const settingEffort = this.readM31ThinkingEffort();
+    const raw = modelConfiguration?.['reasoningEffort'];
+    if (typeof raw !== 'string') return settingEffort;
+    // A value equal to the published default means "the user has not
+    // overridden it" — the extension host merged the schema `default`
+    // into the stored model configuration, so the host always sends
+    // SOMETHING. The plugin setting stays authoritative in that case,
+    // which is what keeps the two controls in sync.
+    if (raw === publishedDefaultForEffort(settingEffort)) return settingEffort;
+    return mapHostEffortToWire(raw) ?? settingEffort;
+  }
+
   private readToolResultMaxChars(): number {
     const raw = this.readMightyMaxSetting('toolResultMaxChars');
     if (typeof raw !== 'number' || !Number.isFinite(raw)) return 4096;
@@ -1470,6 +1613,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider {
  */
 export function toLanguageModelChatInformation(
   entry: ModelInfo,
+  options?: { readonly defaultEffort?: ThinkingEffort },
 ): vscode.LanguageModelChatInformation {
   return {
     id: entry.id,
@@ -1484,7 +1628,7 @@ export function toLanguageModelChatInformation(
       imageInput: entry.capabilities.imageInput,
       toolCalling: entry.capabilities.toolCalling,
     },
-    ...buildConfigurationSchema(entry),
+    ...buildConfigurationSchema(entry, options?.defaultEffort ?? DEFAULT_THINKING_EFFORT),
   };
 }
 
@@ -1495,20 +1639,48 @@ export function toLanguageModelChatInformation(
  * outside the stable `@types/vscode` surface, so it is attached as an
  * untyped extra; a host that does not know it ignores it and the
  * `mightyMax.*` settings keep applying.
+ *
+ * The property KEY matters as much as the value. Verified by string
+ * xref against the shipped host bundles:
+ *
+ *  - The workbench's BYOK `listModels` handler reads
+ *    `configurationSchema?.properties?.reasoningEffort` and only
+ *    that key. Its `.enum` becomes the model's
+ *    `supportedReasoningEfforts` and its `.default` becomes
+ *    `defaultReasoningEffort`.
+ *  - The workbench maps a chosen effort back onto a schema property
+ *    with `Bir()`, which scans `["reasoningEffort", "thinkingLevel"]`
+ *    in that order and takes the first whose `enum` contains the
+ *    value.
+ *
+ * So the effort MUST be published under `reasoningEffort`. The
+ * previous `thinkingEffort` key was never in either list, which
+ * meant the host's reasoning-effort control had nothing to bind to:
+ * raising the effort level did nothing, because the host never sent
+ * a value back and the plugin always fell through to the
+ * `mightyMax.m31ThinkingEffort` setting.
+ *
+ * The published enum is restricted to the host's canonical effort
+ * vocabulary (`HOST_EFFORT_MAPPABLE_VALUES`) because the agent host
+ * filters a provider-advertised enum against that set and silently
+ * drops anything outside it.
  */
-function buildConfigurationSchema(entry: ModelInfo): Record<string, unknown> {
+function buildConfigurationSchema(
+  entry: ModelInfo,
+  defaultEffort: ThinkingEffort,
+): Record<string, unknown> {
   if (entry.thinkingStyle !== 'anthropic') return {};
   if (isM31FlashFamily(entry.id)) {
     return {
       configurationSchema: {
         properties: {
-          thinkingEffort: {
+          reasoningEffort: {
             type: 'string',
             title: 'Thinking effort',
             description:
-              'How deeply the model reasons. Higher levels think longer; Default hands the choice to MiniMax.',
-            enum: [...THINKING_EFFORT_VALUES],
-            default: DEFAULT_THINKING_EFFORT,
+              'How deeply the model reasons. Higher levels think longer; the effort is clamped to high on the wire.',
+            enum: [...PUBLISHED_EFFORT_VALUES],
+            default: publishedDefaultForEffort(defaultEffort),
             group: 'navigation',
           },
         },

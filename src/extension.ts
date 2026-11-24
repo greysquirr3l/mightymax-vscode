@@ -570,6 +570,14 @@ export function activate(context: vscode.ExtensionContext): void {
           logger.info('Log level updated', { level: next });
         }
       }
+      // The thinking effort is published as the `reasoningEffort`
+      // schema property's `default`, so changing it has to re-publish
+      // the model information — otherwise the host keeps injecting the
+      // stale default and the picker shows a level the plugin is no
+      // longer using.
+      if (event.affectsConfiguration('mightyMax.m31ThinkingEffort')) {
+        chatProvider.fireChange();
+      }
       // baseUrl re-reads happen via the callback above; no action needed
       // here other than noting that the next request will pick up the
       // new value automatically.

@@ -59,17 +59,21 @@ const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as PackageJson;
 const settings = pkg.contributes?.configuration?.properties ?? {};
 
 /**
- * Parse the README's settings table. Rows look like:
+ * Parse the README's settings list. Entries look like:
  *
- *   | `mightyMax.baseUrl` | application | `https://api.minimax.io` | … |
+ *   - **`mightyMax.baseUrl`** (application scope · default `https://api.minimax.io`): …
  *
  * The default cell is a backticked literal. An array default is
  * backticked as a whole (`["a", "b"]`), so the regex has to capture
  * greedily up to the closing backtick.
+ *
+ * The Configuration section was rendered as a list (not a table) in
+ * commit f41e4a7; this parser reads the list form.
  */
 function readReadmeSettings(): Map<string, { scope: string; default: string }> {
   const readme = readFileSync(readmePath, 'utf8');
-  const row = /^\|\s*`(mightyMax\.[A-Za-z0-9_.]+)`\s*\|\s*([a-z]+)\s*\|\s*`([^`]*)`\s*\|/gm;
+  const row =
+    /^-\s*\*\*`(mightyMax\.[A-Za-z0-9_.]+)`\*\*\s*\(([a-z]+)\s+scope\s+·\s+default\s+`([^`]*)`\)/gm;
   const found = new Map<string, { scope: string; default: string }>();
   for (const m of readme.matchAll(row)) {
     const key = m[1];

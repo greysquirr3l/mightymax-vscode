@@ -1185,26 +1185,26 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
 
   // ─── T33 — gaps in the T27 rotation-wiring matrix ────────────────────────
 
-  it('falls back to the next stored key on http 5xx when auto-rotation is enabled', async () => {
+  it('does NOT rotate keys on http 5xx — an http error is a request-level failure', async () => {
+    // T44: the transport already spent its retry budget on 5xx
+    // (see `src/adapters/transport.ts`), so by the time the failure
+    // reaches the provider the same payload was refused repeatedly.
+    // Rotating to another key would replay the identical doomed
+    // request against another account and burn the whole pool.
+    //
+    // Observed 2026-10-01: a 269k-character history was refused with
+    // `unknown error, 510 (1000)` 30 times in a row, and each refusal
+    // rotated the key pool — 7 "API key failed (http), falling back"
+    // lines for a single logical request. The keys were fine; the
+    // payload was too big.
     const logger = makeRecordingLogger();
     const catalog = makeCatalog([M3]);
 
     let attempt = 0;
-    let secondAttemptApiKey: string | undefined;
     const httpDownClient: MiniMaxClient = {
-      streamCompletion(_request, apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
+      streamCompletion(_request, _apiKey, _signal, _logger): AsyncIterable<MiniMaxStreamEvent> {
         attempt += 1;
-        if (attempt === 1) {
-          throw new MiniMaxClientError('http', '502 bad gateway', { status: 502, retriable: true });
-        }
-        if (attempt === 2) {
-          secondAttemptApiKey = apiKey;
-          return (async function* () {
-            yield { textDelta: 'recovered-on-slot-2' };
-            yield { stopReason: 'stop' } as MiniMaxStreamEvent;
-          })();
-        }
-        throw new Error(`unexpected attempt ${attempt}`);
+        throw new MiniMaxClientError('http', '502 bad gateway', { status: 502, retriable: true });
       },
     };
 
@@ -1215,21 +1215,30 @@ describe('ChatProvider.provideLanguageModelChatResponse', () => {
 
     const provider = new ChatProvider(logger, kp, httpDownClient, catalog);
     const { progress } = makeProgress();
-    await provider.provideLanguageModelChatResponse(
-      makeModelInfo('MiniMax-M3'),
-      [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
-      { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
-      progress,
-      new vscode.CancellationTokenSource().token,
-    );
+    let caught: unknown;
+    try {
+      await provider.provideLanguageModelChatResponse(
+        makeModelInfo('MiniMax-M3'),
+        [new vscode.LanguageModelChatMessage(vscode.LanguageModelChatMessageRole.User, 'hi')],
+        { tools: [], toolMode: vscode.LanguageModelChatToolMode.Auto },
+        progress,
+        new vscode.CancellationTokenSource().token,
+      );
+    } catch (err) {
+      caught = err;
+    }
 
-    strictEqual(attempt, 2, 'http 5xx must trigger fallback, not surface');
-    strictEqual(
-      secondAttemptApiKey,
-      'sk-second-key',
-      'second attempt must use slot 2, not the http-failed slot 1',
+    strictEqual(attempt, 1, 'http 5xx must NOT trigger a key fallback');
+    ok(caught instanceof Error, 'the http failure must surface to the user');
+    ok(
+      caught instanceof Error && caught.message.includes('request-level failure'),
+      'the surfaced error must explain that the request — not the key — failed',
     );
-    strictEqual(kp.__state.failures[1], 'http', 'slot 1 must be marked failed with the http kind');
+    strictEqual(
+      kp.__state.failures[1],
+      undefined,
+      'an http failure must not penalize the key slot',
+    );
   });
 
   it('does NOT promote the fallback winner when auto-rotation is disabled (no sticky fallback under manual control)', async () => {

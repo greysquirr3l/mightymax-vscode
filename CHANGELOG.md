@@ -6,16 +6,38 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.14.1] — 2026-11-17
+## [0.14.1] — 2026-11-24
 
-Documentation hotfix.
+Fixes VS Code's thinking-level control, which had nothing to bind to.
 
 ### Fixed
 
+- **VS Code's reasoning-effort control now works.** The extension published
+  its effort under a `thinkingEffort` key and read the user's choice back from
+  the same key, but VS Code reads only `reasoningEffort` — so raising the
+  thinking level changed nothing and every request fell back to
+  `mightyMax.m31ThinkingEffort`. The effort is now published under
+  `reasoningEffort`, and the model's published default tracks the setting, so
+  the picker and the setting stay in sync and an explicit picker choice still
+  wins.
+- **A reply that loops is cut short.** A model stuck emitting the same lines
+  ("Now." / "Writing." / "Let me write.") ran until it hit the output limit.
+  Both the visible text and the reasoning channel are now watched, and a
+  looping reply ends with an error instead of running on.
+- The default system prompt now tells the model to act on the task in the
+  current turn and to reply with what it did, rather than announcing the next
+  step and re-reading files it has already read.
 - The README's Configuration section was a 1,000-character-wide Markdown table
   that the Marketplace page rendered as one run-on paragraph of pipes and
   dashes. It is now a list, one entry per setting, with the same scope, default
   and description.
+
+### Changed
+
+- **An HTTP error no longer rotates API keys.** It is a property of the
+  request, not of the key, and the transport has already spent its retry
+  budget on 5xx — rotating replayed a doomed request against every key in the
+  pool. The failure now surfaces with a message that says what to do instead.
 
 ## [0.14.0] — 2026-11-17
 

@@ -44,6 +44,21 @@ import {
 } from '../lib/domain/tools.js';
 import { toLanguageModelTextPart, toLanguageModelToolCallPart } from '../ports/tool-schema.js';
 import type { ThinkingStyle } from '../ports/model-catalog.js';
+import { replyLoopMessage, type LoopTrip, type ReplyLoopGuard } from '../lib/domain/reply-loop-guard.js';
+
+/**
+ * Raised when the model's reasoning or visible text has looped.
+ *
+ * The reply is cut short with this error rather than left to run to
+ * the model's output limit — the loop is a dead end, and every
+ * further token it produces is paid for and discarded.
+ */
+export class ReplyLoopError extends Error {
+  constructor(readonly trip: LoopTrip) {
+    super(replyLoopMessage(trip));
+    this.name = 'ReplyLoopError';
+  }
+}
 
 export interface StreamPumpResult {
   /** Concatenated visible text the model emitted (T19: NO usage or thinking mixed in). */
@@ -81,6 +96,12 @@ export interface StreamPumpDeps {
    * the always-flush behavior.
    */
   onStreamError?: (err: unknown) => void;
+  /**
+   * T44: detect a reply whose reasoning or text has looped. When
+   * supplied, the pump aborts the stream with a `ReplyLoopError`
+   * instead of letting the reply run to the model's output limit.
+   */
+  loopGuard?: ReplyLoopGuard;
 }
 
 /**
@@ -119,6 +140,10 @@ const mappingState = createStreamMappingState();
     for await (const event of deps.events) {
       // Handle tool-call deltas first (every event may carry one).
       if (event.toolCallDelta !== undefined) {
+        // T44: a tool call is the reply ACTING, not narrating. Once
+        // the model has acted, a later loop is not retried (upstream's
+        // `!loop.spoke` rule): the user has seen the tool call.
+        deps.loopGuard?.noteToolCall();
         const accumulated = accumulateToolCallDelta(accumulatorState, event.toolCallDelta);
         if (isToolSchemaError(accumulated)) {
           deps.logger.warn('Tool call accumulation error', { error: accumulated });
@@ -142,6 +167,13 @@ const mappingState = createStreamMappingState();
           currentText += typed.value;
           deps.logger.debug('Text delta', { length: typed.value.length });
           deps.progress.report(toLanguageModelTextPart(typed.value));
+          // T44: a reply stuck on "Now." / "Let me write." / the same
+          // sentence over and over is a dead end. Cut the stream rather
+          // than pay for the rest of the model's output limit.
+          if (deps.loopGuard) {
+            const trip = deps.loopGuard.feedText(typed.value);
+            if (trip) throw new ReplyLoopError(trip);
+          }
         } else if (typed.type === 'thinking') {
           if (typed.value.length > 0 && typed.value.trim().length > 0) {
             reportThinkingPart(deps.progress, typed, deps.logger);
@@ -187,6 +219,16 @@ const mappingState = createStreamMappingState();
           } else {
             currentThinking.thinking += typed.value;
             if (typed.signature) currentThinking.signature = typed.signature;
+          }
+          // T44: the REASONING channel is where a loop usually shows
+          // up first — "Now." "Writing." "Let me write." "OK." — and it
+          // is the channel the user sees as the model "hmming". It is
+          // fed to the guard here, on the same path as the text
+          // channel, so a looping reply is cut whether it loops in
+          // what it says or in what it thinks.
+          if (deps.loopGuard) {
+            const trip = deps.loopGuard.feedReasoning(typed.value);
+            if (trip) throw new ReplyLoopError(trip);
           }
         } else if (typed.type === 'usage') {
           latestUsage = typed.usage;
